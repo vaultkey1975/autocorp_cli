@@ -383,6 +383,54 @@ def _write_csv(path, rows):
 
 
 # =========================================================================== #
+# Phase 7 - deterministic reporting layer (reports.py)
+# =========================================================================== #
+
+def reports_py(schema: list) -> str:
+    """Return reports.py: read-only analytics over the schema.
+
+    For every table a count_<table>() (SELECT COUNT(*)); for every foreign key a
+    avg_<child>_per_<parent>() (children / parents, 0 when there are no parents);
+    and a summary() returning {table: row count} for all tables. Pure SQL via
+    database.get_connection(); generic across any schema.
+    """
+    fns = []
+
+    for table in schema:
+        name = table.name
+        fns.append(f'''def count_{name}():
+    """Return the number of rows in {name}."""
+    with get_connection() as conn:
+        return conn.execute("SELECT COUNT(*) FROM {name}").fetchone()[0]''')
+
+    for table in schema:
+        for _col, ref in table.foreign_keys:
+            ref_one = _singular(ref)
+            name = table.name
+            fns.append(f'''def avg_{name}_per_{ref_one}():
+    """Average number of {name} per {ref_one} (0 when there are none)."""
+    with get_connection() as conn:
+        parents = conn.execute("SELECT COUNT(*) FROM {ref}").fetchone()[0]
+        children = conn.execute("SELECT COUNT(*) FROM {name}").fetchone()[0]
+        return children / parents if parents else 0''')
+
+    summary_entries = "\n".join(
+        f'        "{t.name}": count_{t.name}(),' for t in schema
+    )
+    summary_fn = (
+        "def summary():\n"
+        '    """Return a {table: row count} mapping for every table."""\n'
+        "    return {\n"
+        + summary_entries + "\n"
+        "    }"
+    )
+    fns.append(summary_fn)
+
+    body = "\n\n\n".join(fns)
+    return "from database import get_connection\n\n\n" + body + "\n"
+
+
+# =========================================================================== #
 # Phase 5/6 - deterministic UI framework (ui/widgets.py + ui/master_detail.py)
 # =========================================================================== #
 
@@ -684,3 +732,138 @@ def master_detail_py(schema: list) -> str:
         f"CONFIG = {config!r}\n\n\n"
         + _MASTER_DETAIL_CLASS
     )
+
+
+# =========================================================================== #
+# Phase 7 - deterministic dashboard widget (ui/dashboard.py)
+# =========================================================================== #
+
+# Generic, config-driven dashboard. Constant class; only the DASHBOARD literal is
+# generated per schema. Each card shows a label and a live value pulled from the
+# reports module by name; refresh() recomputes every card.
+_DASHBOARD_WIDGET = '''class DashboardWidget(QWidget):
+    """A generic grid of summary cards driven by DASHBOARD. Each card shows a label
+    and a live value from the reports module; refresh() recomputes them. The reports
+    functions query the database directly, so refresh() always reflects current data."""
+
+    COLUMNS = 3
+
+    def __init__(self):
+        super().__init__()
+        self._values = {}
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(DASHBOARD["title"] + " Dashboard"))
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(self.refresh)
+        root.addWidget(refresh_button)
+        grid = QGridLayout()
+        root.addLayout(grid)
+        for index, card in enumerate(DASHBOARD["cards"]):
+            frame = QFrame()
+            box = QVBoxLayout(frame)
+            box.addWidget(QLabel(card["label"]))
+            value = QLabel("0")
+            self._values[card["metric_fn"]] = value
+            box.addWidget(value)
+            grid.addWidget(frame, index // self.COLUMNS, index % self.COLUMNS)
+        self.refresh()
+
+    def refresh(self):
+        for metric_fn, label in self._values.items():
+            label.setText(str(getattr(reports, metric_fn)()))
+'''
+
+
+def _dashboard_config(schema: list) -> dict:
+    """Build the DASHBOARD dict (summary cards) for a schema: a count card per
+    table and an average card per foreign key (child per parent)."""
+    primary = schema[0]
+    cards = []
+    for table in schema:
+        cards.append({
+            "label": "Total " + table.name.capitalize(),
+            "metric_fn": "count_" + table.name,
+        })
+    for table in schema:
+        for _col, ref in table.foreign_keys:
+            ref_one = _singular(ref)
+            cards.append({
+                "label": "Avg " + table.name.capitalize() + " per " + ref_one.capitalize(),
+                "metric_fn": "avg_" + table.name + "_per_" + ref_one,
+            })
+    return {"title": primary.name.capitalize(), "cards": cards}
+
+
+def dashboard_py(schema: list) -> str:
+    """Return ui/dashboard.py: a generated DASHBOARD config for this schema plus
+    the constant, generic DashboardWidget class."""
+    config = _dashboard_config(schema)
+    return (
+        "import reports\n"
+        "from PySide6.QtWidgets import (\n"
+        "    QWidget, QVBoxLayout, QGridLayout, QFrame, QLabel, QPushButton,\n"
+        ")\n\n\n"
+        f"DASHBOARD = {config!r}\n\n\n"
+        + _DASHBOARD_WIDGET
+    )
+
+
+# =========================================================================== #
+# Phase 7 - deterministic application shell (ui/app_window.py)
+# =========================================================================== #
+
+# The tabbed shell. Schema-independent CONSTANT: it composes the existing
+# DashboardWidget and MasterDetailWindow without embedding a QMainWindow in a tab.
+# ManageWidget (a thin QWidget) hosts MasterDetailWindow's central panel via the
+# window's public centralWidget() API, so MasterDetailWindow stays unchanged.
+# The MasterDetailWindow is built FIRST (it calls crud.init_db()), so the tables
+# exist before the DashboardWidget queries the reports layer.
+_APP_WINDOW = '''from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QTabWidget
+from ui.dashboard import DashboardWidget, DASHBOARD
+from ui.master_detail import MasterDetailWindow
+
+
+class ManageWidget(QWidget):
+    """Thin wrapper that hosts the existing MasterDetailWindow's panel so the
+    master-detail UI can live in a tab without putting a QMainWindow inside a
+    QTabWidget. MasterDetailWindow itself is unchanged - we reuse its central
+    widget through its public API."""
+
+    def __init__(self):
+        super().__init__()
+        self.master = MasterDetailWindow()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.master.centralWidget())
+
+
+class AppWindow(QMainWindow):
+    """Application shell: a tabbed window with a Dashboard and a Manage Data tab.
+    Activating the Dashboard tab refreshes its summary cards from the live DB."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(DASHBOARD["title"])
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # Build Manage first: MasterDetailWindow.__init__ calls crud.init_db(), so
+        # the tables exist before the dashboard queries the reports layer.
+        self.manage = ManageWidget()
+        self.dashboard = DashboardWidget()
+
+        self.tabs.addTab(self.dashboard, "Dashboard")
+        self.tabs.addTab(self.manage, "Manage Data")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+    def _on_tab_changed(self, index):
+        if self.tabs.widget(index) is self.dashboard:
+            self.dashboard.refresh()
+'''
+
+
+def app_window_py(schema=None) -> str:
+    """Return ui/app_window.py - the constant, schema-independent tabbed shell
+    (ManageWidget + AppWindow). `schema` is accepted for generator-signature
+    consistency but unused (the shell composes the per-schema widgets at runtime)."""
+    return _APP_WINDOW
