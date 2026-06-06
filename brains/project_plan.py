@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+ProjectPlan  (AutoCorp CLI - brains)  [Planner v2]
+==================================================
+
+A structured, validated representation of a build plan. It is the contract
+between the Planner and the rest of the pipeline, designed to support future
+multi-file project generation.
+
+Fields (the v2 structure):
+    project_name      str        snake_case directory-safe name
+    project_type      str        e.g. cli | library | script | api
+    language          str        primary language, e.g. python
+    files             list[dict]  [{"path": str, "purpose": str}, ...]
+    build_order       list[str]   file paths in the order they should be built
+    test_command      str         shell command that runs the tests
+    success_criteria  list[str]   human-checkable definition of "done"
+
+Backward-compatibility fields (kept so existing consumers keep working):
+    summary           str         one/two sentence description (shown in the UI)
+    steps             list[str]   optional human-readable build steps
+
+`to_dict()` emits ALL of the above, so an orchestrator/builder/tester that only
+knows the v1 keys (project_name, language, summary, steps, files, test_command)
+keeps working unchanged.
+"""
+
+from dataclasses import dataclass, field
+
+
+class PlanValidationError(ValueError):
+    """Raised by ProjectPlan.validate(strict=True) when required fields are bad."""
+
+
+# The fields the v2 structure must carry.
+REQUIRED_FIELDS = [
+    "project_name",
+    "project_type",
+    "language",
+    "files",
+    "build_order",
+    "test_command",
+    "success_criteria",
+]
+
+DEFAULT_SUCCESS = ["All automated tests pass."]
+
+
+# --------------------------------------------------------------------------- #
+# Sanitisers (shared with the Planner; kept here so ProjectPlan self-normalises)
+# --------------------------------------------------------------------------- #
+def sanitize_name(name: str) -> str:
+    name = (name or "project").strip().lower()
+    name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in name)
+    name = name.strip("_-") or "project"
+    return name[:50]
+
+
+def safe_relpath(path: str) -> str:
+    """Reject absolute paths and parent escapes; return a clean relative path."""
+    path = (path or "").strip().replace("\\", "/").lstrip("/")
+    parts = [p for p in path.split("/") if p not in ("", ".", "..")]
+    return "/".join(parts)
+
+
+def _as_str_list(value) -> list:
+    """Coerce a value into a clean list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    out = []
+    if isinstance(value, (list, tuple)):
+        for v in value:
+            s = str(v).strip()
+            if s:
+                out.append(s)
+    elif isinstance(value, dict):
+        for v in value.values():
+            s = str(v).strip()
+            if s:
+                out.append(s)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# The structure
+# --------------------------------------------------------------------------- #
+@dataclass
+class ProjectPlan:
+    project_name: str = "project"
+    project_type: str = "library"
+    language: str = "python"
+    files: list = field(default_factory=list)            # [{"path","purpose"}]
+    build_order: list = field(default_factory=list)      # [path, ...]
+    test_command: str = ""
+    success_criteria: list = field(default_factory=list)  # [str, ...]
+    # Backward-compatibility / UX:
+    summary: str = ""
+    steps: list = field(default_factory=list)
+
+    # ------------------------------------------------------------------ #
+    # Construction / normalisation
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def from_dict(cls, data: dict, request: str = "") -> "ProjectPlan":
+        """Build a normalised ProjectPlan from raw (model) data. Never raises -
+        unknown/invalid bits are sanitised; missing bits get safe defaults via
+        ensure_buildable()."""
+        if not isinstance(data, dict):
+            data = {}
+
+        files = []
+        for f in data.get("files") or []:
+            if isinstance(f, dict):
+                p = safe_relpath(f.get("path", ""))
+                if p:
+                    files.append({"path": p, "purpose": str(f.get("purpose", "")).strip()})
+            elif isinstance(f, str):
+                p = safe_relpath(f)
+                if p:
+                    files.append({"path": p, "purpose": ""})
+
+        # build_order: list of file paths, sanitised.
+        build_order = [safe_relpath(p) for p in _as_str_list(data.get("build_order"))]
+        build_order = [p for p in build_order if p]
+
+        plan = cls(
+            project_name=sanitize_name(data.get("project_name", "")),
+            project_type=str(data.get("project_type", "")).strip() or "library",
+            language=str(data.get("language", "python")).strip() or "python",
+            files=files,
+            build_order=build_order,
+            test_command=str(data.get("test_command", "")).strip(),
+            success_criteria=_as_str_list(data.get("success_criteria")),
+            summary=str(data.get("summary", "")).strip() or (request or "").strip(),
+            steps=_as_str_list(data.get("steps")),
+        )
+        plan.ensure_buildable()
+        return plan
+
+    def ensure_buildable(self) -> None:
+        """Fill in safe defaults so the plan can always drive a build."""
+        if not self.files:
+            self.files = [{"path": "main.py", "purpose": "program entry point"}]
+
+        file_paths = [f["path"] for f in self.files]
+
+        # Reconcile build_order with the actual files: keep known entries in the
+        # model's order, then append any files it forgot.
+        ordered = [p for p in self.build_order if p in file_paths]
+        for p in file_paths:
+            if p not in ordered:
+                ordered.append(p)
+        self.build_order = ordered
+
+        if not self.test_command:
+            self.test_command = (
+                "python -m pytest -q" if self.language.lower() == "python" else ""
+            )
+        if not self.success_criteria:
+            self.success_criteria = list(DEFAULT_SUCCESS)
+        if not self.project_type:
+            self.project_type = "library"
+
+    # ------------------------------------------------------------------ #
+    # Validation
+    # ------------------------------------------------------------------ #
+    def validate(self, strict: bool = False) -> list:
+        """Return a list of human-readable problems (empty == valid).
+
+        With strict=True, raise PlanValidationError instead of returning."""
+        errors = []
+        if not self.project_name:
+            errors.append("project_name is empty")
+        if not self.project_type:
+            errors.append("project_type is empty")
+        if not self.language:
+            errors.append("language is empty")
+        if not isinstance(self.files, list) or not self.files:
+            errors.append("files must be a non-empty list")
+        else:
+            for i, f in enumerate(self.files):
+                if not isinstance(f, dict) or not f.get("path"):
+                    errors.append(f"files[{i}] is missing a 'path'")
+        if not isinstance(self.build_order, list) or not self.build_order:
+            errors.append("build_order must be a non-empty list")
+        else:
+            known = {f.get("path") for f in self.files if isinstance(f, dict)}
+            for p in self.build_order:
+                if p not in known:
+                    errors.append(f"build_order references unknown file '{p}'")
+        if not self.test_command:
+            errors.append("test_command is empty")
+        if not isinstance(self.success_criteria, list) or not self.success_criteria:
+            errors.append("success_criteria must be a non-empty list")
+
+        if strict and errors:
+            raise PlanValidationError("; ".join(errors))
+        return errors
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.validate()
+
+    # ------------------------------------------------------------------ #
+    # Serialisation
+    # ------------------------------------------------------------------ #
+    def to_dict(self) -> dict:
+        """Emit a plain dict carrying both the v2 structure and the v1 keys."""
+        return {
+            "project_name": self.project_name,
+            "project_type": self.project_type,
+            "language": self.language,
+            "summary": self.summary,
+            "files": [dict(f) for f in self.files],
+            "build_order": list(self.build_order),
+            "test_command": self.test_command,
+            "success_criteria": list(self.success_criteria),
+            "steps": list(self.steps),
+        }

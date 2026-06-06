@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+Builder Brain  (AutoCorp CLI - brains)  [Multi-File + Dependency + Engine]
+=========================================================================
+
+Generates a whole project, one file at a time, from a Planner v2 ProjectPlan.
+
+Generation engine (Claude CLI Integration Phase 1):
+  * The Builder NEVER calls a model directly. It generates through a pluggable
+    engine: `self.engine.generate(prompt, system=...)`.
+  * The default engine is LocalEngine (local Ollama) - identical behaviour to
+    before. The CLI can inject ClaudeEngine via `session.builder.engine` for
+    `--engine claude`. Any BaseEngine implementation works.
+
+Ordering (the single seam, `_resolve_build_order`):
+  * If the plan provides `build_order`, it is used UNCHANGED.
+  * Otherwise the order is derived from inter-file imports
+    (`dependency_analyzer.derive_build_order`). No heuristic runs before it.
+
+Multi-file generation:
+  * Every file in `plan["files"]` is generated, in the resolved order.
+  * Each file's prompt includes the REAL contents of files written before it.
+  * Each file is written through the Executor, so every write passes the gate.
+
+The return contract (list[WriteResult]) is unchanged, so the orchestrator's
+Build -> Test -> Fix -> Record flow is untouched.
+"""
+
+import os
+
+from core import console, llm
+from brains.dependency_analyzer import derive_build_order
+from brains.base_engine import EngineError
+from brains.local_engine import LocalEngine
+
+SYSTEM_PROMPT = """You are the Builder Brain of a local AI coding assistant.
+You write the COMPLETE contents of ONE file at a time for a small project.
+
+Output ONLY the raw file contents - no markdown, no code fences, no commentary,
+no explanation before or after. Just the code (or text) that belongs in the file.
+
+Write clean, correct, runnable code. Match the project's language and the file's
+stated purpose. If it is a test file, write real, passing tests for the code in
+the sibling files."""
+
+
+class BuilderBrain:
+    def __init__(self, executor, model=None, engine=None):
+        self.executor = executor
+        self.model = model or llm.MODEL
+        # Default engine is local (Ollama); identical to the previous behaviour.
+        self.engine = engine or LocalEngine(model=self.model)
+
+    @staticmethod
+    def _is_test_file(path: str) -> bool:
+        base = os.path.basename(path).lower()
+        return base.startswith("test") or base.endswith("_test.py") or "test" in base
+
+    def _resolve_build_order(self, plan):
+        files = [
+            f for f in (plan.get("files") or [])
+            if isinstance(f, dict) and f.get("path")
+        ]
+        by_path = {f["path"]: f for f in files}
+
+        build_order = plan.get("build_order") or []
+
+        if not build_order:
+            build_order = derive_build_order(files)
+
+        ordered = []
+        placed = set()
+
+        for path in build_order:
+            f = by_path.get(path)
+            if f is not None and path not in placed:
+                ordered.append(f)
+                placed.add(path)
+
+        for f in files:
+            if f["path"] not in placed:
+                ordered.append(f)
+
+        return ordered
+
+    def _gen_file(self, plan: dict, target: dict, written: dict, lessons_text: str) -> str:
+        siblings = "\n".join(
+            f"  - {f.get('path')}: {f.get('purpose','')}" for f in plan.get("files", [])
+        )
+        prompt = (
+            f"PROJECT: {plan.get('project_name')} ({plan.get('language')})\n"
+            f"SUMMARY: {plan.get('summary')}\n\n"
+            f"ALL FILES IN THIS PROJECT:\n{siblings}\n\n"
+        )
+        if written:
+            prompt += "FILES ALREADY WRITTEN (use their real names/signatures exactly):\n"
+            for path, content in written.items():
+                prompt += f"\n--- {path} ---\n{content[:2000]}\n"
+            prompt += "\n"
+
+        prompt += (
+            f"FILE TO WRITE NOW: {target['path']}\n"
+            f"PURPOSE: {target.get('purpose','')}\n"
+        )
+        if self._is_test_file(target["path"]):
+            prompt += ("This is a TEST file. Import from and test ONLY the functions/"
+                       "classes that actually exist in the files already written above. "
+                       "Do not invent APIs that are not present.\n")
+        if lessons_text:
+            prompt += f"\n{lessons_text}\n"
+        prompt += (
+            f"\nWrite the complete contents of {target['path']} now. "
+            "Output only the file contents."
+        )
+        # Generate through the engine (local Ollama or Claude CLI), then strip any
+        # code fences the model may have wrapped the file in.
+        raw = self.engine.generate(prompt, system=SYSTEM_PROMPT)
+        return llm.strip_code_fences(raw)
+
+    def build(self, plan: dict, workspace: str, lessons_text: str = "") -> list:
+        order = self._resolve_build_order(plan)
+        total = len(order)
+        console.info(f"Building {total} file{'s' if total != 1 else ''}...")
+
+        results = []
+        written = {}
+        for target in order:
+            path = target["path"]
+            console.info(f"Writing [cyan]{path}[/cyan]")
+            try:
+                content = self._gen_file(plan, target, written, lessons_text)
+            except EngineError as e:
+                console.error(f"Engine error while generating {path}: {e}")
+                continue
+            if not content.strip():
+                console.warn(f"Model returned empty content for {path}; skipping.")
+                continue
+
+            full_path = os.path.join(workspace, path)
+            lexer = "python" if path.endswith(".py") else "text"
+            console.show_code(path, content, lexer=lexer)
+            wr = self.executor.write_file(full_path, content)
+            results.append(wr)
+            if getattr(wr, "written", False):
+                written[path] = content
+
+        generated = sum(1 for w in results if getattr(w, "written", False))
+        console.success(f"Generated {generated} file{'s' if generated != 1 else ''}")
+        return results

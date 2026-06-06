@@ -1,0 +1,21 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# --- Virtual environment ---
+.venv/
+
+# --- Generated apps & runtime data ---
+workspace/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# --- Build artifacts ---
+dist/
+build/
