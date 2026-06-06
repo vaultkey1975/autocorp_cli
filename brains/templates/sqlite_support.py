@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1-5]
+SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1-6]
 ===============================================================================
 
 A small, DETERMINISTIC code-generation layer for SQLite-backed desktop apps. It
@@ -10,28 +10,17 @@ of the model. The generators are pure (data in -> source string out) and unit-
 tested directly: the tests exec the generated code against a real SQLite database
 (and, for the UI, construct the window offscreen) and exercise real behaviour.
 
-Phase 1 (single table) - unchanged public API:
-    detect_entity(request) -> str
-    columns_for(table) -> list[tuple[str, str]]
-    database_py(table, columns) -> str
-    crud_py(table, columns) -> str
-
-Phase 2 (multiple tables + foreign keys + search):
-    Table ; detect_schema(request) ; schema_database_py(schema) ; schema_crud_py(schema)
-
+Phase 1 (single table): detect_entity / columns_for / database_py / crud_py.
+Phase 2 (multi-table + FK + search): Table / detect_schema / schema_database_py / schema_crud_py.
 Phase 3 (master-detail data): schema_crud_py() emits get_<primary>_with_counts().
-
 Phase 4 (CSV export): export_py(schema) -> export.py.
+Phase 5 (deterministic UI): widgets_py() + master_detail_py(schema) - a generic
+    config-driven MasterDetailWindow (constant) + a small generated CONFIG.
+Phase 6 (inline child editing): the CONFIG children carry an update_fn and the
+    MasterDetailWindow supports selecting a child row (loading it into the child
+    fields) and editing it in place via crud.update_<child>().
 
-Phase 5 (deterministic UI framework):
-    widgets_py() -> str                # ui/widgets.py : generic UI helpers (constant)
-    master_detail_py(schema) -> str    # ui/master_detail.py : generic config-driven
-                                       # MasterDetailWindow (constant class) + a small
-                                       # generated CONFIG dict for this schema.
-    The model-generated ui/main_window.py shrinks to a one-line re-export of
-    MasterDetailWindow, so almost all UI logic is deterministic and tested.
-
-A Phase 2-5 schema models real relationships, e.g. a CRM:
+A Phase 2-6 schema models real relationships, e.g. a CRM:
     customers, notes(customer_id -> customers.id), interactions(customer_id -> ...).
 """
 
@@ -153,7 +142,7 @@ def delete_{one}(record_id):
 
 
 # =========================================================================== #
-# Phase 2-5 - schemas (foreign keys + search + master-detail + export + UI)
+# Phase 2-6 - schemas (FK + search + master-detail + export + UI framework)
 # =========================================================================== #
 
 @dataclass
@@ -394,11 +383,10 @@ def _write_csv(path, rows):
 
 
 # =========================================================================== #
-# Phase 5 - deterministic UI framework (ui/widgets.py + ui/master_detail.py)
+# Phase 5/6 - deterministic UI framework (ui/widgets.py + ui/master_detail.py)
 # =========================================================================== #
 
-# Generic, schema-independent UI helpers. Constant: identical for every app, so it
-# is written once and unit-tested once (offscreen).
+# Generic, schema-independent UI helpers. Constant: identical for every app.
 _WIDGETS_PY = '''from PySide6.QtWidgets import QTableWidgetItem
 
 
@@ -446,13 +434,15 @@ def fill_form(fields, row):
 
 
 # Generic, config-driven master-detail window. Constant: ALL the wiring lives here
-# and is tested once; only the CONFIG literal below it is generated per schema. The
-# class calls crud/export functions by the names in CONFIG via getattr.
+# and is tested once; only the CONFIG literal below it is generated per schema.
+# Phase 6 adds inline child editing: selecting a child row loads it into the child
+# fields (_on_child_select) and an 'Edit' button updates it (_edit_child).
 _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
     """A generic master-detail window driven entirely by CONFIG. The master table
     lists the primary entity (optionally with child counts); selecting a row loads
     that row into the edit form and loads each child table into its detail list.
-    All data access goes through the crud / export modules by name."""
+    Child rows can themselves be selected and edited in place. All data access goes
+    through the crud / export modules by name."""
 
     def __init__(self):
         super().__init__()
@@ -496,7 +486,7 @@ _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
         self._button(form, "Delete", self.on_delete)
         root.addLayout(form)
 
-        # Detail panels, one per child table.
+        # Detail panels, one per child table (add / edit / delete).
         self.children_state = []
         for child in CONFIG.get("children", []):
             root.addWidget(QLabel(child["title"]))
@@ -509,9 +499,14 @@ _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
                 edit.setPlaceholderText(name)
                 cfields[name] = edit
                 cform.addWidget(edit)
-            state = {"cfg": child, "list": list_widget, "fields": cfields, "rows": []}
+            state = {"cfg": child, "list": list_widget, "fields": cfields,
+                     "rows": [], "selected_id": None}
+            list_widget.itemSelectionChanged.connect(
+                lambda s=state: self._on_child_select(s))
             self._button(cform, "Add " + child["title"],
                          lambda _=False, s=state: self._add_child(s))
+            self._button(cform, "Edit " + child["title"],
+                         lambda _=False, s=state: self._edit_child(s))
             self._button(cform, "Delete " + child["title"],
                          lambda _=False, s=state: self._delete_child(s))
             root.addLayout(cform)
@@ -572,7 +567,7 @@ _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
     def on_export(self):
         getattr(export, self.primary["export_fn"])("export.csv")
 
-    # ----- detail -----
+    # ----- detail (add / edit / delete child rows) -----
     def _load_children(self):
         for state in self.children_state:
             child = state["cfg"]
@@ -580,7 +575,19 @@ _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
                 state["rows"] = []
             else:
                 state["rows"] = self._crud(child["list_fn"])(self.selected_id)
+            state["selected_id"] = None
+            # Repopulate without re-triggering _on_child_select (clear() would
+            # otherwise restore a stale child selection during the refresh).
+            state["list"].blockSignals(True)
             widgets.fill_list(state["list"], state["rows"], child["display"])
+            state["list"].blockSignals(False)
+
+    def _on_child_select(self, state):
+        state["selected_id"] = widgets.selected_row_value(state["list"], state["rows"])
+        row = next(
+            (r for r in state["rows"] if r.get("id") == state["selected_id"]), None
+        )
+        widgets.fill_form(state["fields"], row)
 
     def _add_child(self, state):
         if self.selected_id is None:
@@ -591,6 +598,17 @@ _MASTER_DETAIL_CLASS = '''class MasterDetailWindow(QMainWindow):
             self.selected_id, *[data[f] for f in child["fields"]]
         )
         widgets.clear_form(state["fields"])
+        self._load_children()
+
+    def _edit_child(self, state):
+        if state.get("selected_id") is None:
+            return
+        child = state["cfg"]
+        data = widgets.read_form(state["fields"])
+        self._crud(child["update_fn"])(
+            state["selected_id"], self.selected_id,
+            *[data[f] for f in child["fields"]]
+        )
         self._load_children()
 
     def _delete_child(self, state):
@@ -644,6 +662,7 @@ def _ui_config(schema: list) -> dict:
             "display": cfields[0] if cfields else "id",
             "list_fn": f"get_{table.name}_for_{one}",
             "add_fn": f"add_{child_one}",
+            "update_fn": f"update_{child_one}",
             "delete_fn": f"delete_{child_one}",
         })
 
