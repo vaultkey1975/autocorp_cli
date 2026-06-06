@@ -2,8 +2,8 @@
 
 ProjectPlan must preserve a file's exact `content` through from_dict/to_dict, and
 the Builder must write that content verbatim WITHOUT calling the engine. This is
-what makes the SQLite persistence layer guaranteed-correct regardless of the model
-(the model previously paraphrased an embedded INSERT into a bug).
+what makes the SQLite persistence/export layer guaranteed-correct regardless of the
+model (the model previously paraphrased an embedded INSERT into a bug).
 """
 
 from brains.project_plan import ProjectPlan
@@ -75,8 +75,8 @@ def test_sqlite_template_marks_persistence_files_verbatim():
     plan = sql.build_plan("Build a customer CRM desktop app with SQLite")
     by_path = {f["path"]: f for f in plan["files"]}
     # Deterministic files carry exact content...
-    for path in ("database.py", "crud.py", "main.py", "requirements.txt",
-                 "ui/__init__.py"):
+    for path in ("database.py", "crud.py", "export.py", "main.py",
+                 "requirements.txt", "ui/__init__.py"):
         assert by_path[path].get("content"), path
     # ...the UI is left for the engine.
     assert "content" not in by_path["ui/main_window.py"]

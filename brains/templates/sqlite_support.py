@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1-3]
+SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1-4]
 ===============================================================================
 
 A small, DETERMINISTIC code-generation layer for SQLite-backed desktop apps. It
@@ -24,12 +24,15 @@ Phase 2 (multiple tables + foreign keys + search):
 Phase 3 (master-detail):
     schema_crud_py() additionally emits get_<primary>_with_counts() when the
     primary table has child tables - each primary row annotated with a
-    <child>_count column - so a master view can show how many related rows
-    (e.g. notes / interactions) each customer has. The per-child CRUD generated in
-    Phase 2 (add/get/get-one/update/delete + get_<child>_for_<parent>()) already
-    powers the detail pane.
+    <child>_count column - so a master view can show how many related rows each
+    parent has. The per-child CRUD generated in Phase 2 powers the detail pane.
 
-A Phase 2/3 schema models real relationships, e.g. a CRM:
+Phase 4 (CSV export):
+    export_py(schema) -> str                      # export.py: CSV export module
+    A export_<table>_csv(path) per table plus export_<primary>_with_counts_csv(path)
+    for the master view, built on stdlib csv over the crud get_* helpers.
+
+A Phase 2-4 schema models real relationships, e.g. a CRM:
     customers, notes(customer_id -> customers.id), interactions(customer_id -> ...).
 Child foreign keys use ON DELETE CASCADE so deleting a parent (a customer) cleanly
 removes its children.
@@ -166,7 +169,7 @@ def delete_{one}(record_id):
 
 
 # =========================================================================== #
-# Phase 2/3 - multi-table schemas (foreign keys + search + master-detail)
+# Phase 2-4 - multi-table schemas (foreign keys + search + master-detail + export)
 # =========================================================================== #
 
 @dataclass
@@ -383,3 +386,44 @@ def schema_crud_py(schema: list) -> str:
     if children:
         parts.append(_counts_function(primary.name, children))
     return "\n\n\n".join(parts) + "\n"
+
+
+def export_py(schema: list) -> str:
+    """Return export.py: CSV export helpers over the crud get_* functions.
+
+    One export_<table>_csv(path) per table, plus export_<primary>_with_counts_csv()
+    when the primary has children. Uses stdlib csv; returns the written path.
+    """
+    primary = schema[0]
+    children = _children_of(schema, primary.name)
+
+    fns = []
+    for table in schema:
+        fns.append(f'''def export_{table.name}_csv(path):
+    """Export all {table.name} to a CSV file at `path`. Returns the path."""
+    return _write_csv(path, crud.get_{table.name}())''')
+
+    if children:
+        fns.append(f'''def export_{primary.name}_with_counts_csv(path):
+    """Export the master view ({primary.name} + child counts) to CSV at `path`."""
+    return _write_csv(path, crud.get_{primary.name}_with_counts())''')
+
+    body = "\n\n\n".join(fns)
+    return f'''import csv
+
+import crud
+
+
+def _write_csv(path, rows):
+    """Write a list of dict rows to a CSV at `path` (header from the first row).
+    An empty result writes a header-less empty file. Returns the path."""
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        if rows:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+    return path
+
+
+{body}
+'''
