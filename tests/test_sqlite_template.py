@@ -1,9 +1,9 @@
 """Tests for the SQLite desktop template + its routing (brains/templates).
 
 No Ollama needed: these check template selection, the generated plan shape, the
-dependency-safe build order, and that the deterministic DB/CRUD/export/main code is
-embedded as exact `content` (written verbatim by the Builder) while the UI is left
-to the engine via a crud-wired purpose.
+dependency-safe build order, that the deterministic data + UI-framework code is
+embedded as exact `content`, and that the model-generated ui/main_window.py has
+shrunk to a thin re-export (Phase 5).
 """
 
 from brains.templates import select_template
@@ -12,7 +12,8 @@ from brains.project_plan import ProjectPlan
 
 SQLITE_FILES = {
     "requirements.txt", "database.py", "crud.py", "export.py",
-    "ui/__init__.py", "ui/main_window.py", "main.py",
+    "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py",
+    "ui/main_window.py", "main.py",
 }
 CRM_REQUEST = "Build a customer CRM desktop app with SQLite"
 
@@ -34,21 +35,20 @@ def test_sqlite_template_wins_for_db_desktop_requests():
 
 
 def test_plain_desktop_requests_still_go_to_pyside():
-    # Regression: no data keyword -> the pure-GUI template must keep these.
     assert select_template("build a desktop calculator").NAME == "pyside6_desktop"
     assert select_template("a GUI todo app").NAME == "pyside6_desktop"
 
 
 def test_non_app_requests_match_no_template():
     assert select_template("a command-line argument parser") is None
-    assert select_template("a sqlite library with no ui") is None  # data but no GUI
+    assert select_template("a sqlite library with no ui") is None
 
 
 def test_matches_requires_both_data_and_gui():
     assert sql.matches(CRM_REQUEST) is True
     assert sql.matches("a database gui") is True
-    assert sql.matches("a sqlite report library") is False   # no GUI signal
-    assert sql.matches("build a desktop calculator") is False  # no data signal
+    assert sql.matches("a sqlite report library") is False
+    assert sql.matches("build a desktop calculator") is False
 
 
 # --------------------------------------------------------------------------- #
@@ -65,38 +65,43 @@ def test_build_order_is_dependency_safe():
     order = sql.build_plan(CRM_REQUEST)["build_order"]
     assert order == [
         "requirements.txt", "database.py", "crud.py", "export.py",
-        "ui/__init__.py", "ui/main_window.py", "main.py",
+        "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py",
+        "ui/main_window.py", "main.py",
     ]
     assert order.index("database.py") < order.index("crud.py")
     assert order.index("crud.py") < order.index("export.py")
-    assert order.index("crud.py") < order.index("ui/main_window.py")
+    assert order.index("crud.py") < order.index("ui/master_detail.py")
+    assert order.index("ui/widgets.py") < order.index("ui/master_detail.py")
+    assert order.index("ui/master_detail.py") < order.index("ui/main_window.py")
     assert order.index("ui/main_window.py") < order.index("main.py")
 
 
 def test_plan_is_a_valid_project_plan():
-    plan = sql.build_plan(CRM_REQUEST)
-    assert ProjectPlan.from_dict(plan).is_valid
+    assert ProjectPlan.from_dict(sql.build_plan(CRM_REQUEST)).is_valid
 
 
 # --------------------------------------------------------------------------- #
 # Deterministic code embedded as exact content
 # --------------------------------------------------------------------------- #
-def test_database_and_crud_code_embedded_as_content():
+def test_data_layer_code_embedded_as_content():
     plan = sql.build_plan(CRM_REQUEST)
     db = _content(plan, "database.py")
     crud = _content(plan, "crud.py")
+    export = _content(plan, "export.py")
     assert "CREATE TABLE IF NOT EXISTS customers" in db
-    assert "def init_db" in db
-    assert "def add_customer" in crud
-    assert "def get_customers" in crud
-    assert "from database import get_connection, init_db" in crud
-    assert "VALUES (?, ?, ?)" in crud  # correct placeholder count
+    assert "def add_customer" in crud and "VALUES (?, ?, ?)" in crud
+    assert "def get_customers_with_counts" in crud
+    assert "def export_customers_with_counts_csv(path)" in export
 
 
-def test_export_code_embedded_as_content():
-    crud_export = _content(sql.build_plan(CRM_REQUEST), "export.py")
-    assert "import csv" in crud_export
-    assert "def export_customers_with_counts_csv(path)" in crud_export
+def test_ui_framework_embedded_as_content():
+    plan = sql.build_plan(CRM_REQUEST)
+    widgets = _content(plan, "ui/widgets.py")
+    md = _content(plan, "ui/master_detail.py")
+    assert "def populate_table" in widgets
+    assert "class MasterDetailWindow(QMainWindow)" in md
+    assert "CONFIG = {" in md
+    assert "from ui import widgets" in md
 
 
 def test_main_py_content_has_offscreen_guard():
@@ -106,15 +111,14 @@ def test_main_py_content_has_offscreen_guard():
         assert token in main_py, token
 
 
-def test_main_window_is_model_generated_and_wires_crud_and_export():
+def test_main_window_is_thin_model_generated_reexport():
     plan = sql.build_plan(CRM_REQUEST)
-    # The UI is the one file left to the engine (no exact content).
+    # Still the only model-generated file (no exact content)...
     assert _content(plan, "ui/main_window.py") == ""
     purpose = _purpose(plan, "ui/main_window.py")
-    for token in ("import crud", "import export", "crud.init_db()",
-                  "crud.add_customer", "crud.get_customers",
-                  "export.export_customers_with_counts_csv"):
-        assert token in purpose, token
+    assert "from ui.master_detail import MasterDetailWindow as MainWindow" in purpose
+    # ...but the purpose is now tiny (Phase 4 was ~2860 chars).
+    assert len(purpose) < 600
 
 
 def test_entity_detection_drives_schema_for_inventory():

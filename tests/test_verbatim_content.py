@@ -74,11 +74,12 @@ def test_builder_writes_content_verbatim_and_skips_engine(tmp_path):
 def test_sqlite_template_marks_persistence_files_verbatim():
     plan = sql.build_plan("Build a customer CRM desktop app with SQLite")
     by_path = {f["path"]: f for f in plan["files"]}
-    # Deterministic files carry exact content...
+    # Deterministic files carry exact content (Phase 5: the UI framework too)...
     for path in ("database.py", "crud.py", "export.py", "main.py",
-                 "requirements.txt", "ui/__init__.py"):
+                 "requirements.txt", "ui/__init__.py",
+                 "ui/widgets.py", "ui/master_detail.py"):
         assert by_path[path].get("content"), path
-    # ...the UI is left for the engine.
+    # ...only the thin assembly file is left for the engine.
     assert "content" not in by_path["ui/main_window.py"]
     # The exact crud INSERT is correct: 3 placeholders for 3 columns (the bug the
     # model introduced when this was only a prose purpose).
