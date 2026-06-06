@@ -1,0 +1,4 @@
+# Development / test dependencies for AutoCorp CLI itself.
+# Runtime deps live in requirements.txt. Install with:
+#   pip install -r requirements-dev.txt
+pytest>=7.0
