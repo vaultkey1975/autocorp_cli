@@ -17,10 +17,14 @@ A template module exposes:
 (in which case the Planner falls back to its normal LLM planning - unchanged).
 """
 
+from brains.templates import sqlite_desktop
 from brains.templates import pyside6_desktop
 
-# Order matters: the first template that matches wins.
-_TEMPLATES = [pyside6_desktop]
+# Order matters: the first template that matches wins. sqlite_desktop is listed
+# before pyside6_desktop because a SQLite desktop request ("...desktop app with
+# SQLite") also contains the generic desktop/app keywords pyside6_desktop matches;
+# the more specific (data + GUI) template must get first refusal.
+_TEMPLATES = [sqlite_desktop, pyside6_desktop]
 
 
 def select_template(request: str):
