@@ -1,9 +1,9 @@
-"""Tests for the Phase 2 multi-table SQLite layer (brains/templates/sqlite_support).
+"""Tests for the Phase 2/3 multi-table SQLite layer (brains/templates/sqlite_support).
 
 No Ollama needed: the generated multi-table database.py + crud.py are written to a
 temp dir, imported, and exercised against a real SQLite database - including
-foreign-key enforcement, ON DELETE CASCADE, per-table CRUD, search, and FK
-relationship queries.
+foreign-key enforcement, ON DELETE CASCADE, per-table CRUD, search, FK relationship
+queries, child update/delete, and the master-view get_<primary>_with_counts().
 """
 
 import importlib
@@ -61,7 +61,7 @@ def test_database_py_creates_all_tables_with_fk_and_pragma():
     compile(src, "database.py", "exec")
 
 
-def test_crud_py_has_crud_search_and_fk_helpers():
+def test_crud_py_has_crud_search_fk_and_counts_helpers():
     src = ss.schema_crud_py(ss.detect_schema(CRM))
     for fn in (
         "def add_customer(name, email, phone)",
@@ -71,13 +71,22 @@ def test_crud_py_has_crud_search_and_fk_helpers():
         "def delete_customer(record_id)",
         "def search_customers(query)",
         "def add_note(customer_id, body)",
+        "def update_note(record_id, customer_id, body)",
+        "def delete_note(record_id)",
         "def get_notes_for_customer(customer_id)",
         "def add_interaction(customer_id, kind, summary)",
         "def get_interactions_for_customer(customer_id)",
+        "def get_customers_with_counts()",
     ):
         assert fn in src, fn
     assert "VALUES (?, ?, ?)" in src  # customers INSERT placeholder count
     compile(src, "crud.py", "exec")
+
+
+def test_single_table_schema_has_no_counts_helper():
+    # No child tables -> no master-view counts function.
+    src = ss.schema_crud_py(ss.detect_schema("a desktop inventory manager"))
+    assert "with_counts" not in src
 
 
 # --------------------------------------------------------------------------- #
@@ -139,14 +148,48 @@ def test_delete_customer_cascades_to_children(tmp_path):
     assert crud.get_interactions_for_customer(cid) == []
 
 
+def test_child_note_update_and_delete(tmp_path):
+    # Master-detail editing: a child row can be updated and deleted on its own.
+    _db, crud = _load(tmp_path, ss.detect_schema(CRM))
+    crud.init_db()
+    cid = crud.add_customer("Ada", "a@x.com", "1")
+    nid = crud.add_note(cid, "draft note")
+
+    crud.update_note(nid, cid, "final note")
+    assert crud.get_note(nid)["body"] == "final note"
+
+    crud.delete_note(nid)
+    assert crud.get_note(nid) is None
+    assert crud.get_notes_for_customer(cid) == []
+
+
+def test_get_customers_with_counts(tmp_path):
+    # Master view: each customer annotated with counts of related child rows.
+    _db, crud = _load(tmp_path, ss.detect_schema(CRM))
+    crud.init_db()
+    a = crud.add_customer("Ada", "a@x.com", "1")
+    b = crud.add_customer("Bob", "b@x.com", "2")
+    crud.add_note(a, "n1")
+    crud.add_note(a, "n2")
+    crud.add_interaction(a, "call", "hi")
+
+    rows = crud.get_customers_with_counts()
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[a]["name"] == "Ada"          # base columns preserved
+    assert by_id[a]["notes_count"] == 2
+    assert by_id[a]["interactions_count"] == 1
+    assert by_id[b]["notes_count"] == 0
+    assert by_id[b]["interactions_count"] == 0
+
+
 # --------------------------------------------------------------------------- #
-# Template embeds the Phase 2 schema deterministically
+# Template embeds the schema deterministically
 # --------------------------------------------------------------------------- #
 def _content(plan, path):
     return next(f.get("content", "") for f in plan["files"] if f["path"] == path)
 
 
-def test_template_embeds_multitable_schema_and_search():
+def test_template_embeds_multitable_schema_search_and_counts():
     plan = sql.build_plan(CRM)
     db = _content(plan, "database.py")
     crud = _content(plan, "crud.py")
@@ -155,3 +198,4 @@ def test_template_embeds_multitable_schema_and_search():
     assert "PRAGMA foreign_keys = ON" in db
     assert "def search_customers(query)" in crud
     assert "def get_notes_for_customer(customer_id)" in crud
+    assert "def get_customers_with_counts()" in crud

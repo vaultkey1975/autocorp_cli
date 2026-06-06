@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1+2]
+SQLite support  (AutoCorp CLI - brains.templates)  [SQLite Generation Phase 1-3]
 ===============================================================================
 
 A small, DETERMINISTIC code-generation layer for SQLite-backed desktop apps. It
@@ -21,12 +21,18 @@ Phase 2 (multiple tables + foreign keys + search):
     schema_database_py(schema) -> str             # database.py for the whole schema
     schema_crud_py(schema) -> str                 # crud.py for the whole schema
 
-A Phase 2 schema models real relationships, e.g. a CRM:
+Phase 3 (master-detail):
+    schema_crud_py() additionally emits get_<primary>_with_counts() when the
+    primary table has child tables - each primary row annotated with a
+    <child>_count column - so a master view can show how many related rows
+    (e.g. notes / interactions) each customer has. The per-child CRUD generated in
+    Phase 2 (add/get/get-one/update/delete + get_<child>_for_<parent>()) already
+    powers the detail pane.
+
+A Phase 2/3 schema models real relationships, e.g. a CRM:
     customers, notes(customer_id -> customers.id), interactions(customer_id -> ...).
 Child foreign keys use ON DELETE CASCADE so deleting a parent (a customer) cleanly
-removes its children. Per table the CRUD layer provides add/get-all/get-one/update/
-delete, a search_* helper over the table's TEXT columns, and get_<table>_for_<parent>()
-for FK tables.
+removes its children.
 """
 
 from dataclasses import dataclass, field
@@ -160,7 +166,7 @@ def delete_{one}(record_id):
 
 
 # =========================================================================== #
-# Phase 2 - multi-table schemas (foreign keys + search)
+# Phase 2/3 - multi-table schemas (foreign keys + search + master-detail)
 # =========================================================================== #
 
 @dataclass
@@ -208,6 +214,16 @@ def detect_schema(request: str) -> list:
     if table == "customers":
         return _crm_schema()
     return [Table(table, columns_for(table))]
+
+
+def _children_of(schema: list, parent_name: str) -> list:
+    """Return [(child_table, fk_column), ...] for tables referencing `parent_name`."""
+    out = []
+    for table in schema:
+        for col, ref in table.foreign_keys:
+            if ref == parent_name:
+                out.append((table.name, col))
+    return out
 
 
 def _create_table_block(table: "Table") -> str:
@@ -335,8 +351,35 @@ def _crud_block(table: "Table") -> str:
     return "\n\n\n".join(fns)
 
 
+def _counts_function(primary: str, children: list) -> str:
+    """Master-view helper: each primary row annotated with a <child>_count column
+    (a correlated subquery per child table)."""
+    count_lines = ",\n".join(
+        f"                (SELECT COUNT(*) FROM {child} WHERE {child}.{fk} = c.id) "
+        f"AS {child}_count"
+        for child, fk in children
+    )
+    return f'''def get_{primary}_with_counts():
+    """Return all {primary}, each annotated with counts of related child rows."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.*,
+{count_lines}
+            FROM {primary} c
+            ORDER BY c.id
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]'''
+
+
 def schema_crud_py(schema: list) -> str:
-    """Return crud.py covering every table in the schema."""
+    """Return crud.py covering every table in the schema, plus a master-view
+    get_<primary>_with_counts() when the primary table has child tables."""
     parts = ["from database import get_connection, init_db"]
     parts.extend(_crud_block(t) for t in schema)
+    primary = schema[0]
+    children = _children_of(schema, primary.name)
+    if children:
+        parts.append(_counts_function(primary.name, children))
     return "\n\n\n".join(parts) + "\n"
