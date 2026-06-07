@@ -12,8 +12,8 @@ from brains.project_plan import ProjectPlan
 
 SQLITE_FILES = {
     "requirements.txt", "database.py", "crud.py", "export.py", "reports.py",
-    "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/dashboard.py",
-    "ui/app_window.py", "ui/main_window.py", "main.py",
+    "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/charts.py",
+    "ui/dashboard.py", "ui/app_window.py", "ui/main_window.py", "main.py",
 }
 CRM_REQUEST = "Build a customer CRM desktop app with SQLite"
 
@@ -65,12 +65,14 @@ def test_build_order_is_dependency_safe():
     order = sql.build_plan(CRM_REQUEST)["build_order"]
     assert order == [
         "requirements.txt", "database.py", "crud.py", "export.py", "reports.py",
-        "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/dashboard.py",
-        "ui/app_window.py", "ui/main_window.py", "main.py",
+        "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/charts.py",
+        "ui/dashboard.py", "ui/app_window.py", "ui/main_window.py", "main.py",
     ]
     assert order.index("database.py") < order.index("crud.py")
     assert order.index("crud.py") < order.index("export.py")
     assert order.index("database.py") < order.index("reports.py")
+    assert order.index("reports.py") < order.index("ui/charts.py")
+    assert order.index("ui/charts.py") < order.index("ui/dashboard.py")
     assert order.index("reports.py") < order.index("ui/dashboard.py")
     assert order.index("ui/widgets.py") < order.index("ui/master_detail.py")
     assert order.index("ui/master_detail.py") < order.index("ui/app_window.py")
@@ -81,6 +83,12 @@ def test_build_order_is_dependency_safe():
 
 def test_plan_is_a_valid_project_plan():
     assert ProjectPlan.from_dict(sql.build_plan(CRM_REQUEST)).is_valid
+
+
+def test_charts_file_embedded():
+    charts = _content(sql.build_plan(CRM_REQUEST), "ui/charts.py")
+    assert "CHARTS = {" in charts
+    assert "class ChartWidget(QWidget)" in charts
 
 
 # --------------------------------------------------------------------------- #

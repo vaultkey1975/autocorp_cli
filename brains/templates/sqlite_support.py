@@ -742,7 +742,13 @@ def master_detail_py(schema: list) -> str:
 # generated per schema. format_value() formats counts (grouped integers) and averages
 # (one decimal) consistently; refresh() recomputes every card and toggles an
 # empty-state message based on the primary table's count.
-_DASHBOARD_WIDGET = '''def format_value(kind, value):
+_DASHBOARD_WIDGET = '''try:
+    from ui.charts import ChartWidget
+except Exception:
+    ChartWidget = None
+
+
+def format_value(kind, value):
     """Format a metric for display: counts as grouped integers (e.g. 1,234) and
     averages to one decimal place (e.g. 1.5, 0.0)."""
     if kind == "average":
@@ -763,6 +769,7 @@ class DashboardWidget(QWidget):
         self._values = {}
         self._cards = list(DASHBOARD["cards"])
         self.is_empty = True
+        self.chart = None
         root = QVBoxLayout(self)
         root.addWidget(QLabel(DASHBOARD["title"] + " Dashboard"))
         self.empty_label = QLabel("No data yet - add records in the Manage Data tab.")
@@ -780,6 +787,9 @@ class DashboardWidget(QWidget):
             self._values[card["metric_fn"]] = value
             box.addWidget(value)
             grid.addWidget(frame, index // self.COLUMNS, index % self.COLUMNS)
+        if ChartWidget is not None:
+            self.chart = ChartWidget()
+            root.addWidget(self.chart)
         self.refresh()
 
     def refresh(self):
@@ -789,6 +799,8 @@ class DashboardWidget(QWidget):
         primary = getattr(reports, DASHBOARD["primary_metric"])()
         self.is_empty = (primary == 0)
         self.empty_label.setVisible(self.is_empty)
+        if self.chart is not None:
+            self.chart.refresh()
 '''
 
 
@@ -898,3 +910,91 @@ def app_window_py(schema=None) -> str:
     (ManageWidget + AppWindow). `schema` is accepted for generator-signature
     consistency but unused (the shell composes the per-schema widgets at runtime)."""
     return _APP_WINDOW
+
+
+# =========================================================================== #
+# Phase 7 - deterministic dashboard charts (ui/charts.py)
+# =========================================================================== #
+
+# Metadata-driven bar chart over the reporting layer. The constant ChartWidget renders
+# with core Qt (QProgressBar) - no charting dependency. chart_data() computes live
+# values + normalized ratios; refresh() updates the bars and toggles an empty-state label.
+_CHART_WIDGET = '''def chart_data():
+    """Return live chart data from the reports layer:
+    {"title", "bars": [{"label", "value", "ratio"}], "max", "is_empty"}.
+    ratio = value / max (0.0 when max is 0); is_empty is True when max is 0."""
+    pairs = [(bar["label"], getattr(reports, bar["metric_fn"])()) for bar in CHARTS["bars"]]
+    max_value = max((value for _label, value in pairs), default=0)
+    bars = [
+        {"label": label, "value": value,
+         "ratio": (value / max_value) if max_value else 0.0}
+        for label, value in pairs
+    ]
+    total = sum(value for _label, value in pairs)
+    return {"title": CHARTS["title"], "bars": bars, "max": max_value,
+            "total": total, "is_empty": max_value == 0}
+
+
+class ChartWidget(QWidget):
+    """A simple, dependency-free bar chart: one labelled QProgressBar per metric,
+    sized by its share of the largest value. refresh() recomputes from chart_data()
+    and shows an empty-state label when there is no data."""
+
+    def __init__(self):
+        super().__init__()
+        self.bars = {}
+        self.is_empty = True
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel(CHARTS["title"]))
+        self.empty_label = QLabel("No data to chart yet.")
+        root.addWidget(self.empty_label)
+        for bar in CHARTS["bars"]:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(bar["label"]))
+            progress = QProgressBar()
+            progress.setRange(0, 100)
+            progress.setValue(0)
+            self.bars[bar["label"]] = progress
+            row.addWidget(progress)
+            root.addLayout(row)
+        self.total_label = QLabel("Total: 0")
+        root.addWidget(self.total_label)
+        self.refresh()
+
+    def refresh(self):
+        data = chart_data()
+        self.is_empty = data["is_empty"]
+        for bar in data["bars"]:
+            progress = self.bars[bar["label"]]
+            progress.setValue(int(round(bar["ratio"] * 100)))
+            progress.setFormat(str(bar["value"]))
+        self.empty_label.setVisible(self.is_empty)
+        self.total_label.setText("Total: " + "{:,}".format(data["total"]))
+'''
+
+
+def _charts_config(schema: list) -> dict:
+    """Build the CHARTS dict: one bar per table (count_<table>), human-friendly
+    labels, in schema/table order (deterministic)."""
+    def label_of(name):
+        return name.replace("_", " ").title()
+
+    bars = [
+        {"label": label_of(table.name), "metric_fn": "count_" + table.name}
+        for table in schema
+    ]
+    return {"title": "Records by Table", "bars": bars}
+
+
+def charts_py(schema: list) -> str:
+    """Return ui/charts.py: a generated CHARTS config plus the constant, generic
+    ChartWidget (a dependency-free QProgressBar bar chart over reports)."""
+    config = _charts_config(schema)
+    return (
+        "import reports\n"
+        "from PySide6.QtWidgets import (\n"
+        "    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,\n"
+        ")\n\n\n"
+        f"CHARTS = {config!r}\n\n\n"
+        + _CHART_WIDGET
+    )

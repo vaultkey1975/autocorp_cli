@@ -175,6 +175,15 @@ def build_plan(request: str) -> dict:
             "content": sqlite_support.master_detail_py(schema),
         },
         {
+            "path": "ui/charts.py",
+            "purpose": (
+                "Deterministic bar-chart widget (ChartWidget + chart_data) over "
+                "the reports layer, rendered with core Qt (QProgressBar). "
+                "Generated deterministically."
+            ),
+            "content": sqlite_support.charts_py(schema),
+        },
+        {
             "path": "ui/dashboard.py",
             "purpose": (
                 "Generic config-driven DashboardWidget showing summary cards "
@@ -227,6 +236,7 @@ def build_plan(request: str) -> dict:
             "ui/__init__.py",
             "ui/widgets.py",
             "ui/master_detail.py",
+            "ui/charts.py",
             "ui/dashboard.py",
             "ui/app_window.py",
             "ui/main_window.py",

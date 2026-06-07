@@ -78,7 +78,8 @@ def test_sqlite_template_marks_persistence_files_verbatim():
     # + the app shell)...
     for path in ("database.py", "crud.py", "export.py", "reports.py", "main.py",
                  "requirements.txt", "ui/__init__.py", "ui/widgets.py",
-                 "ui/master_detail.py", "ui/dashboard.py", "ui/app_window.py"):
+                 "ui/master_detail.py", "ui/charts.py", "ui/dashboard.py",
+                 "ui/app_window.py"):
         assert by_path[path].get("content"), path
     # ...only the thin assembly file is left for the engine.
     assert "content" not in by_path["ui/main_window.py"]
