@@ -391,7 +391,8 @@ def reports_py(schema: list) -> str:
 
     For every table a count_<table>() (SELECT COUNT(*)); for every foreign key a
     avg_<child>_per_<parent>() (children / parents, 0 when there are no parents);
-    and a summary() returning {table: row count} for all tables. Pure SQL via
+    a summary() returning {table: row count} for all tables; and export_summary_csv()
+    writing summary() to a CSV (metric,value, schema order). Pure SQL + stdlib csv via
     database.get_connection(); generic across any schema.
     """
     fns = []
@@ -426,8 +427,17 @@ def reports_py(schema: list) -> str:
     )
     fns.append(summary_fn)
 
+    fns.append('''def export_summary_csv(path):
+    """Write summary() to a CSV file (metric,value columns) and return the path."""
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["metric", "value"])
+        for metric, value in summary().items():
+            writer.writerow([metric, value])
+    return path''')
+
     body = "\n\n\n".join(fns)
-    return "from database import get_connection\n\n\n" + body + "\n"
+    return "import csv\n\nfrom database import get_connection\n\n\n" + body + "\n"
 
 
 # =========================================================================== #
