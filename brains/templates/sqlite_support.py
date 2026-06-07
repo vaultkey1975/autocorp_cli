@@ -391,8 +391,9 @@ def reports_py(schema: list) -> str:
 
     For every table a count_<table>() (SELECT COUNT(*)); for every foreign key a
     avg_<child>_per_<parent>() (children / parents, 0 when there are no parents);
-    a summary() returning {table: row count} for all tables; and export_summary_csv()
-    writing summary() to a CSV (metric,value, schema order). Pure SQL + stdlib csv via
+    a summary() returning {table: row count} for all tables; export_summary_csv()
+    writing summary() to a CSV (metric,value, schema order); and export_metrics_csv()
+    writing all metrics (counts then averages) to a CSV. Pure SQL + stdlib csv via
     database.get_connection(); generic across any schema.
     """
     fns = []
@@ -435,6 +436,28 @@ def reports_py(schema: list) -> str:
         for metric, value in summary().items():
             writer.writerow([metric, value])
     return path''')
+
+    metric_names = [f"count_{t.name}" for t in schema]
+    for table in schema:
+        for _col, ref in table.foreign_keys:
+            metric_names.append(f"avg_{table.name}_per_{_singular(ref)}")
+    metric_entries = "\n".join(
+        f'        ("{metric}", {metric}),' for metric in metric_names
+    )
+    metrics_fn = (
+        "def export_metrics_csv(path):\n"
+        '    """Write all metrics (counts then averages) to a CSV (metric,value) and return the path."""\n'
+        "    metrics = [\n"
+        + metric_entries + "\n"
+        "    ]\n"
+        '    with open(path, "w", newline="", encoding="utf-8") as handle:\n'
+        "        writer = csv.writer(handle)\n"
+        '        writer.writerow(["metric", "value"])\n'
+        "        for metric, function in metrics:\n"
+        "            writer.writerow([metric, function()])\n"
+        "    return path"
+    )
+    fns.append(metrics_fn)
 
     body = "\n\n\n".join(fns)
     return "import csv\n\nfrom database import get_connection\n\n\n" + body + "\n"
