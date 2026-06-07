@@ -787,6 +787,9 @@ class DashboardWidget(QWidget):
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh)
         root.addWidget(refresh_button)
+        export_button = QPushButton("Export Summary")
+        export_button.clicked.connect(self.on_export_summary)
+        root.addWidget(export_button)
         grid = QGridLayout()
         root.addLayout(grid)
         for index, card in enumerate(self._cards):
@@ -811,6 +814,9 @@ class DashboardWidget(QWidget):
         self.empty_label.setVisible(self.is_empty)
         if self.chart is not None:
             self.chart.refresh()
+
+    def on_export_summary(self):
+        reports.export_summary_csv("summary.csv")
 '''
 
 
