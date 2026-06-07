@@ -739,26 +739,40 @@ def master_detail_py(schema: list) -> str:
 # =========================================================================== #
 
 # Generic, config-driven dashboard. Constant class; only the DASHBOARD literal is
-# generated per schema. Each card shows a label and a live value pulled from the
-# reports module by name; refresh() recomputes every card.
-_DASHBOARD_WIDGET = '''class DashboardWidget(QWidget):
+# generated per schema. format_value() formats counts (grouped integers) and averages
+# (one decimal) consistently; refresh() recomputes every card and toggles an
+# empty-state message based on the primary table's count.
+_DASHBOARD_WIDGET = '''def format_value(kind, value):
+    """Format a metric for display: counts as grouped integers (e.g. 1,234) and
+    averages to one decimal place (e.g. 1.5, 0.0)."""
+    if kind == "average":
+        return "{:.1f}".format(float(value))
+    return "{:,}".format(int(value))
+
+
+class DashboardWidget(QWidget):
     """A generic grid of summary cards driven by DASHBOARD. Each card shows a label
-    and a live value from the reports module; refresh() recomputes them. The reports
-    functions query the database directly, so refresh() always reflects current data."""
+    and a formatted live value from the reports module; refresh() recomputes them and
+    toggles an empty-state message. The reports functions query the database directly,
+    so refresh() always reflects current data."""
 
     COLUMNS = 3
 
     def __init__(self):
         super().__init__()
         self._values = {}
+        self._cards = list(DASHBOARD["cards"])
+        self.is_empty = True
         root = QVBoxLayout(self)
         root.addWidget(QLabel(DASHBOARD["title"] + " Dashboard"))
+        self.empty_label = QLabel("No data yet - add records in the Manage Data tab.")
+        root.addWidget(self.empty_label)
         refresh_button = QPushButton("Refresh")
         refresh_button.clicked.connect(self.refresh)
         root.addWidget(refresh_button)
         grid = QGridLayout()
         root.addLayout(grid)
-        for index, card in enumerate(DASHBOARD["cards"]):
+        for index, card in enumerate(self._cards):
             frame = QFrame()
             box = QVBoxLayout(frame)
             box.addWidget(QLabel(card["label"]))
@@ -769,29 +783,46 @@ _DASHBOARD_WIDGET = '''class DashboardWidget(QWidget):
         self.refresh()
 
     def refresh(self):
-        for metric_fn, label in self._values.items():
-            label.setText(str(getattr(reports, metric_fn)()))
+        for card in self._cards:
+            value = getattr(reports, card["metric_fn"])()
+            self._values[card["metric_fn"]].setText(format_value(card["kind"], value))
+        primary = getattr(reports, DASHBOARD["primary_metric"])()
+        self.is_empty = (primary == 0)
+        self.empty_label.setVisible(self.is_empty)
 '''
 
 
 def _dashboard_config(schema: list) -> dict:
-    """Build the DASHBOARD dict (summary cards) for a schema: a count card per
-    table and an average card per foreign key (child per parent)."""
+    """Build the DASHBOARD dict (summary cards) for a schema: a count card per table
+    and an average card per foreign key (child per parent). Table names are rendered
+    human-friendly (order_items -> Order Items); connector words ("Total", "Avg",
+    "per") are left as-is so existing labels stay stable. Each card carries a `kind`
+    and the config carries the `primary_metric` used for empty-state detection."""
     primary = schema[0]
+
+    def label_of(name):
+        return name.replace("_", " ").title()
+
     cards = []
     for table in schema:
         cards.append({
-            "label": "Total " + table.name.capitalize(),
+            "label": "Total " + label_of(table.name),
             "metric_fn": "count_" + table.name,
+            "kind": "count",
         })
     for table in schema:
         for _col, ref in table.foreign_keys:
             ref_one = _singular(ref)
             cards.append({
-                "label": "Avg " + table.name.capitalize() + " per " + ref_one.capitalize(),
+                "label": "Avg " + label_of(table.name) + " per " + label_of(ref_one),
                 "metric_fn": "avg_" + table.name + "_per_" + ref_one,
+                "kind": "average",
             })
-    return {"title": primary.name.capitalize(), "cards": cards}
+    return {
+        "title": label_of(primary.name),
+        "primary_metric": "count_" + primary.name,
+        "cards": cards,
+    }
 
 
 def dashboard_py(schema: list) -> str:
