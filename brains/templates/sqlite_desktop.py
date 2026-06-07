@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
 """
-SQLite Desktop template  (AutoCorp CLI - brains.templates)  [SQLite Gen Phase 5]
+SQLite Desktop template  (AutoCorp CLI - brains.templates)  [SQLite Gen Phase 7]
 ===============================================================================
 
 Recognises SQLite-backed desktop app requests ("a customer CRM desktop app with
 SQLite", "a GUI inventory manager with a database", ...) and produces a
-deterministic plan for a PySide6 desktop app with a SQLite persistence layer and
-a deterministic UI framework:
+deterministic plan for a PySide6 desktop app with a SQLite persistence layer, a
+deterministic UI framework, a reporting layer, and a tabbed application shell:
 
     project/
     |-- main.py              QApplication entry point (self-terminating headless)
     |-- database.py          connection + init_db() + CREATE TABLE(s)   (deterministic)
     |-- crud.py              CRUD + search + FK queries + counts          (deterministic)
     |-- export.py            CSV export helpers over crud                 (deterministic)
+    |-- reports.py           counts / averages / summary analytics        (deterministic)
     |-- requirements.txt     PySide6
     +-- ui/
         |-- __init__.py      package marker
         |-- widgets.py       generic UI helpers                          (deterministic)
         |-- master_detail.py generic config-driven MasterDetailWindow    (deterministic)
+        |-- dashboard.py     generic config-driven DashboardWidget       (deterministic)
+        |-- app_window.py    tabbed AppWindow (Dashboard + Manage Data)   (deterministic)
         +-- main_window.py   thin assembly: re-exports MainWindow         (model-generated)
 
-Phase 5: nearly the entire UI is deterministic. ui/widgets.py is generic helpers and
-ui/master_detail.py is a config-driven MasterDetailWindow (the master table with
-child counts, search, refresh, export, primary add/edit/delete, and a detail panel
-per child) - both written verbatim. The only model-generated file, ui/main_window.py,
-shrinks to a one-line re-export, so the model's UI burden (and failure rate) drops
-sharply. database.py, crud.py, export.py, widgets.py, master_detail.py, main.py,
-requirements.txt and ui/__init__.py are all emitted as exact `content`.
+Phase 7: the app is a tabbed shell. ui/app_window.py composes a DashboardWidget
+(summary cards from reports.py) and the Phase 5/6 MasterDetailWindow (hosted in a
+Manage Data tab via a thin ManageWidget wrapper, so no QMainWindow is embedded in a
+tab). Everything except ui/main_window.py is emitted as exact `content`; the only
+model-generated file shrinks to a one-line re-export of AppWindow, so the model's
+UI burden (and failure rate) stays minimal.
 
 Routing: registered before `pyside6_desktop`; matches only when the request carries
 BOTH a data signal (sqlite/database/crud/crm/...) AND a GUI signal
@@ -84,9 +86,9 @@ if __name__ == "__main__":
 # all the model has to produce - a single re-export - so the failure rate collapses.
 MAIN_WINDOW_PURPOSE = (
     "This file is a THIN assembly layer only. The real UI is the deterministic "
-    "MasterDetailWindow already written in ui/master_detail.py. Output EXACTLY this "
-    "one line and nothing else - no extra imports, no class definition, no comments:\n\n"
-    "from ui.master_detail import MasterDetailWindow as MainWindow\n"
+    "AppWindow already written in ui/app_window.py. Output EXACTLY this one line and "
+    "nothing else - no extra imports, no class definition, no comments:\n\n"
+    "from ui.app_window import AppWindow as MainWindow\n"
 )
 
 
@@ -145,6 +147,14 @@ def build_plan(request: str) -> dict:
             "content": sqlite_support.export_py(schema),
         },
         {
+            "path": "reports.py",
+            "purpose": (
+                "Read-only analytics over the schema (count_<table>, "
+                "avg_<child>_per_<parent>, summary). Generated deterministically."
+            ),
+            "content": sqlite_support.reports_py(schema),
+        },
+        {
             "path": "ui/__init__.py",
             "purpose": "Package marker so `ui` is an importable package.",
             "content": "# ui package\n",
@@ -159,9 +169,28 @@ def build_plan(request: str) -> dict:
             "purpose": (
                 "Generic config-driven MasterDetailWindow (master table with child "
                 "counts, search, refresh, export, primary add/edit/delete, and a "
-                "detail panel per child). Generated deterministically."
+                "detail panel per child with inline editing). Generated "
+                "deterministically."
             ),
             "content": sqlite_support.master_detail_py(schema),
+        },
+        {
+            "path": "ui/dashboard.py",
+            "purpose": (
+                "Generic config-driven DashboardWidget showing summary cards "
+                "(totals per table + averages per relationship). Generated "
+                "deterministically."
+            ),
+            "content": sqlite_support.dashboard_py(schema),
+        },
+        {
+            "path": "ui/app_window.py",
+            "purpose": (
+                "Tabbed application shell: AppWindow with a Dashboard tab "
+                "(DashboardWidget) and a Manage Data tab (a ManageWidget wrapper "
+                "hosting MasterDetailWindow's panel). Generated deterministically."
+            ),
+            "content": sqlite_support.app_window_py(schema),
         },
         {"path": "ui/main_window.py", "purpose": MAIN_WINDOW_PURPOSE},
         {
@@ -184,31 +213,38 @@ def build_plan(request: str) -> dict:
             f"{app_desc}"
         ),
         "files": files,
-        # Dependency-safe order: database -> crud -> export; the ui package, then
-        # widgets, then master_detail (imports crud/export/widgets), then the thin
-        # main_window (imports master_detail), then main.py (imports the window).
+        # Dependency-safe order: database -> crud -> export, reports (imports
+        # database); the ui package, then widgets, master_detail (imports
+        # crud/export/widgets), dashboard (imports reports), app_window (imports
+        # dashboard + master_detail), then the thin main_window (imports app_window),
+        # then main.py (imports the window).
         "build_order": [
             "requirements.txt",
             "database.py",
             "crud.py",
             "export.py",
+            "reports.py",
             "ui/__init__.py",
             "ui/widgets.py",
             "ui/master_detail.py",
+            "ui/dashboard.py",
+            "ui/app_window.py",
             "ui/main_window.py",
             "main.py",
         ],
         "test_command": TEST_COMMAND,
         "success_criteria": [
-            "main.py, database.py, crud.py, export.py, ui/widgets.py, "
-            "ui/master_detail.py, ui/main_window.py and requirements.txt all exist",
+            "main.py, database.py, crud.py, export.py, reports.py, ui/widgets.py, "
+            "ui/master_detail.py, ui/dashboard.py, ui/app_window.py, "
+            "ui/main_window.py and requirements.txt all exist",
             "requirements.txt contains PySide6",
             f"database.py creates the {', '.join(table_names)} table(s) with "
             "foreign keys enforced and exposes init_db()",
             f"crud.py provides add_{one}, get_{table}, get_{one}, update_{one}, "
             f"delete_{one}, search_{table}, the child CRUD, and get_{table}_with_counts",
             "export.py provides CSV export over the crud helpers",
-            "ui/master_detail.py defines a config-driven MasterDetailWindow; "
+            "reports.py provides count_<table>, avg_<child>_per_<parent> and summary",
+            "ui/app_window.py defines a tabbed AppWindow (Dashboard + Manage Data); "
             "ui/main_window.py re-exports it as MainWindow",
             "`QT_QPA_PLATFORM=offscreen python main.py` starts QApplication, "
             "constructs and shows MainWindow, runs the event loop, and exits 0",

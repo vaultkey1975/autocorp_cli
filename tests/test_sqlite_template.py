@@ -1,9 +1,9 @@
 """Tests for the SQLite desktop template + its routing (brains/templates).
 
 No Ollama needed: these check template selection, the generated plan shape, the
-dependency-safe build order, that the deterministic data + UI-framework code is
-embedded as exact `content`, and that the model-generated ui/main_window.py has
-shrunk to a thin re-export (Phase 5).
+dependency-safe build order, that the deterministic data + UI + reporting code is
+embedded as exact `content`, and that the model-generated ui/main_window.py is a
+thin re-export of the AppWindow shell (Phase 7).
 """
 
 from brains.templates import select_template
@@ -11,9 +11,9 @@ from brains.templates import sqlite_desktop as sql
 from brains.project_plan import ProjectPlan
 
 SQLITE_FILES = {
-    "requirements.txt", "database.py", "crud.py", "export.py",
-    "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py",
-    "ui/main_window.py", "main.py",
+    "requirements.txt", "database.py", "crud.py", "export.py", "reports.py",
+    "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/dashboard.py",
+    "ui/app_window.py", "ui/main_window.py", "main.py",
 }
 CRM_REQUEST = "Build a customer CRM desktop app with SQLite"
 
@@ -64,15 +64,18 @@ def test_build_plan_has_all_files():
 def test_build_order_is_dependency_safe():
     order = sql.build_plan(CRM_REQUEST)["build_order"]
     assert order == [
-        "requirements.txt", "database.py", "crud.py", "export.py",
-        "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py",
-        "ui/main_window.py", "main.py",
+        "requirements.txt", "database.py", "crud.py", "export.py", "reports.py",
+        "ui/__init__.py", "ui/widgets.py", "ui/master_detail.py", "ui/dashboard.py",
+        "ui/app_window.py", "ui/main_window.py", "main.py",
     ]
     assert order.index("database.py") < order.index("crud.py")
     assert order.index("crud.py") < order.index("export.py")
-    assert order.index("crud.py") < order.index("ui/master_detail.py")
+    assert order.index("database.py") < order.index("reports.py")
+    assert order.index("reports.py") < order.index("ui/dashboard.py")
     assert order.index("ui/widgets.py") < order.index("ui/master_detail.py")
-    assert order.index("ui/master_detail.py") < order.index("ui/main_window.py")
+    assert order.index("ui/master_detail.py") < order.index("ui/app_window.py")
+    assert order.index("ui/dashboard.py") < order.index("ui/app_window.py")
+    assert order.index("ui/app_window.py") < order.index("ui/main_window.py")
     assert order.index("ui/main_window.py") < order.index("main.py")
 
 
@@ -92,6 +95,19 @@ def test_data_layer_code_embedded_as_content():
     assert "def add_customer" in crud and "VALUES (?, ?, ?)" in crud
     assert "def get_customers_with_counts" in crud
     assert "def export_customers_with_counts_csv(path)" in export
+
+
+def test_reporting_and_dashboard_embedded_as_content():
+    plan = sql.build_plan(CRM_REQUEST)
+    reports = _content(plan, "reports.py")
+    dashboard = _content(plan, "ui/dashboard.py")
+    app_window = _content(plan, "ui/app_window.py")
+    assert "def count_customers(" in reports
+    assert "def summary(" in reports
+    assert "class DashboardWidget(QWidget)" in dashboard
+    assert "DASHBOARD = {" in dashboard
+    assert "class AppWindow(QMainWindow)" in app_window
+    assert "ManageWidget" in app_window
 
 
 def test_ui_framework_embedded_as_content():
@@ -116,8 +132,8 @@ def test_main_window_is_thin_model_generated_reexport():
     # Still the only model-generated file (no exact content)...
     assert _content(plan, "ui/main_window.py") == ""
     purpose = _purpose(plan, "ui/main_window.py")
-    assert "from ui.master_detail import MasterDetailWindow as MainWindow" in purpose
-    # ...but the purpose is now tiny (Phase 4 was ~2860 chars).
+    assert "from ui.app_window import AppWindow as MainWindow" in purpose
+    # ...and the purpose stays tiny.
     assert len(purpose) < 600
 
 
