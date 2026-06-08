@@ -813,6 +813,9 @@ class DashboardWidget(QWidget):
         export_button = QPushButton("Export Summary")
         export_button.clicked.connect(self.on_export_summary)
         root.addWidget(export_button)
+        export_metrics_button = QPushButton("Export Metrics")
+        export_metrics_button.clicked.connect(self.on_export_metrics)
+        root.addWidget(export_metrics_button)
         grid = QGridLayout()
         root.addLayout(grid)
         for index, card in enumerate(self._cards):
@@ -840,6 +843,9 @@ class DashboardWidget(QWidget):
 
     def on_export_summary(self):
         reports.export_summary_csv("summary.csv")
+
+    def on_export_metrics(self):
+        reports.export_metrics_csv("metrics.csv")
 '''
 
 
