@@ -975,9 +975,16 @@ _CHART_WIDGET = '''def chart_data():
          "ratio": (value / max_value) if max_value else 0.0}
         for label, value in pairs
     ]
+    avg_pairs = [(a["label"], getattr(reports, a["metric_fn"])()) for a in CHARTS["averages"]]
+    max_avg = max((value for _label, value in avg_pairs), default=0)
+    averages = [
+        {"label": label, "value": value,
+         "ratio": (value / max_avg) if max_avg else 0.0}
+        for label, value in avg_pairs
+    ]
     total = sum(value for _label, value in pairs)
-    return {"title": CHARTS["title"], "bars": bars, "max": max_value,
-            "total": total, "is_empty": max_value == 0}
+    return {"title": CHARTS["title"], "bars": bars, "averages": averages,
+            "max": max_value, "total": total, "is_empty": max_value == 0}
 
 
 class ChartWidget(QWidget):
@@ -988,6 +995,7 @@ class ChartWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.bars = {}
+        self.avg_bars = {}
         self.is_empty = True
         root = QVBoxLayout(self)
         root.addWidget(QLabel(CHARTS["title"]))
@@ -1004,6 +1012,17 @@ class ChartWidget(QWidget):
             root.addLayout(row)
         self.total_label = QLabel("Total: 0")
         root.addWidget(self.total_label)
+        if CHARTS["averages"]:
+            root.addWidget(QLabel("Averages"))
+            for bar in CHARTS["averages"]:
+                row = QHBoxLayout()
+                row.addWidget(QLabel(bar["label"]))
+                progress = QProgressBar()
+                progress.setRange(0, 100)
+                progress.setValue(0)
+                self.avg_bars[bar["label"]] = progress
+                row.addWidget(progress)
+                root.addLayout(row)
         self.refresh()
 
     def refresh(self):
@@ -1011,6 +1030,10 @@ class ChartWidget(QWidget):
         self.is_empty = data["is_empty"]
         for bar in data["bars"]:
             progress = self.bars[bar["label"]]
+            progress.setValue(int(round(bar["ratio"] * 100)))
+            progress.setFormat(str(bar["value"]))
+        for bar in data["averages"]:
+            progress = self.avg_bars[bar["label"]]
             progress.setValue(int(round(bar["ratio"] * 100)))
             progress.setFormat(str(bar["value"]))
         self.empty_label.setVisible(self.is_empty)
@@ -1028,7 +1051,15 @@ def _charts_config(schema: list) -> dict:
         {"label": label_of(table.name), "metric_fn": "count_" + table.name}
         for table in schema
     ]
-    return {"title": "Records by Table", "bars": bars}
+    averages = []
+    for table in schema:
+        for _col, ref in table.foreign_keys:
+            ref_one = _singular(ref)
+            averages.append({
+                "label": "Avg " + label_of(table.name) + " per " + label_of(ref_one),
+                "metric_fn": "avg_" + table.name + "_per_" + ref_one,
+            })
+    return {"title": "Records by Table", "bars": bars, "averages": averages}
 
 
 def charts_py(schema: list) -> str:
