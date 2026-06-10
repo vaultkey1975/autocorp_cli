@@ -43,6 +43,26 @@ from brains.templates import sqlite_support
 
 NAME = "sqlite_desktop"
 
+# Agent Team profile (Phase 8E): data only. Consumed through the existing 8C
+# ModelRouter (route_rules) and 8B ReviewerBrain (review_profile) seams; the
+# acceptance list merges into the plan's success_criteria. No new mechanism.
+TEAM_PROFILE = {
+    "name": "sqlite_desktop_team",
+    "route_rules": [
+        {"name": "sqlite-glue-to-local", "engine": "local",
+         "reason": "persistence/UI files are verbatim; only thin glue is generated",
+         "match": {}},
+    ],
+    "review_profile": {
+        "large_function_lines": 80,
+        "emphasize": ["missing_import", "syntax_error"],
+    },
+    "acceptance": [
+        "pytest reports all tests passing",
+        "crud INSERT placeholders match the column count",
+    ],
+}
+
 # A request must contain at least one of each group to select this template.
 DATA_KEYWORDS = ("sqlite", "database", "crud", "crm", "persistence", "sql")
 GUI_KEYWORDS = ("desktop", "gui", "window", "qt", "pyside", "pyside6", "app")

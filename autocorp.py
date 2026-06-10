@@ -32,8 +32,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains.local_engine import LocalEngine
-from brains.claude_engine import ClaudeEngine
+from brains import engine_registry
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -45,10 +44,10 @@ def _make_gate(auto: bool = False, watchdog: bool = False):
 
 
 def _make_engine(name: str = "local"):
-    """Select the code-generation engine. Default is the local Ollama engine."""
-    if name == "claude":
-        return ClaudeEngine()
-    return LocalEngine()
+    """Select the code-generation engine via the registry (single source of
+    truth). Default is the local Ollama engine. Raises ValueError on an unknown
+    name, listing the valid engines."""
+    return engine_registry.create(name)
 
 
 def _require_ollama() -> bool:
@@ -63,11 +62,20 @@ def _require_ollama() -> bool:
 def cmd_build(args) -> int:
     if not _require_ollama():
         return 1
-    session = Session(_make_gate(args.auto, args.watchdog), assume_yes=args.auto)
-    # Engine selection (default local). The frozen orchestrator is untouched -
-    # we swap the engine on the already-constructed builder.
-    session.builder.engine = _make_engine(getattr(args, "engine", "local"))
-    console.muted(f"Engine: {session.builder.engine.name}")
+    engine_name = getattr(args, "engine", "local")
+    routing = engine_name == "auto"
+    session = Session(_make_gate(args.auto, args.watchdog), assume_yes=args.auto,
+                      review=getattr(args, "review", False), route=routing,
+                      accept=getattr(args, "accept", False) or getattr(args, "accept_strict", False),
+                      accept_strict=getattr(args, "accept_strict", False))
+    if routing:
+        # The router selects builder.engine after planning; don't pre-set it.
+        console.muted("Engine: auto (rule-based routing)")
+    else:
+        # Engine selection (default local). The frozen orchestrator is untouched
+        # - we swap the engine on the already-constructed builder.
+        session.builder.engine = _make_engine(engine_name)
+        console.muted(f"Engine: {session.builder.engine.name}")
     result = session.run(args.request)
     return 0 if result.get("status") in ("passed",) else 1
 
@@ -182,8 +190,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("build", help="plan, build, and test from a request")
     sp.add_argument("request", help="what to build")
-    sp.add_argument("--engine", choices=["local", "claude"], default="local",
-                    help="code-generation engine (default: local)")
+    sp.add_argument("--engine",
+                    choices=engine_registry.available_engines() + ["auto"],
+                    default="local",
+                    help="code-generation engine, or 'auto' for rule-based "
+                         "routing (default: local)")
+    sp.add_argument("--review", action="store_true",
+                    help="run a non-blocking static code review before tests")
+    sp.add_argument("--accept", action="store_true",
+                    help="evaluate the team profile's acceptance criteria "
+                         "(advisory; does not change build status)")
+    sp.add_argument("--accept-strict", action="store_true",
+                    help="enforce acceptance criteria: an unaccepted build is "
+                         "reported as 'accept_failed'")
     sp.set_defaults(func=cmd_build)
 
     sp = sub.add_parser("plan", help="show a build plan (writes nothing)")

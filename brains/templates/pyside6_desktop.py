@@ -25,6 +25,26 @@ from brains.project_plan import sanitize_name
 
 NAME = "pyside6_desktop"
 
+# Agent Team profile (Phase 8E): data only. Consumed through the existing 8C
+# ModelRouter (route_rules) and 8B ReviewerBrain (review_profile) seams; the
+# acceptance list merges into the plan's success_criteria. No new mechanism.
+TEAM_PROFILE = {
+    "name": "pyside6_desktop_team",
+    "route_rules": [
+        {"name": "gui-assembly-to-claude", "engine": "claude",
+         "reason": "GUI assembly glue benefits from a stronger model when available",
+         "match": {"min_files": 5}},
+    ],
+    "review_profile": {
+        "large_function_lines": 80,
+        "emphasize": ["missing_import"],
+    },
+    "acceptance": [
+        "pytest reports all tests passing",
+        "the application imports without error",
+    ],
+}
+
 # A request containing any of these (case-insensitive) selects this template.
 KEYWORDS = ("pyside6", "pyside", "desktop", "gui", "window", "qt")
 

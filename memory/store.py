@@ -86,6 +86,34 @@ def init_db() -> None:
                 )
                 """
             )
+            # Reviewer Brain (Phase 8B): structured static-review reports.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS reviews (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts            TEXT NOT NULL,
+                    project_name  TEXT,
+                    workspace     TEXT,
+                    score         INTEGER,
+                    findings_json TEXT,
+                    summary       TEXT
+                )
+                """
+            )
+            # Model Router (Phase 8C): engine routing decisions.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS routes (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts            TEXT NOT NULL,
+                    request       TEXT,
+                    project_name  TEXT,
+                    engine        TEXT,
+                    rule          TEXT,
+                    reason        TEXT
+                )
+                """
+            )
     except sqlite3.Error:
         pass
 
@@ -193,6 +221,95 @@ def recent_plans(limit: int = 10) -> list:
             rows = conn.execute(
                 "SELECT id, ts, request, project_name, project_type "
                 "FROM plans ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+# --------------------------------------------------------------------------- #
+# Reviews (Reviewer Brain, Phase 8B)
+# --------------------------------------------------------------------------- #
+def record_review(report) -> int:
+    """Persist a static-review report. Accepts a ReviewReport (anything with a
+    `to_dict()`) or a plain dict. Returns the new review id, or -1 on failure.
+    Never raises - persistence must never break the pipeline."""
+    if isinstance(report, dict):
+        data = report
+    elif hasattr(report, "to_dict"):
+        data = report.to_dict()
+    else:
+        return -1
+    if not isinstance(data, dict):
+        return -1
+
+    init_db()  # make sure the reviews table exists even if called standalone
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO reviews (ts, project_name, workspace, score, "
+                "findings_json, summary) VALUES (?, ?, ?, ?, ?, ?)",
+                (datetime.datetime.now().isoformat(),
+                 data.get("project_name", ""), data.get("workspace", ""),
+                 int(data.get("score", 0) or 0),
+                 json.dumps(data.get("findings", [])),
+                 data.get("summary", "")),
+            )
+            return cur.lastrowid
+    except (sqlite3.Error, TypeError, ValueError):
+        return -1
+
+
+def recent_reviews(limit: int = 10) -> list:
+    """Recent review rows (metadata, not the full findings json), newest first."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT id, ts, project_name, workspace, score, summary "
+                "FROM reviews ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+# --------------------------------------------------------------------------- #
+# Routes (Model Router, Phase 8C)
+# --------------------------------------------------------------------------- #
+def record_route_decision(decision, request: str = "", project_name: str = "") -> int:
+    """Persist an engine routing decision. Accepts a RouteDecision (anything with
+    a `to_dict()`) or a plain dict. Returns the new id, or -1 on failure. Never
+    raises - logging must never break the pipeline."""
+    if isinstance(decision, dict):
+        data = decision
+    elif hasattr(decision, "to_dict"):
+        data = decision.to_dict()
+    else:
+        return -1
+    if not isinstance(data, dict):
+        return -1
+
+    init_db()  # make sure the routes table exists even if called standalone
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO routes (ts, request, project_name, engine, rule, reason) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (datetime.datetime.now().isoformat(), request, project_name,
+                 data.get("engine", ""), data.get("rule", ""), data.get("reason", "")),
+            )
+            return cur.lastrowid
+    except (sqlite3.Error, TypeError, ValueError):
+        return -1
+
+
+def recent_routes(limit: int = 10) -> list:
+    """Recent routing decisions, newest first."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT id, ts, request, project_name, engine, rule, reason "
+                "FROM routes ORDER BY ts DESC, id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
     except sqlite3.Error:

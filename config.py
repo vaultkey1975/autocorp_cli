@@ -43,6 +43,25 @@ WATCHDOG_BLOCK_THRESHOLD = int(os.environ.get("AUTOCORP_WATCHDOG_BLOCK", "8"))
 WATCHDOG_USE_AI = os.environ.get("AUTOCORP_WATCHDOG_AI", "1") != "0"
 
 # --------------------------------------------------------------------------- #
+# Reviewer Brain (Phase 8B) — deterministic static review
+# --------------------------------------------------------------------------- #
+# A function whose line span exceeds this is flagged as "large".
+REVIEW_LARGE_FUNCTION_LINES = int(os.environ.get("AUTOCORP_REVIEW_LARGE_FUNC", "50"))
+# Quality score starts at 100 and loses this many points per finding, by
+# severity; the result is clamped to [0, 100].
+REVIEW_SCORE_WEIGHTS = {"error": 15, "warning": 7, "info": 2}
+
+# --------------------------------------------------------------------------- #
+# Model Router (Phase 8C) — deterministic engine routing
+# --------------------------------------------------------------------------- #
+# Engine used when no routing rule matches (or a matched engine is unavailable).
+ROUTE_DEFAULT_ENGINE = os.environ.get("AUTOCORP_ROUTE_DEFAULT", "local")
+# Default ruleset for `--engine auto`. Conservative (empty) by default: routing
+# falls back to ROUTE_DEFAULT_ENGINE until rules are added. Each rule is a dict:
+#   {"name", "engine", "reason", "match": {...}}
+DEFAULT_ROUTE_RULES = []
+
+# --------------------------------------------------------------------------- #
 # Paths (all under the project root)
 # --------------------------------------------------------------------------- #
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

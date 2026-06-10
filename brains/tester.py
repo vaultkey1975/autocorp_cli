@@ -56,12 +56,52 @@ class TesterBrain:
             return "python main.py"
         return "python -m pytest -q"
 
+    @staticmethod
+    def _render_findings(findings) -> str:
+        """Render reviewer findings as an ADVISORY prompt section. Returns "" for
+        falsy/empty input (so the prompt is byte-identical to before when no
+        findings are supplied). Items render in stable INPUT order; each may be a
+        Finding object (with attributes) or a dict; anything unreadable is safely
+        skipped. Never raises."""
+        if not findings:
+            return ""
+        lines = []
+        for item in findings:
+            try:
+                if isinstance(item, dict):
+                    get = item.get
+                elif hasattr(item, "message") or hasattr(item, "category"):
+                    get = lambda k, d=None, _it=item: getattr(_it, k, d)
+                else:
+                    continue
+                message = get("message", "") or ""
+                if not str(message).strip():
+                    continue
+                category = get("category", "") or ""
+                path = get("file", "") or ""
+                line = get("line", "") or ""
+                where = f"{path}:{line}" if path else ""
+                tag = f"[{category}] " if category else ""
+                prefix = f"{where} " if where else ""
+                lines.append(f"  - {prefix}{tag}{message}".rstrip())
+            except Exception:  # noqa: BLE001 - a bad item must never break fixing
+                continue
+        if not lines:
+            return ""
+        return (
+            "CODE REVIEW FINDINGS (advisory — use only if relevant to the fix):\n"
+            + "\n".join(lines) + "\n\n"
+        )
+
     def suggest_fix(self, workspace: str, filename: str, error_output: str,
-                    plan: dict = None) -> dict:
+                    plan: dict = None, findings=None) -> dict:
         """Ask the model to repair `filename` given the error. Returns
         {explanation, filename, new_content} or {} if it couldn't. Sibling files
         are included as read-only context so a fix to the test matches the impl
-        (and vice-versa)."""
+        (and vice-versa).
+
+        `findings` (optional) are reviewer findings folded in as ADVISORY context;
+        when None or empty the prompt is unchanged."""
         full_path = os.path.join(workspace, filename)
         try:
             with open(full_path, encoding="utf-8") as f:
@@ -86,6 +126,9 @@ class TesterBrain:
         )
         if context:
             prompt += f"OTHER PROJECT FILES (context only):\n{context}\n\n"
+        review_section = self._render_findings(findings)
+        if review_section:
+            prompt += review_section
         prompt += (
             f"ERROR OUTPUT:\n{error_output[:4000]}\n\n"
             f"Fix the root cause. If the error is a wrong assertion in a test, "

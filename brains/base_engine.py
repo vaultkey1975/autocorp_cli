@@ -32,5 +32,12 @@ class BaseEngine:
         """Return generated text for `prompt`. Subclasses must implement this."""
         raise NotImplementedError
 
+    def available(self) -> bool:
+        """Whether this engine is usable right now. The default is True (e.g. the
+        local Ollama engine is always considered reachable; transport errors
+        surface at generate() time). Engines with an external dependency - like
+        the Claude CLI - override this to report a missing binary up front."""
+        return True
+
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<{self.__class__.__name__} name={self.name!r}>"
