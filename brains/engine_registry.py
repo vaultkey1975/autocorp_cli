@@ -30,6 +30,7 @@ command/timeout for claude), so behaviour is unchanged.
 from brains.base_engine import BaseEngine
 from brains.local_engine import LocalEngine
 from brains.claude_engine import ClaudeEngine
+from brains.deepseek_engine import DeepSeekEngine
 
 
 # name -> callable(**opts) -> BaseEngine
@@ -76,3 +77,6 @@ def available_engines() -> list:
 # --------------------------------------------------------------------------- #
 register("local", lambda **opts: LocalEngine(**opts))
 register("claude", lambda **opts: ClaudeEngine(**opts))
+# Shadow-mode (Week 1): discoverable + selectable via --engine deepseek, but the
+# Model Router has NO rule naming it, so no build is ever routed here.
+register("deepseek", lambda **opts: DeepSeekEngine(**opts))

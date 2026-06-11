@@ -56,10 +56,67 @@ REVIEW_SCORE_WEIGHTS = {"error": 15, "warning": 7, "info": 2}
 # --------------------------------------------------------------------------- #
 # Engine used when no routing rule matches (or a matched engine is unavailable).
 ROUTE_DEFAULT_ENGINE = os.environ.get("AUTOCORP_ROUTE_DEFAULT", "local")
-# Default ruleset for `--engine auto`. Conservative (empty) by default: routing
-# falls back to ROUTE_DEFAULT_ENGINE until rules are added. Each rule is a dict:
-#   {"name", "engine", "reason", "match": {...}}
-DEFAULT_ROUTE_RULES = []
+
+# --------------------------------------------------------------------------- #
+# DeepSeek routing (Phase 8G) — config-only activation, OFF by default
+# --------------------------------------------------------------------------- #
+# An ordered, first-match-wins ruleset that reserves Claude for explicit
+# architecture work and sends low-cost/simple builds to DeepSeek; everything else
+# falls through to ROUTE_DEFAULT_ENGINE (the free local engine). Each rule names
+# an already-registered engine; the router/engines/registry are UNCHANGED — this
+# is purely a ruleset that the existing Model Router consumes.
+DEEPSEEK_ROUTE_RULES = [
+    {
+        "name": "architecture-to-claude",
+        "engine": "claude",
+        "match": {
+            "request_contains": [
+                "architecture",
+                "design system",
+                "framework",
+                "plugin system",
+                "refactor",
+                "migrate",
+            ]
+        },
+    },
+    {
+        "name": "large-build-to-claude",
+        "engine": "claude",
+        "match": {
+            "min_files": 8,
+        },
+    },
+    {
+        "name": "small-python-to-deepseek",
+        "engine": "deepseek",
+        "match": {
+            "language": "python",
+            "max_files": 5,
+        },
+    },
+    {
+        "name": "simple-types-to-deepseek",
+        "engine": "deepseek",
+        "match": {
+            "project_type": ["cli", "script", "sqlite"],
+        },
+    },
+]
+
+# Opt-in toggle. DeepSeek routing only becomes the active ruleset when this is
+# explicitly enabled; otherwise DEFAULT_ROUTE_RULES stays empty and routing
+# behaves exactly as before (fall back to ROUTE_DEFAULT_ENGINE). Note routing is
+# itself only consulted under `--engine auto`, so this is opt-in twice over.
+DEEPSEEK_ROUTING_ENABLED = (
+    os.environ.get("AUTOCORP_DEEPSEEK_ROUTING", "").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+
+# Default ruleset for `--engine auto`. Empty (current behaviour) unless DeepSeek
+# routing is explicitly toggled on, in which case the DeepSeek ruleset applies.
+# Each rule is a dict: {"name", "engine", "reason", "match": {...}}.
+DEFAULT_ROUTE_RULES = DEEPSEEK_ROUTE_RULES if DEEPSEEK_ROUTING_ENABLED else []
 
 # --------------------------------------------------------------------------- #
 # Paths (all under the project root)

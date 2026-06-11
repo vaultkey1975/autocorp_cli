@@ -24,6 +24,7 @@ from brains.tester import TesterBrain
 from brains.reviewer import ReviewerBrain
 from brains.model_router import ModelRouter, Rule, context_from
 from brains.acceptance import AcceptanceGate, AcceptanceContext
+from brains.acceptance_brain import AcceptanceBrain
 from brains.templates import select_team_profile
 from memory import store
 from safety.executor import Executor
@@ -58,6 +59,11 @@ class Session:
         self.tester = TesterBrain(self.executor)
         self.reviewer = ReviewerBrain()
         self.acceptance_gate = AcceptanceGate()
+        # Phase 8H seam: the AcceptanceBrain converts acceptance failures into fix
+        # requests and can record them on project state. Constructed here so it is
+        # part of the orchestration flow (to be invoked after the Reviewer in a
+        # future phase). It performs NO retry, repair, or rebuild.
+        self.acceptance_brain = AcceptanceBrain()
         self.router = ModelRouter(
             [r if isinstance(r, Rule) else Rule(**r) for r in DEFAULT_ROUTE_RULES],
             default_engine=ROUTE_DEFAULT_ENGINE,
