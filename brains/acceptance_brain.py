@@ -52,6 +52,17 @@ class FixRequest:
     description: str
 
 
+@dataclass
+class FixerWorkItem:
+    """A handoff object for the existing Fixer, converted from a FixRequest.
+
+    Pure data: it represents a single unit of repair work to hand to the Fixer in
+    a future phase. It carries no behaviour, invokes no Fixer, and triggers no
+    execution, retry, or rebuild. `description` is preserved verbatim from the
+    originating FixRequest."""
+    description: str
+
+
 class AcceptanceBrain:
     """Seam for turning acceptance failures into fix requests (Phase 8H).
 
@@ -95,3 +106,14 @@ class AcceptanceBrain:
         FixRequest per RepairTask, preserving the description and order; an empty
         input yields an empty list."""
         return [FixRequest(task.description) for task in (repair_tasks or [])]
+
+    def to_fixer_work_items(self, fix_requests) -> list:
+        """Hand FixRequest objects to the existing Fixer by converting them into
+        FixerWorkItem objects (one per request) - the first execution-ADJACENT
+        seam between planning objects and the Fixer.
+
+        HANDOFF SHAPING ONLY: it builds work items; it does NOT invoke the Fixer,
+        execute repairs, retry, rerun, or rebuild, and it changes no orchestrator
+        flow. Returns one FixerWorkItem per FixRequest, preserving the description
+        and order; an empty input yields an empty list."""
+        return [FixerWorkItem(request.description) for request in (fix_requests or [])]
