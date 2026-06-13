@@ -12,6 +12,7 @@ import os
 import re
 
 from core import console, llm
+from brains.base_engine import EngineError
 
 FIX_SYSTEM_PROMPT = """You are the Tester Brain of a local AI coding assistant.
 A test run failed. You are given the failing file's current contents and the
@@ -29,9 +30,13 @@ Fix the actual root cause. Keep changes minimal. Output valid code in new_conten
 
 
 class TesterBrain:
-    def __init__(self, executor, model=None):
+    def __init__(self, executor, model=None, engine=None):
         self.executor = executor
         self.model = model or llm.MODEL
+        # Optional BaseEngine (DS5). When set, suggest_fix generates the fix
+        # through the engine instead of the direct llm.generate_json call; None
+        # preserves the legacy local-model path exactly.
+        self.engine = engine
 
     def test(self, workspace: str, plan: dict):
         """Run the plan's test command in the workspace. Returns a CommandResult."""
@@ -135,11 +140,19 @@ class TesterBrain:
             f"correct the assertion to match the real behaviour of the code above. "
             f"Return the corrected {filename} as the specified JSON."
         )
-        try:
-            parsed = llm.generate_json(prompt, system=FIX_SYSTEM_PROMPT, model=self.model)
-        except (llm.OllamaError, ValueError) as e:
-            console.error(f"Could not get a fix from the model: {e}")
-            return {}
+        if self.engine is not None:
+            try:
+                raw = self.engine.generate(prompt, system=FIX_SYSTEM_PROMPT)
+                parsed = llm.extract_json(raw)
+            except (EngineError, ValueError) as e:
+                console.error(f"Could not get a fix from the engine: {e}")
+                return {}
+        else:
+            try:
+                parsed = llm.generate_json(prompt, system=FIX_SYSTEM_PROMPT, model=self.model)
+            except (llm.OllamaError, ValueError) as e:
+                console.error(f"Could not get a fix from the model: {e}")
+                return {}
 
         new_content = llm.strip_code_fences(str(parsed.get("new_content", "")))
         if not new_content.strip():
