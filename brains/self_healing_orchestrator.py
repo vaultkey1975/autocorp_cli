@@ -55,17 +55,33 @@ class SelfHealingOrchestrator:
         cycle.retry_state = state
         return cycle
 
-    def run_cycle(self, work_items, fixer, verify, max_attempts) -> RepairCycle:
+    def run_cycle(self, work_items, fixer, verify, max_attempts,
+                  executor=None) -> RepairCycle:
         """Drive one repair cycle and return a populated RepairCycle.
 
-        Loop, bounded by a fresh RetryController budget of `max_attempts`:
-            record_attempt -> fixer.execute(work_items) -> verify()
-        Stop as soon as `verify()` returns True (healed) or the retry budget is
-        exhausted. With no `work_items` there is nothing to repair, so the loop is
-        skipped entirely: the fixer is never called and no attempt is consumed.
+        Loop, bounded by a fresh RetryController budget of `max_attempts`. With no
+        `work_items` there is nothing to repair, so the loop is skipped entirely:
+        the fixer is never called and no attempt is consumed.
 
-        All work happens through the injected `fixer`/`verify` collaborators; this
-        method never reaches a real engine, subprocess, or network itself."""
+        LEGACY MODE (`executor` is None, the default) - per iteration:
+            record_attempt -> fixer.execute(work_items) -> verify()
+        This is the unchanged Phase 8O behavior.
+
+        PROPOSAL MODE (`executor` provided) - per iteration the propose/apply
+        layers are driven end-to-end:
+            record_attempt -> fixer.propose(work_items)
+                           -> fixer.apply(proposed_actions, executor)
+                           -> verify()
+        The applied RepairAction objects are recorded on `cycle.execution_results`.
+        A controlled error from propose()/apply() (e.g. a non-write action ->
+        ValueError) is allowed to propagate; it is never swallowed.
+
+        Either way: stop as soon as `verify()` returns True (healed) or the retry
+        budget is exhausted. All work happens through the injected
+        `fixer`/`verify`/`executor` collaborators - this method never reaches a
+        real engine, subprocess, or network itself, and runs no command or shell:
+        proposal mode applies repairs only through `fixer.apply(..., executor)`,
+        whose gated `write_file` stays authoritative."""
         retry = RetryController()
         state = retry.create(max_attempts)
         cycle = RepairCycle(retry_state=state)
@@ -75,7 +91,11 @@ class SelfHealingOrchestrator:
 
         while not cycle.healed and not retry.is_exhausted(state):
             retry.record_attempt(state)
-            cycle.execution_results = fixer.execute(work_items)
+            if executor is None:
+                cycle.execution_results = fixer.execute(work_items)
+            else:
+                actions = fixer.propose(work_items)
+                cycle.execution_results = fixer.apply(actions, executor)
             cycle.healed = bool(verify())
 
         return cycle
