@@ -25,6 +25,10 @@ from brains.reviewer import ReviewerBrain
 from brains.model_router import ModelRouter, Rule, context_from
 from brains.acceptance import AcceptanceGate, AcceptanceContext
 from brains.acceptance_brain import AcceptanceBrain
+from brains.acceptance_repair_adapter import AcceptanceRepairAdapter
+from brains.self_healing_orchestrator import SelfHealingOrchestrator
+from brains.fixer_executor import FixerExecutor
+from brains.gated_repair_fixer import GatedRepairFixer
 from brains.templates import select_team_profile
 from memory import store
 from safety.executor import Executor
@@ -38,7 +42,7 @@ risks or gotchas. Be clear and concise. Plain text, no JSON."""
 class Session:
     def __init__(self, gate, assume_yes: bool = False, review: bool = False,
                  route: bool = False, accept: bool = False,
-                 accept_strict: bool = False):
+                 accept_strict: bool = False, self_heal: bool = False):
         self.gate = gate
         # When assume_yes is set (e.g. --auto), skip the plan-level confirmation.
         # Per-action safety still flows through the gate.
@@ -53,6 +57,10 @@ class Session:
         # accept_strict is set, in which case an unaccepted build is downgraded.
         self.accept = accept
         self.accept_strict = accept_strict
+        # Optional self-healing (Phase 8Q). Off by default. When on AND the
+        # acceptance gate reports NOT met, the repair adapter + orchestrator drive
+        # a bounded repair cycle. Default OFF preserves prior behavior exactly.
+        self.self_heal = self_heal
         self.executor = Executor(gate)
         self.planner = PlannerBrain()
         self.builder = BuilderBrain(self.executor)
@@ -64,6 +72,10 @@ class Session:
         # part of the orchestration flow (to be invoked after the Reviewer in a
         # future phase). It performs NO retry, repair, or rebuild.
         self.acceptance_brain = AcceptanceBrain()
+        # Phase 8Q seam: convert a failed acceptance report into repair work and
+        # drive a bounded repair cycle (only when self_heal is enabled).
+        self.repair_adapter = AcceptanceRepairAdapter()
+        self.self_healer = SelfHealingOrchestrator()
         self.router = ModelRouter(
             [r if isinstance(r, Rule) else Rule(**r) for r in DEFAULT_ROUTE_RULES],
             default_engine=ROUTE_DEFAULT_ENGINE,
@@ -208,6 +220,25 @@ class Session:
                     self._show_acceptance(report)
                     if self.accept_strict and not report.accepted:
                         status = "accept_failed"
+                    # Phase 8Q: flag-guarded self-healing. Only drives a repair
+                    # cycle when enabled AND the build was not accepted. The
+                    # RetryController stays authoritative via MAX_FIX_ATTEMPTS;
+                    # any fixer writes still flow through self.executor's gate.
+                    if self.self_heal and not report.accepted:
+                        work_items = self.repair_adapter.to_work_items(report)
+                        self.self_healer.run_cycle(
+                            work_items,
+                            fixer=GatedRepairFixer(self.executor),
+                            verify=lambda: self.acceptance_gate.evaluate(
+                                profile["acceptance"],
+                                AcceptanceContext(
+                                    workspace=workspace, plan=plan,
+                                    request=request, test_passed=result.ok,
+                                    review_findings=review_findings,
+                                ),
+                            ).accepted,
+                            max_attempts=MAX_FIX_ATTEMPTS,
+                        )
             except Exception as e:  # noqa: BLE001 - acceptance must never break the build
                 console.warn(f"Acceptance gate skipped ({e}).")
 
