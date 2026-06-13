@@ -46,8 +46,30 @@ class AcceptanceRepairAdapter:
         """Convert an AcceptanceReport into FixerWorkItem objects by reusing the
         existing AcceptanceBrain chain. An accepted (or None/empty) report yields
         an empty list; a failed report yields one FixerWorkItem per failed
-        criterion, order and description preserved verbatim."""
+        criterion, order and description preserved verbatim.
+
+        TARGET-AWARE (8V): each work item is paired with its originating failed
+        row (same order) and gets a `target_path` resolved from the first non-empty
+        file hint on that row (`file`, then `path`, then `filename`); rows with no
+        hint leave `target_path` at None - the valid, backward-compatible fallback."""
         result = self.to_acceptance_result(report)
         tasks = self._brain.plan_repairs(result)
         fix_requests = self._brain.to_fix_requests(tasks)
-        return self._brain.to_fixer_work_items(fix_requests)
+        work_items = self._brain.to_fixer_work_items(fix_requests)
+
+        failed_rows = [
+            row for row in (getattr(report, "results", None) or [])
+            if row.get("status") == "fail"
+        ]
+        for item, row in zip(work_items, failed_rows):
+            item.target_path = self._resolve_target_path(row)
+        return work_items
+
+    @staticmethod
+    def _resolve_target_path(row):
+        """Return the first non-empty file hint on a result row, else None."""
+        for key in ("file", "path", "filename"):
+            value = row.get(key)
+            if value:
+                return value
+        return None

@@ -69,7 +69,11 @@ class FixerExecutor:
         Pure data only: this builds and returns RepairAction objects and performs
         NO file write, command, subprocess, or Executor call. A work item without a
         `description` is an unsupported type and raises TypeError (it never yields a
-        malformed or dangerous action)."""
+        malformed or dangerous action).
+
+        TARGET-AWARE: when the work item carries a `target_path`, the proposal's
+        `path` is set to it (so the downstream gated write targets a real workspace
+        file); otherwise `path` stays None - byte-for-byte the generic proposal."""
         actions = []
         for item in (work_items or []):
             description = getattr(item, "description", None)
@@ -79,7 +83,8 @@ class FixerExecutor:
                     f"a string `description`."
                 )
             actions.append(
-                RepairAction(kind="write", content=description, status="proposed")
+                RepairAction(kind="write", path=getattr(item, "target_path", None),
+                             content=description, status="proposed")
             )
         return actions
 

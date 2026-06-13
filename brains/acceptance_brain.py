@@ -59,8 +59,11 @@ class FixerWorkItem:
     Pure data: it represents a single unit of repair work to hand to the Fixer in
     a future phase. It carries no behaviour, invokes no Fixer, and triggers no
     execution, retry, or rebuild. `description` is preserved verbatim from the
-    originating FixRequest."""
+    originating FixRequest. `target_path` is an OPTIONAL hint naming the workspace
+    file a repair should land in (None when unknown); it defaults to None so legacy
+    single-argument construction is unchanged."""
     description: str
+    target_path: str = None
 
 
 class AcceptanceBrain:

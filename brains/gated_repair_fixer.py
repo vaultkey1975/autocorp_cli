@@ -33,8 +33,9 @@ class GatedRepairFixer:
     Constructed with the executor whose gate must approve every write; holds a
     plain FixerExecutor to reuse the existing proposal/application logic."""
 
-    def __init__(self, executor):
+    def __init__(self, executor, generator=None):
         self.executor = executor
+        self.generator = generator
         self._fixer = FixerExecutor()
 
     def execute(self, work_items) -> list:
@@ -45,6 +46,13 @@ class GatedRepairFixer:
         Uses ONLY `executor.write_file` (via FixerExecutor.apply); no command,
         subprocess, or shell. The gate decides whether each write succeeds."""
         actions = self._fixer.propose(work_items)
+
         for index, action in enumerate(actions):
-            action.path = f"repairs/repair_{index}.txt"
+            if not action.path:
+                action.path = f"repairs/repair_{index}.txt"
+            if self.generator is not None:
+                generated = self.generator.generate(action.path, action.content)
+                if generated:
+                    action.content = generated
+
         return self._fixer.apply(actions, self.executor)
