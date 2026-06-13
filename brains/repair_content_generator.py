@@ -57,6 +57,32 @@ class LocalRepairContentProvider(RepairContentProvider):
         return f"# local provider\n# {path}\n# {description}\n"
 
 
+class TesterBackedRepairContentProvider(RepairContentProvider):
+    """Produces REAL fix content by delegating to the model-backed TesterBrain.
+
+    generate(path, description) calls
+    `tester.suggest_fix(workspace, path, description, plan)` and returns the
+    result's "new_content". Any failure - an empty/keyless result OR a Tester
+    exception - yields "" so the 8X seam falls back to the description and nothing
+    dangerous is written. The provider never lets a Tester exception escape."""
+
+    def __init__(self, tester, workspace, plan=None):
+        self.tester = tester
+        self.workspace = workspace
+        self.plan = plan
+
+    def generate(self, path, description):
+        try:
+            result = self.tester.suggest_fix(
+                self.workspace, path, description, self.plan
+            )
+        except Exception:  # noqa: BLE001 - never let a Tester failure escape
+            return ""
+        if not result:
+            return ""
+        return result.get("new_content") or ""
+
+
 class RepairContentProviderFactory:
     """Maps a provider NAME to a concrete RepairContentProvider.
 
@@ -64,12 +90,17 @@ class RepairContentProviderFactory:
     name raises ValueError (no silent/None fallback). No model, no network."""
 
     @classmethod
-    def create(cls, provider_name):
+    def create(cls, provider_name, **kwargs):
         if provider_name == "mock":
             return MockRepairContentProvider()
 
         if provider_name == "local":
             return LocalRepairContentProvider()
+
+        if provider_name == "tester":
+            return TesterBackedRepairContentProvider(
+                kwargs["tester"], kwargs["workspace"], kwargs.get("plan"),
+            )
 
         raise ValueError(
             f"Unknown repair content provider: {provider_name}"
