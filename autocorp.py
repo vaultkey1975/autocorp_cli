@@ -67,7 +67,8 @@ def cmd_build(args) -> int:
     session = Session(_make_gate(args.auto, args.watchdog), assume_yes=args.auto,
                       review=getattr(args, "review", False), route=routing,
                       accept=getattr(args, "accept", False) or getattr(args, "accept_strict", False),
-                      accept_strict=getattr(args, "accept_strict", False))
+                      accept_strict=getattr(args, "accept_strict", False),
+                      tester_engine=getattr(args, "tester_engine", "local"))
     if routing:
         # The router selects builder.engine after planning; don't pre-set it.
         console.muted("Engine: auto (rule-based routing)")
@@ -195,6 +196,12 @@ def build_parser() -> argparse.ArgumentParser:
                     default="local",
                     help="code-generation engine, or 'auto' for rule-based "
                          "routing (default: local)")
+    sp.add_argument("--tester-engine",
+                    choices=engine_registry.available_engines(),
+                    default="local",
+                    help="engine used for self-heal repairs (Tester/repair "
+                         "chain); 'deepseek' or 'claude' only when explicitly "
+                         "selected (default: local)")
     sp.add_argument("--review", action="store_true",
                     help="run a non-blocking static code review before tests")
     sp.add_argument("--accept", action="store_true",
