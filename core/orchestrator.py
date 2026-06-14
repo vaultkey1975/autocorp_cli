@@ -46,7 +46,8 @@ risks or gotchas. Be clear and concise. Plain text, no JSON."""
 class Session:
     def __init__(self, gate, assume_yes: bool = False, review: bool = False,
                  route: bool = False, accept: bool = False,
-                 accept_strict: bool = False, self_heal: bool = False):
+                 accept_strict: bool = False, self_heal: bool = False,
+                 tester_engine: str = "local"):
         self.gate = gate
         # When assume_yes is set (e.g. --auto), skip the plan-level confirmation.
         # Per-action safety still flows through the gate.
@@ -68,7 +69,12 @@ class Session:
         self.executor = Executor(gate)
         self.planner = PlannerBrain()
         self.builder = BuilderBrain(self.executor)
-        self.tester = TesterBrain(self.executor)
+        # DS7: construct the Tester with an engine from the EngineRegistry,
+        # defaulting to the offline `local` engine. No ModelRouter, no Builder
+        # coupling. DeepSeek only when `tester_engine="deepseek"` is explicit.
+        # The DS6 repair chain reuses self.tester, so it inherits this engine.
+        self.tester = TesterBrain(
+            self.executor, engine=engine_registry.create(tester_engine))
         self.reviewer = ReviewerBrain()
         self.acceptance_gate = AcceptanceGate()
         # Phase 8H seam: the AcceptanceBrain converts acceptance failures into fix
