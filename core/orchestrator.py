@@ -29,6 +29,10 @@ from brains.acceptance_repair_adapter import AcceptanceRepairAdapter
 from brains.self_healing_orchestrator import SelfHealingOrchestrator
 from brains.fixer_executor import FixerExecutor
 from brains.gated_repair_fixer import GatedRepairFixer
+from brains.repair_content_generator import (
+    RepairContentGenerator,
+    RepairContentProviderFactory,
+)
 from brains.templates import select_team_profile
 from memory import store
 from safety.executor import Executor
@@ -226,9 +230,21 @@ class Session:
                     # any fixer writes still flow through self.executor's gate.
                     if self.self_heal and not report.accepted:
                         work_items = self.repair_adapter.to_work_items(report)
+                        # DS6 wiring: produce REAL fix content via the tester-backed
+                        # provider, wrapped in a generator and handed to the gated
+                        # fixer. No engine injection here (TesterBrain unchanged);
+                        # engine-backed routing is a later phase (DS7).
+                        provider = RepairContentProviderFactory.create(
+                            "tester",
+                            tester=self.tester,
+                            workspace=workspace,
+                            plan=plan,
+                        )
+                        generator = RepairContentGenerator(provider)
                         self.self_healer.run_cycle(
                             work_items,
-                            fixer=GatedRepairFixer(self.executor),
+                            fixer=GatedRepairFixer(
+                                self.executor, generator=generator),
                             verify=lambda: self.acceptance_gate.evaluate(
                                 profile["acceptance"],
                                 AcceptanceContext(

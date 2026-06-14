@@ -98,9 +98,10 @@ def _make_construct_spy():
     records = []
 
     class _Spy:
-        def __init__(self, executor):
+        def __init__(self, executor, generator=None):
             records.append(executor)
             self.executor = executor
+            self.generator = generator
 
         def execute(self, work_items):
             return []          # no writes; we only care that it was constructed
