@@ -68,7 +68,8 @@ def cmd_build(args) -> int:
                       review=getattr(args, "review", False), route=routing,
                       accept=getattr(args, "accept", False) or getattr(args, "accept_strict", False),
                       accept_strict=getattr(args, "accept_strict", False),
-                      tester_engine=getattr(args, "tester_engine", "local"))
+                      tester_engine=getattr(args, "tester_engine", "local"),
+                      self_heal=getattr(args, "self_heal", False))
     if routing:
         # The router selects builder.engine after planning; don't pre-set it.
         console.muted("Engine: auto (rule-based routing)")
@@ -210,6 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--accept-strict", action="store_true",
                     help="enforce acceptance criteria: an unaccepted build is "
                          "reported as 'accept_failed'")
+    sp.add_argument("--self-heal", action="store_true",
+                    help="enable the DS6 self-heal repair cycle on an "
+                         "unaccepted build (uses the --tester-engine; default off)")
     sp.set_defaults(func=cmd_build)
 
     sp = sub.add_parser("plan", help="show a build plan (writes nothing)")
