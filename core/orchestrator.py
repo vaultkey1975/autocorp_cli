@@ -235,7 +235,8 @@ class Session:
                     # RetryController stays authoritative via MAX_FIX_ATTEMPTS;
                     # any fixer writes still flow through self.executor's gate.
                     if self.self_heal and not report.accepted:
-                        work_items = self.repair_adapter.to_work_items(report)
+                        work_items = self.repair_adapter.to_work_items(
+                            report, plan=plan)
                         # DS6 wiring: produce REAL fix content via the tester-backed
                         # provider, wrapped in a generator and handed to the gated
                         # fixer. No engine injection here (TesterBrain unchanged);

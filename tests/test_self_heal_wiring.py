@@ -124,7 +124,7 @@ def _spy_pipeline(session, monkeypatch, report):
     adapter_calls = []
     run_cycle_calls = []
 
-    def spy_to_work_items(rep):
+    def spy_to_work_items(rep, plan=None):
         adapter_calls.append(rep)
         return []  # empty handoff is fine; run_cycle is spied below
 

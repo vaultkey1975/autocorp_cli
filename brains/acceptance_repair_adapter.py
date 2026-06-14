@@ -42,7 +42,7 @@ class AcceptanceRepairAdapter:
         ]
         return AcceptanceResult(passed=report.accepted, failures=failures)
 
-    def to_work_items(self, report) -> list:
+    def to_work_items(self, report, plan=None) -> list:
         """Convert an AcceptanceReport into FixerWorkItem objects by reusing the
         existing AcceptanceBrain chain. An accepted (or None/empty) report yields
         an empty list; a failed report yields one FixerWorkItem per failed
@@ -50,8 +50,13 @@ class AcceptanceRepairAdapter:
 
         TARGET-AWARE (8V): each work item is paired with its originating failed
         row (same order) and gets a `target_path` resolved from the first non-empty
-        file hint on that row (`file`, then `path`, then `filename`); rows with no
-        hint leave `target_path` at None - the valid, backward-compatible fallback."""
+        file hint on that row (`file`, then `path`, then `filename`).
+
+        PLAN-AWARE (DS10): `plan` is OPTIONAL (default None, so legacy callers are
+        unchanged). When a failed row has NO direct hint AND a plan is supplied,
+        `target_path` is resolved from the plan instead of staying None. When
+        resolution fails completely, `target_path` stays None - the valid,
+        backward-compatible fallback (GatedRepairFixer's repairs/repair_N.txt)."""
         result = self.to_acceptance_result(report)
         tasks = self._brain.plan_repairs(result)
         fix_requests = self._brain.to_fix_requests(tasks)
@@ -62,7 +67,10 @@ class AcceptanceRepairAdapter:
             if row.get("status") == "fail"
         ]
         for item, row in zip(work_items, failed_rows):
-            item.target_path = self._resolve_target_path(row)
+            target = self._resolve_target_path(row)
+            if target is None and plan is not None:
+                target = self._resolve_from_plan(plan)
+            item.target_path = target
         return work_items
 
     @staticmethod
@@ -72,4 +80,21 @@ class AcceptanceRepairAdapter:
             value = row.get(key)
             if value:
                 return value
+        return None
+
+    @staticmethod
+    def _resolve_from_plan(plan):
+        """Resolve a target file from the plan: the first entry in
+        `plan["build_order"]` whose path also appears in `plan["files"]`
+        (build_order order wins; entries absent from files are skipped). Returns
+        None when no build_order entry matches a planned file."""
+        if not isinstance(plan, dict):
+            return None
+        file_paths = {
+            f.get("path") for f in (plan.get("files") or [])
+            if isinstance(f, dict) and f.get("path")
+        }
+        for name in (plan.get("build_order") or []):
+            if name in file_paths:
+                return name
         return None
