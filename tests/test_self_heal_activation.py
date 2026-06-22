@@ -110,11 +110,10 @@ def _make_construct_spy():
 
 
 def _repair_files(tmp_path):
-    # DS10: repairs now target the REAL planned file resolved from the plan
-    # (build_order ["main.py"]) instead of the repairs/repair_N.txt placeholder.
-    # The gated write is relative, so it lands at <cwd>/main.py (cwd is chdir'd
-    # to tmp_path in these tests). A truthy list means a real repair was written.
-    return [tmp_path / "main.py"] if (tmp_path / "main.py").exists() else []
+    # DS11: repairs now target the REAL planned file inside the generated
+    # workspace, not the process current directory.
+    target = tmp_path / "ws" / "demo" / "main.py"
+    return [target] if target.exists() else []
 
 
 # --------------------------------------------------------------------------- #

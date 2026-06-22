@@ -250,8 +250,14 @@ class Session:
                         generator = RepairContentGenerator(provider)
                         self.self_healer.run_cycle(
                             work_items,
-                            fixer=GatedRepairFixer(
-                                self.executor, generator=generator),
+                            fixer=(lambda fixer: (
+                                setattr(fixer, "workspace", workspace) or fixer
+                            ))(
+                                GatedRepairFixer(
+                                    self.executor,
+                                    generator=generator,
+                                )
+                            ),
                             verify=lambda: self.acceptance_gate.evaluate(
                                 profile["acceptance"],
                                 AcceptanceContext(
