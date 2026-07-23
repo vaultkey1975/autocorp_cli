@@ -13,6 +13,7 @@ Usage:
     python autocorp.py test  [workspace]    # run tests on an existing build
     python autocorp.py explain <file>       # explain a source file
     python autocorp.py memory               # show what it has learned
+    python autocorp.py scan                 # read-only repository scan
 
     --auto    skip confirmations (uses the allow-all gate)
 
@@ -32,7 +33,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import engine_registry
+from brains import engine_registry, scanner
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -151,6 +152,25 @@ def cmd_memory(args) -> int:
     return 0
 
 
+def cmd_scan(args) -> int:
+    """Read-only repository scan: git status, Python version, file counts, and
+    code-health markers. Writes nothing - see brains/scanner.py."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    result = scanner.run_scan(repo_root)
+    console.rule("Repository Scan")
+    print(f"Repository:       {result.repo_path}")
+    print(f"Branch:            {result.branch}")
+    print(f"Working Tree:      {result.working_tree}")
+    print(f"Python Version:    {result.python_version}")
+    print(f"Python Files:      {result.python_file_count}")
+    print(f"Test Files:        {result.test_file_count}")
+    print(f"TODO:              {result.todo_count}")
+    print(f"FIXME:             {result.fixme_count}")
+    print(f"pass Statements:   {result.pass_count}")
+    print(f"NotImplementedError: {result.not_implemented_count}")
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -231,6 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("memory", help="show stored builds and lessons")
     sp.set_defaults(func=cmd_memory)
+
+    sp = sub.add_parser("scan", help="read-only repository scan (git, files, TODO/FIXME)")
+    sp.set_defaults(func=cmd_scan)
 
     return p
 
