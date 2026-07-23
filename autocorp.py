@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, project_planner, repair_executor, repair_proposal, scanner, workspace
+from brains import analyzer, engine_registry, live_readiness, project_planner, repair_executor, repair_proposal, scanner, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -495,6 +495,80 @@ def cmd_propose_repair(args) -> int:
     return 0
 
 
+def cmd_live_readiness(args) -> int:
+    """Live application readiness scanner: static-only diagnostic that
+    inspects a repository and reports launch and workflow readiness.
+    Never edits, never executes target code."""
+    repo_root = _resolve_repo(args)
+    report = live_readiness.run_live_readiness(repo_root)
+
+    print("Live Application Readiness")
+    print("==========================")
+    print()
+    print(f"Repository:        {report.repo_path}")
+    print(f"Project Type:      {report.project_type}")
+    print(f"Overall Status:    {report.overall_status}")
+    print()
+
+    if report.launch_candidates:
+        print("Launch Candidates")
+        print("-----------------")
+        for lc in report.launch_candidates:
+            print(f"  {lc}")
+        print()
+
+    if report.health_endpoints:
+        print("Health Endpoints")
+        print("----------------")
+        for he in report.health_endpoints:
+            print(f"  {he}")
+        print()
+
+    if report.workflow_stages:
+        print("Workflow Stages")
+        print("---------------")
+        for idx, stage in enumerate(report.workflow_stages, 1):
+            status = stage.get("status", "unknown")
+            print(f"  {idx}. {stage.get('stage', '?')}")
+            print(f"     Status: {status}")
+            for ev in stage.get("evidence", [])[:3]:
+                print(f"     Evidence: {ev}")
+        print()
+
+    if report.checks:
+        print("Readiness Checks")
+        print("----------------")
+        print()
+        cat_order = {"fail": "[FAIL]", "blocked": "[BLOCKED]", "warning": "[WARN]",
+                      "unknown": "[UNK]", "pass": "[PASS]"}
+        for idx, ch in enumerate(report.checks, 1):
+            tag = cat_order.get(ch.status, "[???]")
+            print(f"  {idx}. {tag} {ch.title}")
+            print(f"     Category: {ch.category}")
+            print(f"     Reason: {ch.reason}")
+            if ch.evidence:
+                for ev in ch.evidence[:5]:
+                    print(f"     Evidence: {ev}")
+            if ch.affected_paths:
+                for p in ch.affected_paths[:5]:
+                    print(f"     Path: {p}")
+            print(f"     Confidence: {ch.confidence}%")
+            print()
+
+    if report.blockers:
+        print("Blockers")
+        print("--------")
+        for b in report.blockers:
+            print(f"  - {b}")
+        print()
+
+    print("Static Inspection Only: Yes")
+    print("No Changes Made: Yes")
+    print()
+    print(f"Report confidence: {report.confidence}%")
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -616,6 +690,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--overwrite", action="store_true",
                     help="overwrite existing output file")
     sp.set_defaults(func=cmd_propose_repair)
+
+    sp = sub.add_parser("live-readiness",
+                        help="static live-application readiness scanner")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.set_defaults(func=cmd_live_readiness)
 
     return p
 
