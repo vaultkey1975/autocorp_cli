@@ -67,18 +67,24 @@ def _singular(table: str) -> str:
 def database_py(table: str, columns: list) -> str:
     """Return the complete source of database.py for `table` with `columns`."""
     cols_sql = ",\n                ".join(f"{name} {sqltype}" for name, sqltype in columns)
-    return f'''import os
+    return f'''import contextlib
+import os
 import sqlite3
 
 # The SQLite database file lives alongside this module, inside the project.
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.db")
 
 
+@contextlib.contextmanager
 def get_connection():
     """Open a SQLite connection that returns rows accessible by column name."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -219,19 +225,25 @@ def _create_table_block(table: "Table") -> str:
 def schema_database_py(schema: list) -> str:
     """Return database.py for a whole schema (foreign keys enforced)."""
     statements = "\n".join(_create_table_block(t) for t in schema)
-    return f'''import os
+    return f'''import contextlib
+import os
 import sqlite3
 
 # The SQLite database file lives alongside this module, inside the project.
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.db")
 
 
+@contextlib.contextmanager
 def get_connection():
     """Open a SQLite connection (rows by column name) with foreign keys enforced."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db():
