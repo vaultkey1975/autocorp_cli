@@ -19,3 +19,6 @@ workspace/
 # --- Build artifacts ---
 dist/
 build/
+
+# --- Generated reports ---
+phase_*_report.txt

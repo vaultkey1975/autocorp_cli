@@ -328,9 +328,11 @@ def cmd_repair(args) -> int:
     print(f"No Changes Made: {'Yes' if not approved else 'N/A (approved)'}")
     print()
 
+    action_not_found = not plan.action_title
+
     if not approved:
         print("Dry-run completed. No changes were made.")
-        return 0
+        return 1 if action_not_found else 0
 
     result = repair_executor.execute_repair_plan(plan, approved=True)
 

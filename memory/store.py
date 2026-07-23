@@ -18,6 +18,7 @@ embeddings, no extra dependencies. Good enough to surface "you solved something
 like this before", and easy to upgrade later.
 """
 
+import contextlib
 import datetime
 import json
 import os
@@ -34,11 +35,19 @@ _STOP = {
 }
 
 
-def _connect() -> sqlite3.Connection:
+@contextlib.contextmanager
+def _connect():
+    """Yield a sqlite3.Connection with Row row_factory.  Commits (or rolls
+    back) the implicit transaction and closes the connection on exit, so
+    callers never leak an open handle."""
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def init_db() -> None:
