@@ -12,9 +12,9 @@ import os
 # --------------------------------------------------------------------------- #
 # Ollama / model
 # --------------------------------------------------------------------------- #
-# Primary local model. The installed Ollama tag is "llama3.2:latest" (which IS
+# Primary local model. The installed Ollama tag is "qwen2.5:14b" (which IS
 # the 3.2B model); the bare "llama3.2:3b" tag is not pulled on this box.
-MODEL = os.environ.get("AUTOCORP_MODEL", "llama3.2:latest")
+MODEL = os.environ.get("AUTOCORP_MODEL", "qwen2.5:14b")
 OLLAMA_URL = os.environ.get("AUTOCORP_OLLAMA_URL", "http://localhost:11434")
 
 # Seconds to wait for a model response. First call of a session loads the model
