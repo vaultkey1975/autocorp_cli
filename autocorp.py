@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, project_planner, scanner
+from brains import analyzer, engine_registry, project_planner, repair_executor, scanner
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -284,6 +284,75 @@ def cmd_plan_project(args) -> int:
     return 0
 
 
+def cmd_repair(args) -> int:
+    """Safe repair executor: builds and optionally executes a repair plan
+    for a Phase 1C action by ID. Never writes without --approve. Never
+    commits, never pushes, never calls a model."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    approved = getattr(args, "approve", False) and not getattr(args, "dry_run", True)
+    action_id = args.action
+
+    plan = repair_executor.build_repair_plan(repo_root, action_id)
+
+    print("Safe Repair Plan")
+    print("================")
+    print()
+    print(f"Repository:  {plan.repo_path}")
+    print(f"Action ID:   {plan.action_id}")
+    print(f"Action:      {plan.action_title}")
+    print(f"Priority:    {plan.priority}")
+    print(f"Category:    {plan.category}")
+    print(f"Mode:        {'APPROVED EXECUTION' if approved else 'DRY RUN'}")
+    print()
+    print("Summary:")
+    print(plan.summary)
+    print()
+    if plan.operations:
+        print("Operations:")
+        for idx, op in enumerate(plan.operations, 1):
+            print(f"  {idx}. [{op.operation_type}] {op.description}")
+            print(f"     Path: {op.path}")
+            print(f"     Safe to apply: {'Yes' if op.safe_to_apply else 'No'}")
+        print()
+    if plan.validation_commands:
+        print("Validation:")
+        for cmd in plan.validation_commands:
+            print(f"  - {cmd}")
+        print()
+    if plan.blockers:
+        print("Blockers:")
+        for b in plan.blockers:
+            print(f"  - {b}")
+        print()
+    print(f"Can Execute:  {'Yes' if plan.can_execute else 'No'}")
+    print(f"No Changes Made: {'Yes' if not approved else 'N/A (approved)'}")
+    print()
+
+    if not approved:
+        print("Dry-run completed. No changes were made.")
+        return 0
+
+    result = repair_executor.execute_repair_plan(plan, approved=True)
+
+    print("Repair Result")
+    print("=============")
+    print()
+    print(f"Status:          {result.status}")
+    print(f"Changed Paths:")
+    if result.changed_paths:
+        for p in result.changed_paths:
+            print(f"  - {p}")
+    else:
+        print("  (none)")
+    print(f"Validation Passed: {'Yes' if result.validation_passed else 'No'}")
+    print(f"Rolled Back:      {'Yes' if result.rolled_back else 'No'}")
+    print(f"Message:          {result.message}")
+
+    if result.status in ("completed", "dry_run"):
+        return 0
+    return 1
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -373,6 +442,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("plan-project", help="read-only project action planner")
     sp.set_defaults(func=cmd_plan_project)
+
+    sp = sub.add_parser("repair", help="safe repair executor for Phase 1C actions")
+    sp.add_argument("--action", required=True, metavar="ACTION_ID",
+                    help="Phase 1C action ID to repair")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="build and print the repair plan without making changes")
+    sp.add_argument("--approve", action="store_true",
+                    help="apply the repair (required for any file changes)")
+    sp.set_defaults(func=cmd_repair)
 
     return p
 
