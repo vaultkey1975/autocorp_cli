@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, scanner
+from brains import analyzer, engine_registry, project_planner, scanner
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -225,6 +225,65 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_plan_project(args) -> int:
+    """Read-only project action planner: converts scanner + analyzer
+    evidence into a deterministic, prioritized action plan. Never writes,
+    never calls a model - see brains/project_planner.py."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    plan = project_planner.run_project_plan(repo_root)
+
+    print("Project Action Plan")
+    print("===================")
+    print()
+    print("Repository:")
+    print(plan.repo_path)
+    print()
+    print("Project Type:")
+    print(plan.project_type)
+    print()
+    print("Overall Health:")
+    print(plan.overall_health)
+    print()
+    print("Summary:")
+    print(plan.summary)
+    print()
+    print("Blockers:")
+    if plan.blockers:
+        for b in plan.blockers:
+            print(f"- {b}")
+    else:
+        print("(none)")
+    print()
+    if plan.actions:
+        print("Recommended Actions")
+        print("-------------------")
+        print()
+        for idx, action in enumerate(plan.actions, 1):
+            print(f"{idx}. [{action.priority.upper()}] {action.title}")
+            print(f"   Category: {action.category}")
+            print(f"   Reason: {action.reason}")
+            if action.evidence:
+                print("   Evidence:")
+                for ev in action.evidence:
+                    print(f"   - {ev}")
+            print(f"   Next Step: {action.recommended_next_step}")
+            if getattr(action, "affected_paths", ()):
+                print("   Affected Paths:")
+                for p in action.affected_paths:
+                    print(f"   - {p}")
+            print(f"   Safe to Automate: {'Yes' if action.safe_to_automate else 'No'}")
+            print(f"   Confidence: {action.confidence}%")
+            print()
+    else:
+        print("Recommended Actions")
+        print("-------------------")
+        print()
+        print("(none)")
+        print()
+    print(f"Plan confidence: {plan.confidence}%")
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -311,6 +370,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("analyze", help="read-only project architecture analysis")
     sp.set_defaults(func=cmd_analyze)
+
+    sp = sub.add_parser("plan-project", help="read-only project action planner")
+    sp.set_defaults(func=cmd_plan_project)
 
     return p
 
