@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, project_planner, repair_executor, scanner
+from brains import analyzer, engine_registry, project_planner, repair_executor, scanner, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -153,10 +153,50 @@ def cmd_memory(args) -> int:
     return 0
 
 
+def _resolve_repo(args) -> str:
+    """Resolve the --repo argument and print a workspace header when an
+    external target is requested. Returns the resolved repository root."""
+    default_path = os.path.dirname(os.path.abspath(__file__))
+    repo_arg = getattr(args, "repo", None)
+
+    resolution = workspace.resolve_workspace(repo_arg, default_path)
+
+    if not resolution.is_git_repository:
+        print("Workspace Error")
+        print("===============")
+        print()
+        if resolution.requested_path:
+            print(f"Requested Path:  {resolution.requested_path}")
+        print(f"Resolved Path:   {resolution.resolved_path}")
+        print()
+        print("Reason:")
+        for b in resolution.blockers:
+            print(f"  - {b}")
+        print()
+        print("No Changes Made: Yes")
+        raise SystemExit(1)
+
+    if not resolution.is_default_repository:
+        print("Workspace")
+        print("=========")
+        print()
+        print(f"Requested Path:      {resolution.requested_path}")
+        print(f"Resolved Repository: {resolution.repo_root}")
+        print()
+        print("Git Repository: Yes")
+        print("Mode:            External Target")
+        print()
+    else:
+        print("Mode: AutoCorp Default")
+        print()
+
+    return resolution.repo_root
+
+
 def cmd_scan(args) -> int:
     """Read-only repository scan: git status, Python version, file counts, and
     code-health markers. Writes nothing - see brains/scanner.py."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = _resolve_repo(args)
     result = scanner.run_scan(repo_root)
     console.rule("Repository Scan")
     print(f"Repository:       {result.repo_path}")
@@ -176,7 +216,7 @@ def cmd_analyze(args) -> int:
     """Read-only project architecture analysis: project type, entry points,
     test framework, layout, and health. Writes nothing - see
     brains/analyzer.py."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = _resolve_repo(args)
     result = analyzer.run_analysis(repo_root)
 
     print("Project Analysis")
@@ -229,7 +269,7 @@ def cmd_plan_project(args) -> int:
     """Read-only project action planner: converts scanner + analyzer
     evidence into a deterministic, prioritized action plan. Never writes,
     never calls a model - see brains/project_planner.py."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = _resolve_repo(args)
     plan = project_planner.run_project_plan(repo_root)
 
     print("Project Action Plan")
@@ -288,7 +328,7 @@ def cmd_repair(args) -> int:
     """Safe repair executor: builds and optionally executes a repair plan
     for a Phase 1C action by ID. Never writes without --approve. Never
     commits, never pushes, never calls a model."""
-    repo_root = os.path.dirname(os.path.abspath(__file__))
+    repo_root = _resolve_repo(args)
     approved = getattr(args, "approve", False) and not getattr(args, "dry_run", True)
     action_id = args.action
 
@@ -437,17 +477,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_memory)
 
     sp = sub.add_parser("scan", help="read-only repository scan (git, files, TODO/FIXME)")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
     sp.set_defaults(func=cmd_scan)
 
     sp = sub.add_parser("analyze", help="read-only project architecture analysis")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
     sp.set_defaults(func=cmd_analyze)
 
     sp = sub.add_parser("plan-project", help="read-only project action planner")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
     sp.set_defaults(func=cmd_plan_project)
 
     sp = sub.add_parser("repair", help="safe repair executor for Phase 1C actions")
     sp.add_argument("--action", required=True, metavar="ACTION_ID",
                     help="Phase 1C action ID to repair")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
     sp.add_argument("--dry-run", action="store_true",
                     help="build and print the repair plan without making changes")
     sp.add_argument("--approve", action="store_true",
