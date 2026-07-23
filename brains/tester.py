@@ -30,6 +30,10 @@ Fix the actual root cause. Keep changes minimal. Output valid code in new_conten
 
 
 class TesterBrain:
+    # Not a pytest test suite: pytest's default collector matches any class
+    # named "Test*", which this production class incidentally does.
+    __test__ = False
+
     def __init__(self, executor, model=None, engine=None):
         self.executor = executor
         self.model = model or llm.MODEL

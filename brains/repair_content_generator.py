@@ -66,6 +66,10 @@ class TesterBackedRepairContentProvider(RepairContentProvider):
     exception - yields "" so the 8X seam falls back to the description and nothing
     dangerous is written. The provider never lets a Tester exception escape."""
 
+    # Not a pytest test suite: pytest's default collector matches any class
+    # named "Test*", which this production class incidentally does.
+    __test__ = False
+
     def __init__(self, tester, workspace, plan=None):
         self.tester = tester
         self.workspace = workspace

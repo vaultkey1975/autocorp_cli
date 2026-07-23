@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Acceptance Brain  (AutoCorp CLI - brains)  [Phase 8H RED - STUB ONLY]
-====================================================================
+Acceptance Brain  (AutoCorp CLI - brains)  [Phase 8H-8J, wired into Session]
+=============================================================================
 
-Design scaffolding for Phase 8H (Acceptance -> Fix Feedback Loop). This pins the
-SHAPE of the seam only:
+The Acceptance -> Fix Feedback Loop: converts acceptance failures into
+structured repair work for the existing Fixer, running AFTER the Tester and
+Reviewer in the orchestration flow (see core/orchestrator.py's
+`self.acceptance_brain`).
 
-  * AcceptanceResult - a small data record: did acceptance pass, and the list of
-    human-readable failure strings to address.
-  * AcceptanceBrain - the seam that will (in a FUTURE phase) convert acceptance
-    failures into fix requests and attach them to project state, running AFTER
-    the Tester and Reviewer in the orchestration flow.
+  * AcceptanceResult - did acceptance pass, and the human-readable failure
+    strings to address.
+  * AcceptanceBrain - converts an AcceptanceResult through a pipeline of pure
+    data transforms (RepairTask -> FixRequest -> FixerWorkItem) that the
+    existing Fixer consumes; it builds these objects but does not itself
+    invoke the Fixer, execute a repair, or trigger a retry/rebuild - that
+    remains the caller's responsibility.
 
-RED / STUB: the BEHAVIOURAL methods raise NotImplementedError on purpose. This
-phase implements NO production behaviour, NO retry loop, and NO autonomous repair
-cycle - it only defines the interface so RED tests can drive the design. The
-existing deterministic Acceptance Gate (brains/acceptance.py) is left untouched.
+The existing deterministic Acceptance Gate (brains/acceptance.py) is
+unrelated and untouched by this module.
 """
 
 from dataclasses import dataclass, field
@@ -67,10 +69,8 @@ class FixerWorkItem:
 
 
 class AcceptanceBrain:
-    """Seam for turning acceptance failures into fix requests (Phase 8H).
-
-    STUB: the behavioural methods below are intentionally unimplemented in the RED
-    phase. GREEN (a future, separately-approved phase) will implement them."""
+    """Turns acceptance failures into fix requests for the existing Fixer
+    (Phase 8H-8J). Wired into Session as `self.acceptance_brain`."""
 
     def fix_requests(self, result: "AcceptanceResult") -> list:
         """Convert an AcceptanceResult into a list of fix-request strings:

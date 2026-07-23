@@ -62,7 +62,14 @@ def test_deepseek_honors_custom_model():
     assert _dse()(model="deepseek-custom").model == "deepseek-custom"
 
 
-def test_deepseek_delegates_prompt_system_and_params():
+def test_deepseek_delegates_prompt_system_and_params(monkeypatch):
+    # Pin the LOCAL transport regardless of whether the ambient environment
+    # happens to export DEEPSEEK_API_KEY - otherwise the engine would silently
+    # take the API transport (see brains/deepseek_engine.py) and this mock
+    # would never be consulted. api_key="" alone can't do this: the
+    # constructor resolves `api_key or os.environ.get(...)`, so an explicit
+    # blank string still falls through to a present env var.
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with patch("core.llm.generate", return_value="GENERATED") as g:
         engine = _dse()(model="m", temperature=0.5)
         out = engine.generate("THE PROMPT", system="THE SYSTEM")
@@ -72,12 +79,14 @@ def test_deepseek_delegates_prompt_system_and_params():
     )
 
 
-def test_deepseek_returns_generated_text():
+def test_deepseek_returns_generated_text(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with patch("core.llm.generate", return_value="hello world"):
         assert _dse()().generate("p") == "hello world"
 
 
-def test_deepseek_wraps_ollama_error_as_engine_error():
+def test_deepseek_wraps_ollama_error_as_engine_error(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     with patch("core.llm.generate", side_effect=llm.OllamaError("server down")):
         with pytest.raises(EngineError):
             _dse()().generate("p")

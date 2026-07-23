@@ -14,6 +14,7 @@ Usage:
     python autocorp.py explain <file>       # explain a source file
     python autocorp.py memory               # show what it has learned
     python autocorp.py scan                 # read-only repository scan
+    python autocorp.py analyze              # read-only project architecture analysis
 
     --auto    skip confirmations (uses the allow-all gate)
 
@@ -33,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import engine_registry, scanner
+from brains import analyzer, engine_registry, scanner
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -171,6 +172,59 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_analyze(args) -> int:
+    """Read-only project architecture analysis: project type, entry points,
+    test framework, layout, and health. Writes nothing - see
+    brains/analyzer.py."""
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    result = analyzer.run_analysis(repo_root)
+
+    print("Project Analysis")
+    print("================")
+    print()
+    print("Project Type:")
+    print(result.project_type)
+    print()
+    print("Primary Language:")
+    print(result.primary_language)
+    print()
+    print("Entry Points:")
+    print("\n".join(result.entry_points) or "(none found)")
+    print()
+    print("Test Framework:")
+    print(result.test_framework)
+    print()
+    print("Dependency Files:")
+    print("\n".join(result.dependency_files) or "(none found)")
+    print()
+    print("Python Files:")
+    print(result.python_file_count)
+    print()
+    print("Largest Package:")
+    print(result.largest_package or "(none)")
+    print()
+    print("Largest Module:")
+    print(result.largest_module or "(none)")
+    print()
+    print("Top Directories:")
+    for d in result.top_directories[:5]:
+        print(f"{d.name} ({d.python_files} files, {d.python_lines} lines)")
+    print()
+    print("Quality Indicators")
+    print("------------------")
+    print(f"TODO: {result.todo_count}")
+    print(f"FIXME: {result.fixme_count}")
+    print(f"pass Statements: {result.pass_count}")
+    print(f"NotImplementedError: {result.not_implemented_count}")
+    print()
+    print("Overall Health:")
+    print(result.overall_health)
+    print()
+    print("Confidence:")
+    print(f"{result.confidence}%")
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -254,6 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("scan", help="read-only repository scan (git, files, TODO/FIXME)")
     sp.set_defaults(func=cmd_scan)
+
+    sp = sub.add_parser("analyze", help="read-only project architecture analysis")
+    sp.set_defaults(func=cmd_analyze)
 
     return p
 

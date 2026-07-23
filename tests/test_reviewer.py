@@ -251,8 +251,11 @@ def test_duplicate_code_detected(tmp_path):
     assert _by_cat(report, "duplicate_code")
 
 
-@pytest.mark.xfail(reason="duplicate_code detector deferred beyond Phase 8B GREEN",
-                   strict=False)
 def test_unique_code_has_no_duplicate_findings(tmp_path):
+    # NOT xfail: unlike test_duplicate_code_detected, this assertion holds
+    # whether or not a duplicate_code detector exists (no detector -> no
+    # duplicate_code findings for ANY input, including unique code). It was
+    # previously marked xfail by mistake (copied from its sibling test above)
+    # and always unexpectedly passed (XPASS) as a result.
     report = _review(tmp_path, {"main.py": CLEAN_SRC})
     assert _by_cat(report, "duplicate_code") == []

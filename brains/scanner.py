@@ -14,6 +14,13 @@ repository, stages anything, or changes git state.
 
 Public API:
     run_scan(repo_path) -> ScanResult
+    iter_python_files(repo_path, ignore_dirs=None) -> yields (full_path, name)
+    is_test_file(name) -> bool
+    count_markers(content) -> dict
+
+The last three are exposed (not just `run_scan`) so other brains - e.g. the
+Phase 1B analyzer - can reuse the exact same file walk, test-file convention,
+and marker-counting rules instead of duplicating them.
 
 All values in the returned ScanResult come from inspecting `repo_path` at call
 time - nothing here is hardcoded or estimated.
@@ -28,7 +35,7 @@ from dataclasses import dataclass
 
 # Directories that never hold project source and would otherwise inflate or
 # skew the counts (VCS internals, virtualenvs, caches, build artifacts).
-_IGNORE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "build", "dist"}
+IGNORE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "build", "dist"}
 
 _TODO_RE = re.compile(r"\bTODO\b")
 _FIXME_RE = re.compile(r"\bFIXME\b")
@@ -109,15 +116,21 @@ def _git_info_via_subprocess(repo_path: str) -> tuple:
 # --------------------------------------------------------------------------- #
 # File discovery
 # --------------------------------------------------------------------------- #
-def _is_test_file(name: str) -> bool:
+def is_test_file(name: str) -> bool:
+    """Whether `name` follows this project's test-file naming convention
+    (matches pytest's own default discovery: `test_*.py` or `*_test.py`)."""
     return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
 
 
-def _iter_python_files(repo_path: str):
-    """Yield full paths of every .py file under `repo_path`, skipping
-    _IGNORE_DIRS anywhere in the tree."""
+def iter_python_files(repo_path: str, ignore_dirs: set = None):
+    """Yield (full_path, name) for every .py file under `repo_path`, skipping
+    `ignore_dirs` (defaults to IGNORE_DIRS) anywhere in the tree. Callers that
+    need to additionally skip generated/output directories (e.g. the Phase 1B
+    analyzer excluding workspace/) can pass a superset here instead of
+    re-walking the tree themselves."""
+    ignore = IGNORE_DIRS if ignore_dirs is None else ignore_dirs
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS]
+        dirs[:] = [d for d in dirs if d not in ignore]
         for name in files:
             if name.endswith(".py"):
                 yield os.path.join(root, name), name
@@ -137,7 +150,9 @@ def _count_pass_statements(content: str) -> int:
     return sum(1 for node in ast.walk(tree) if isinstance(node, ast.Pass))
 
 
-def _count_markers(content: str) -> dict:
+def count_markers(content: str) -> dict:
+    """Count TODO/FIXME/pass/NotImplementedError markers in one file's
+    source. Returns {"todo", "fixme", "pass", "not_implemented"}."""
     return {
         "todo": len(_TODO_RE.findall(content)),
         "fixme": len(_FIXME_RE.findall(content)),
@@ -160,9 +175,9 @@ def run_scan(repo_path: str) -> ScanResult:
     test_files = 0
     todo = fixme = pass_count = not_implemented = 0
 
-    for full_path, name in _iter_python_files(repo_path):
+    for full_path, name in iter_python_files(repo_path):
         python_files += 1
-        if _is_test_file(name):
+        if is_test_file(name):
             test_files += 1
         try:
             with open(full_path, encoding="utf-8") as fh:
@@ -170,7 +185,7 @@ def run_scan(repo_path: str) -> ScanResult:
         except OSError:
             continue
 
-        counts = _count_markers(content)
+        counts = count_markers(content)
         todo += counts["todo"]
         fixme += counts["fixme"]
         pass_count += counts["pass"]
