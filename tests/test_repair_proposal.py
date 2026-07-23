@@ -246,3 +246,82 @@ def test_file_is_frozen():
                             current_sha256="abc", confidence=80)
     with pytest.raises((AttributeError, TypeError)):
         f.path = "y.py"
+
+
+# --------------------------------------------------------------------------- #
+# Security regression: compound secret filenames
+# --------------------------------------------------------------------------- #
+
+def test_compound_secret_filenames_excluded():
+    assert _is_secret_file("db_credentials.json")
+    assert _is_secret_file("user_auth.py")
+    assert _is_secret_file("app_secrets.py")
+    assert _is_secret_file("service_token.txt")
+    assert _is_secret_file("client_keys.json")
+    assert _is_secret_file("credentials.py")
+    assert _is_secret_file("secrets.py")
+    assert _is_secret_file("auth.py")
+    assert _is_secret_file("config/secrets.py")
+
+
+def test_non_secret_names_not_caught():
+    assert not _is_secret_file("tokenizer.py")
+    assert not _is_secret_file("authentication_handler.py")
+
+
+# --------------------------------------------------------------------------- #
+# Security regression: inline secret redaction
+# --------------------------------------------------------------------------- #
+
+def test_password_assignment_redacted():
+    content = 'password = "super-secret-123"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "super-secret-123" not in r
+    assert "[REDACTED]" in r
+
+
+def test_uppercase_secret_redacted():
+    content = 'SECRET = "mykey"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "mykey" not in r
+
+
+def test_client_secret_redacted():
+    content = 'client_secret = "abc123"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "abc123" not in r
+
+
+def test_aws_secret_key_redacted():
+    content = 'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "wJalr" not in r
+
+
+def test_authorization_bearer_redacted():
+    content = 'Authorization: Bearer sk-abc123def456\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "sk-abc" not in r
+    assert "Bearer [REDACTED]" in r
+
+
+def test_url_credentials_redacted():
+    content = 'DATABASE_URL = postgres://user:password123@host/db\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "password123" not in r
+    assert "postgres://" in r
+    assert "[REDACTED]" in r
+
+
+def test_redacted_values_never_appear():
+    content = 'password = "secret"\nSECRET = "key"\nAuthorization: Bearer tok\n'
+    r, c = _redact_inline_secrets(content)
+    assert "secret" not in r or r.count("secret") <= 1
+    assert "key" not in r or r.count("key") <= 1
+    assert "tok" not in r

@@ -52,15 +52,24 @@ _MAX_PROPOSED_FILES = 5
 
 _SECRET_FILE_PATTERNS = [
     re.compile(p) for p in [
-        r"(^|/)\.env(\..*)?$", r"(^|/)\.env\..*", r".*\.pem$", r".*\.key$",
-        r"(^|/)id_rsa", r"(^|/)id_ed25519", r"(^|/)credentials",
-        r"(^|/)secrets", r"(^|/)token", r"(^|/)auth",
+        r"(^|/)\.env(\..*)?$",
+        r".*\.pem$",
+        r".*\.key$",
+        r"(^|/|_)id_rsa",
+        r"(^|/|_)id_ed25519",
+        r"(^|[/_])(credentials|secrets|token|auth|keys)([_.]|\.\w+$|$)",
     ]
 ]
 
 _INLINE_SECRET_RE = re.compile(
-    r'(api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?token'
-    r'|auth[_-]?token|private[_-]?key|bearer)\s*[:=]\s*[\S]+',
+    r'('
+    r'api[_-]?key|api[_-]?secret|secret[_-]?key|access[_-]?token'
+    r'|auth[_-]?token|private[_-]?key|client[_-]?secret'
+    r'|aws[_-]?secret[_-]?access[_-]?key'
+    r')\s*[:=]\s*\S+|'
+    r'\b(password|secret)\s*[:=]\s*\S+|'
+    r'authorization\s*:\s*bearer\s+\S+|'
+    r'(postgres|mysql|mongodb|redis)://[^@]*:[^@]*@[^\s]+',
     re.IGNORECASE,
 )
 
@@ -123,10 +132,21 @@ def _is_secret_file(file_path: str) -> bool:
 
 def _redact_inline_secrets(content: str) -> tuple[str, int]:
     count = len(_INLINE_SECRET_RE.findall(content))
-    redacted = _INLINE_SECRET_RE.sub(
-        lambda m: m.group(0).split(":")[0].split("=")[0] + "= [REDACTED]",
-        content,
-    )
+
+    def _replace(m: re.Match) -> str:
+        matched = m.group(0)
+        if matched.startswith("authorization") or matched.startswith("Authorization"):
+            return "Authorization: Bearer [REDACTED]"
+        if "://" in matched and "@" in matched:
+            proto_end = matched.index("://") + 3
+            at_idx = matched.rindex("@")
+            return matched[:proto_end] + "[REDACTED]" + matched[at_idx:]
+        for sep in ("=", ":"):
+            if sep in matched:
+                return matched.split(sep)[0] + sep + " [REDACTED]"
+        return "[REDACTED]"
+
+    redacted = _INLINE_SECRET_RE.sub(_replace, content)
     return redacted, count
 
 

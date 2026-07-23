@@ -13,6 +13,7 @@ Public API:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from brains import engine_registry
@@ -58,7 +59,22 @@ def generate_proposal_json(
     resolved_model = _resolve_model(provider, model)
 
     try:
-        engine = engine_registry.create(provider, model=resolved_model)
+        if provider == "claude":
+            engine = engine_registry.create(provider)
+        elif provider == "deepseek":
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+            if not api_key:
+                return ProviderResult(
+                    provider=provider,
+                    model=resolved_model,
+                    error="DeepSeek API key not configured. Set DEEPSEEK_API_KEY "
+                          "environment variable.",
+                    blocked=True,
+                )
+            engine = engine_registry.create(provider, model=resolved_model,
+                                             api_key=api_key)
+        else:
+            engine = engine_registry.create(provider, model=resolved_model)
     except Exception as exc:
         return ProviderResult(
             provider=provider,
