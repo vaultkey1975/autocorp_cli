@@ -401,7 +401,9 @@ def cmd_propose_repair(args) -> int:
     commits, never pushes."""
     repo_root = _resolve_repo(args)
     action_id = args.action
-    provider = getattr(args, "provider", None) or "local"
+    raw_provider = getattr(args, "provider", None) or "local"
+    _PROVIDER_ALIASES = {"ollama": "local"}
+    provider = _PROVIDER_ALIASES.get(raw_provider, raw_provider)
     model = getattr(args, "model", None)
     output_path = getattr(args, "output", None)
     overwrite = getattr(args, "overwrite", False)
