@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, project_planner, repair_executor, scanner, workspace
+from brains import analyzer, engine_registry, project_planner, repair_executor, repair_proposal, scanner, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -395,6 +395,104 @@ def cmd_repair(args) -> int:
     return 1
 
 
+def cmd_propose_repair(args) -> int:
+    """AI repair proposal engine: generates a structured, review-only
+    repair proposal for a Phase 1C action. Never applies changes, never
+    commits, never pushes."""
+    repo_root = _resolve_repo(args)
+    action_id = args.action
+    provider = getattr(args, "provider", None) or "local"
+    model = getattr(args, "model", None)
+    output_path = getattr(args, "output", None)
+    overwrite = getattr(args, "overwrite", False)
+
+    proposal = repair_proposal.build_repair_proposal(
+        repo_root, action_id, provider=provider, model=model,
+    )
+
+    print("AI Repair Proposal")
+    print("==================")
+    print()
+    print(f"Workspace:   {proposal.repo_path}")
+    print(f"Action ID:   {proposal.action_id}")
+    print(f"Action:      {proposal.action_title}")
+    print(f"Provider:    {proposal.provider}")
+    print(f"Model:       {proposal.model}")
+    print()
+    print("Summary:")
+    print(proposal.summary or "(none)")
+    print()
+    print("Reasoning Summary:")
+    print(proposal.reasoning_summary or "(none)")
+    print()
+
+    if proposal.files:
+        print("Files")
+        print("-----")
+        print()
+        for idx, f in enumerate(proposal.files, 1):
+            print(f"  {idx}. {f.path}")
+            print(f"     Purpose: {f.purpose}")
+            print(f"     Current SHA-256: {f.current_sha256}")
+            print(f"     Proposed Change: {f.proposed_change_summary}")
+            if f.proposed_patch:
+                print("     Patch:")
+                for pline in f.proposed_patch.splitlines():
+                    print(f"       {pline}")
+            print()
+
+    if proposal.validation_plan:
+        print("Validation Plan:")
+        for v in proposal.validation_plan:
+            print(f"  - {v}")
+        print()
+
+    if proposal.risks:
+        print("Risks:")
+        for r in proposal.risks:
+            print(f"  - {r}")
+        print()
+
+    if proposal.blockers:
+        print("Blockers:")
+        for b in proposal.blockers:
+            print(f"  - {b}")
+        print()
+
+    print(f"Safe to Apply:   {'Yes' if proposal.safe_to_apply else 'No'}")
+    print(f"Confidence:      {proposal.confidence}%")
+    print()
+    print(f"Redactions:      {proposal.redactions}")
+    if proposal.redaction_summary:
+        print(f"                 {proposal.redaction_summary}")
+    print()
+    print("No Changes Made: Yes")
+
+    if proposal.provider_error:
+        print()
+        print(f"Provider Error: {proposal.provider_error}")
+        return 1
+
+    if proposal.blockers:
+        return 1
+
+    if output_path:
+        try:
+            saved = repair_proposal.write_repair_proposal(
+                proposal, output_path, overwrite=overwrite,
+            )
+            print(f"Proposal saved to: {saved}")
+        except FileExistsError:
+            print(f"Output file already exists: {output_path}")
+            print("Use --overwrite to replace.")
+            return 1
+        except (ValueError, OSError) as exc:
+            print(f"Failed to write output: {exc}")
+            return 1
+
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -501,6 +599,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--approve", action="store_true",
                     help="apply the repair (required for any file changes)")
     sp.set_defaults(func=cmd_repair)
+
+    sp = sub.add_parser("propose-repair", help="AI repair proposal engine (review-only)")
+    sp.add_argument("--action", required=True, metavar="ACTION_ID",
+                    help="Phase 1C action ID to generate a proposal for")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--provider", default=None, metavar="PROVIDER",
+                    help="AI provider: local (ollama), deepseek, claude")
+    sp.add_argument("--model", default=None, metavar="MODEL",
+                    help="override default model name")
+    sp.add_argument("--output", default=None, metavar="PATH",
+                    help="absolute path for proposal JSON output")
+    sp.add_argument("--overwrite", action="store_true",
+                    help="overwrite existing output file")
+    sp.set_defaults(func=cmd_propose_repair)
 
     return p
 
