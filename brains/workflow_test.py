@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Disposable Workflow Test  (AutoCorp CLI - brains)  [Phase 1M-1R]
+Disposable Workflow Test  (AutoCorp CLI - brains)  [Phase 1M-1S]
 ==================================================================
 
 Persistent HTTP session with semantic redirect validation, real identifier
-propagation, and OpenAPI-grounded request construction. Requires
---disposable. Never modifies production data.
+propagation, studio activation, and OpenAPI-grounded request construction.
+Requires --disposable. Never modifies production data.
 """
 
 from __future__ import annotations
@@ -310,7 +310,8 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         except: pass
     report.candidate_routes = routes
 
-    def _stage(num: int, name: str, keywords: list, known: dict = None) -> StageRecord:
+    def _stage(num: int, name: str, keywords: list, known: dict = None,
+               path_params: dict = None) -> StageRecord:
         s = StageRecord(number=num, stage=name)
         s.db_before = _sha256_file(disp_db) if os.path.isfile(disp_db) else ""
         rt = _resolve_route(routes, keywords)
@@ -318,12 +319,18 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
             s.status = "FAIL"; s.failure_reason = "ROUTE_RESOLUTION_AMBIGUOUS"
             report.stages.append(s); return s
         s.route = rt["path"]; s.method = rt["method"]; s.operation_id = rt["operation_id"]
+
+        # Substitute path parameters
+        resolved_path = rt["path"]
+        if path_params:
+            for k, v in path_params.items():
+                resolved_path = resolved_path.replace("{" + k + "}", str(v))
+
         ct, body = _build_body(rt, known)
         s.content_type = ct; s.request_body = json.dumps(body)[:500]
 
         t1 = time.time()
-        # First request: don't follow redirects to capture original response
-        resp = h.request(f"{base}{rt['path']}", method=rt["method"], data=body, content_type=ct, follow_redirects=False)
+        resp = h.request(f"{base}{resolved_path}", method=rt["method"], data=body, content_type=ct, follow_redirects=False)
         s.duration = time.time() - t1
         s.response_code = resp["status_code"]
         s.response_body = resp.get("body", "")[:4000]
@@ -374,8 +381,15 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     studio_id = s.extracted_ids.get("studio_id", "") or ""
 
+    # Stage 2b: Studio activation (required before episode creation)
+    s = _stage(3, "STUDIO_ACTIVATION", ["activate_studio", "studios__studio_id__activate"],
+                path_params={"studio_id": studio_id} if studio_id else None)
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+    report.overall_status = "DISPOSABLE_STUDIO_READY"
+
     # Stage 3: Episode start (with real studio_id)
-    s = _stage(3, "EPISODE_START", ["episode", "start"],
+    s = _stage(4, "EPISODE_START", ["episode", "start"],
                 {"studio_id": studio_id, "topic": "Why careful software testing matters",
                  "research_level": "none", "length_preset": "very_short", "format_key": "solo_host"})
     if s.status != "PASS":
