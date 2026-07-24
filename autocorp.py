@@ -678,8 +678,14 @@ def cmd_workflow_test(args) -> int:
         print(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
         if s.route:
             print(f"       Route: {s.method} {s.route}")
+        if s.content_type:
+            print(f"       Content-Type: {s.content_type}")
         if s.operation_id:
             print(f"       Operation: {s.operation_id}")
+        if s.validation_errors:
+            print(f"       Validation errors:")
+            for ve in s.validation_errors[:5]:
+                print(f"         {ve}")
         if s.extracted_id:
             print(f"       ID: {s.extracted_id}")
         if s.request_body:
@@ -690,9 +696,6 @@ def cmd_workflow_test(args) -> int:
             print(f"       {ev}")
         if s.failure_reason:
             print(f"       FAILURE: {s.failure_reason}")
-        if s.artifacts:
-            for a in s.artifacts:
-                print(f"       Artifact: {a}")
         print()
 
     if report.first_failure:
