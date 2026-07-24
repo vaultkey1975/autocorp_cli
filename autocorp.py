@@ -662,7 +662,7 @@ def cmd_workflow_test(args) -> int:
         return 1
 
     repo_root = _resolve_repo(args)
-    report = workflow_test.run_workflow_test(repo_root, workflow="episode")
+    report = workflow_test.run_workflow_test(repo_root, port=8000)
 
     print("Disposable Workflow Test")
     print("========================")
@@ -686,16 +686,17 @@ def cmd_workflow_test(args) -> int:
             print(f"       Validation errors:")
             for ve in s.validation_errors[:5]:
                 print(f"         {ve}")
-        if s.extracted_id:
-            print(f"       ID: {s.extracted_id} (field={s.extracted_id_field})")
-        if s.cookies_after:
-            print(f"       Cookies: {s.cookies_after}")
+        if s.extracted_ids:
+            for k, v in s.extracted_ids.items():
+                print(f"       ID: {k}={v}")
+        if s.flash_messages:
+            print(f"       Flash: {dict(s.flash_messages)}")
+        if s.flash_messages:
+            print(f"       Flash: {dict(s.flash_messages)}")
         if s.redirect_url:
-            print(f"       Redirect: {s.redirect_url}")
+            print(f"       Redirect: {s.redirect_url[:200]}")
         if s.failure_ownership:
             print(f"       Ownership: {s.failure_ownership}")
-        if s.server_stderr:
-            print(f"       Server stderr: {s.server_stderr[:300]}")
         if s.request_body:
             print(f"       Body: {s.request_body[:200]}")
         if s.response_code:
