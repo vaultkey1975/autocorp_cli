@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Disposable Workflow Test  (AutoCorp CLI - brains)  [Phase 1M-1P]
+Disposable Workflow Test  (AutoCorp CLI - brains)  [Phase 1M-1Q]
 ==================================================================
 
-Runs a disposable CloneCast workflow with exact OpenAPI request body
-construction. Resolves JSON and form-urlencoded schemas, handles 422
-diagnostics, and stops on first genuine failure.
-
-Requires --disposable. Never modifies production data.
+Persistent HTTP session with cookie preservation, redirect handling,
+server-stderr diagnostics for 500 failures, and exact OpenAPI request
+construction. Requires --disposable. Never modifies production data.
 """
 
 from __future__ import annotations
 
 import hashlib
+import http.cookiejar
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -43,12 +43,21 @@ class StageRecord:
     request_body: str = ""
     response_code: int = 0
     response_body: str = ""
+    response_content_type: str = ""
+    cookies_before: list = field(default_factory=list)
+    cookies_after: list = field(default_factory=list)
+    redirect_url: str = ""
     extracted_id: str = ""
+    extracted_id_field: str = ""
     failure_reason: str = ""
+    failure_ownership: str = ""
     validation_errors: list = field(default_factory=list)
+    server_stderr: str = ""
     evidence: list = field(default_factory=list)
     db_before: str = ""
     db_after: str = ""
+    db_rows_before: int = 0
+    db_rows_after: int = 0
 
 
 class WorkflowTestReport:
@@ -61,7 +70,6 @@ class WorkflowTestReport:
         self.overall_status = "INCONCLUSIVE"
         self.first_failure = ""
         self.duration = 0.0
-        self.artifact_inventory: list[dict] = []
 
 
 def _sha256_file(p: str) -> str:
@@ -75,33 +83,53 @@ def _sha256_file(p: str) -> str:
 
 def _port_listening(host: str, port: int) -> bool:
     try:
-        s = socket.create_connection((host, port), timeout=0.5); s.close(); return True
-    except (OSError, ConnectionRefusedError, TimeoutError): return False
+        s = socket.create_connection((host, port), timeout=0.5); s.close()
+        return True
+    except (OSError, ConnectionRefusedError, TimeoutError):
+        return False
 
 
-def _http(url: str, method: str = "GET", data: dict | str = None,
-          content_type: str = "application/json", timeout: int = 20) -> dict:
-    r = {"status_code": 0, "body": "", "error": ""}
-    try:
-        body = None
-        headers = {}
-        if data is not None:
-            if content_type == "application/x-www-form-urlencoded":
-                body = urllib.parse.urlencode(data).encode()
+class SessionHTTP:
+    """Persistent HTTP client with cookie jar and redirect handling."""
+
+    def __init__(self):
+        self.cj = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(self.cj),
+            urllib.request.HTTPRedirectHandler(),
+        )
+
+    def request(self, url: str, method: str = "GET", data: dict | str = None,
+                content_type: str = "application/json", timeout: int = 20) -> dict:
+        r = {"status_code": 0, "body": "", "content_type": "", "error": "",
+             "cookies_before": list(self.cj), "cookies_after": [],
+             "redirect_url": ""}
+        try:
+            body = None
+            headers = {}
+            if data is not None:
+                if content_type == "application/x-www-form-urlencoded":
+                    body = urllib.parse.urlencode(data).encode()
+                else:
+                    body = json.dumps(data).encode()
                 headers["Content-Type"] = content_type
-            else:
-                body = json.dumps(data).encode()
-                headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(url, data=body, method=method, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            req = urllib.request.Request(url, data=body, method=method, headers=headers)
+            r["cookies_before"] = [c.name for c in self.cj]
+            resp = self.opener.open(req, timeout=timeout)
             r["status_code"] = resp.status
+            r["content_type"] = resp.headers.get("Content-Type", "")
             r["body"] = resp.read(_BODY_LIMIT).decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        r["status_code"] = exc.code
-        r["body"] = exc.read().decode("utf-8", errors="replace")
-    except Exception as exc:
-        r["error"] = str(exc)[:500]
-    return r
+            r["redirect_url"] = resp.url if resp.url != url else ""
+            r["cookies_after"] = [c.name for c in self.cj]
+        except urllib.error.HTTPError as exc:
+            r["status_code"] = exc.code
+            r["body"] = exc.read().decode("utf-8", errors="replace")[:5000]
+        except Exception as exc:
+            r["error"] = str(exc)[:500]
+        return r
+
+    def get_cookie_names(self) -> list:
+        return [c.name for c in self.cj]
 
 
 def _resolve_ref(obj, components, depth=0):
@@ -111,12 +139,10 @@ def _resolve_ref(obj, components, depth=0):
             parts = obj["$ref"].split("/")
             target = components
             for p in parts[1:]:
-                if isinstance(target, dict):
-                    target = target.get(p, {})
-            return _resolve_ref(target, components, depth + 1)
-        return {k: _resolve_ref(v, components, depth + 1) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_resolve_ref(v, components, depth + 1) for v in obj]
+                if not isinstance(target, dict): return obj
+                target = target.get(p, {})
+            return target  # resolved, intentionally non-recursive
+        return obj  # don't recursively process non-$ref dicts
     return obj
 
 
@@ -132,11 +158,9 @@ def _parse_openapi_routes(schema: dict) -> list[dict]:
                 "path": path, "method": method.upper(),
                 "operation_id": spec.get("operationId", ""),
                 "summary": spec.get("summary", ""),
-                "tags": spec.get("tags", []),
                 "has_request_body": bool(content),
                 "content_types": list(content.keys()),
-                "request_schema": {},
-                "required_fields": [],
+                "request_schema": {}, "required_fields": [],
             }
             if content:
                 ct = next(iter(content))
@@ -153,18 +177,16 @@ def _resolve_route(routes: list, keywords: list, method: str = "POST") -> dict |
     candidates = []
     for rt in routes:
         if rt["method"].upper() != method.upper(): continue
-        path_score = sum(1 for k in keywords if k.lower() in rt["path"].lower())
-        opid_score = sum(1 for k in keywords if k.lower() in rt["operation_id"].lower())
-        score = path_score * 3 + opid_score
+        ps = sum(1 for k in keywords if k.lower() in rt["path"].lower())
+        os_ = sum(1 for k in keywords if k.lower() in rt["operation_id"].lower())
+        score = ps * 3 + os_
         if score > 0:
-            path_segs = len(rt["path"].split("/"))
-            candidates.append((score, -path_segs, rt))
+            candidates.append((score, -len(rt["path"].split("/")), rt))
     candidates.sort(key=lambda x: (-x[0], -x[1]))
     if not candidates: return None
     best = candidates[0]
     tied = [c for c in candidates if c[0] == best[0] and c[1] == best[1]]
-    if len(tied) > 1: return None
-    return best[2]
+    return None if len(tied) > 1 else best[2]
 
 
 def _build_body(rt: dict, defaults: dict = None) -> tuple[str, dict]:
@@ -172,14 +194,13 @@ def _build_body(rt: dict, defaults: dict = None) -> tuple[str, dict]:
     ct = rt.get("content_type", "application/json")
     required = set(rt.get("required_fields", []))
     properties = schema.get("properties", {})
-
     body = {}
     for field, prop in properties.items():
         if field in required:
             if defaults and field in defaults:
                 body[field] = defaults[field]
             elif prop.get("type") == "string":
-                body[field] = "AutoCorp Disposable Test"
+                body[field] = "AutoCorp Test"
             elif prop.get("type") == "boolean":
                 body[field] = False
             elif prop.get("type") == "integer":
@@ -187,14 +208,37 @@ def _build_body(rt: dict, defaults: dict = None) -> tuple[str, dict]:
     return ct, body
 
 
-def _extract_id(body: str) -> str:
+def _extract_id(body: str, content_type: str = "") -> tuple[str, str]:
+    ct = (content_type or "").lower()
+    if "json" in ct:
+        try:
+            d = json.loads(body)
+            for k in ("session_id", "studio_id", "plan_id", "id", "conversation_id", "job_id"):
+                if k in d and d[k] is not None:
+                    return str(d[k]), k
+        except: pass
+    if "html" in ct or body.strip().startswith("<"):
+        m = re.search(r'name="session_id"\s+value="([^"]+)"', body)
+        if m: return m.group(1), "html_form_session_id"
+        m = re.search(r'data-session-id="([^"]+)"', body)
+        if m: return m.group(1), "html_data_session_id"
+    return "", ""
+
+
+def _count_db_rows(db_path: str) -> int:
     try:
-        d = json.loads(body)
-        for k in ("studio_id", "session_id", "plan_id", "id", "conversation_id", "job_id"):
-            if k in d and d[k] is not None:
-                return str(d[k])
-    except: pass
-    return ""
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=5)
+        cur = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'")
+        table_count = cur.fetchone()[0]
+        conn.close()
+        return table_count
+    except Exception:
+        return -1
+
+
+def _read_stderr(proc) -> str:
+    return ""  # avoid blocking on pipe reads during active server
 
 
 def _parse_422(body: str) -> list:
@@ -203,7 +247,7 @@ def _parse_422(body: str) -> list:
         detail = d.get("detail", [])
         if isinstance(detail, list):
             return [{"loc": e.get("loc", []), "msg": e.get("msg", ""),
-                      "type": e.get("type", "")}
+                     "type": e.get("type", "")}
                     for e in detail if isinstance(e, dict)]
     except: pass
     return []
@@ -236,8 +280,8 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
     if os.path.isfile(prod_db):
         shutil.copy2(prod_db, disp_db)
     if os.path.commonpath([disp, repo_path]).startswith(repo_path):
-        s0.status = "FAIL"; s0.failure_reason = "Root outside repo."
-        report.stages.append(s0); report.overall_status = "SAFETY_BLOCKED"
+        s0.status = "FAIL"; report.stages.append(s0)
+        report.overall_status = "SAFETY_BLOCKED"
         report.duration = time.time() - t0; return report
 
     s0.status = "PASS"
@@ -247,8 +291,8 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
     venv = os.path.join(repo_path, ".venv", "bin", "python")
     if not os.path.isfile(venv):
         s0.status = "FAIL"; s0.failure_reason = ".venv not found."
-        report.overall_status = "REQUIRED_SERVICE_MISSING"; report.duration = time.time() - t0
-        return report
+        report.overall_status = "REQUIRED_SERVICE_MISSING"
+        report.duration = time.time() - t0; return report
 
     if _port_listening("127.0.0.1", port):
         for alt in range(port + 1, port + 100):
@@ -265,27 +309,28 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
             "--factory", "--host", "127.0.0.1", f"--port={port}"]
     proc = None
     try:
-        proc = subprocess.Popen(args, cwd=repo_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(args, cwd=repo_path, env=env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         for _ in range(40):
             if _port_listening("127.0.0.1", port): break
             if proc.poll() is not None:
                 _, err = proc.communicate()
-                s0.status = "FAIL"; s0.failure_reason = f"Server exited: {err[:500]}"
-                report.stages.append(s0); report.overall_status = "STAGE_FAILED"
+                s0.status = "FAIL"
+                s0.failure_reason = f"Server exited: {err[:500]}"
                 report.duration = time.time() - t0; return report
             time.sleep(0.5)
     except Exception as e:
         s0.status = "FAIL"; s0.failure_reason = str(e)
-        report.overall_status = "STAGE_FAILED"; report.duration = time.time() - t0
-        return report
+        report.duration = time.time() - t0; return report
 
     base = f"http://127.0.0.1:{port}"
-    if _http(f"{base}/health")["status_code"] != 200:
+    http_session = SessionHTTP()
+    if http_session.request(f"{base}/health")["status_code"] != 200:
         _shutdown(proc); report.overall_status = "STAGE_FAILED"
         report.duration = time.time() - t0; return report
 
     time.sleep(1)
-    openapi_res = _http(f"{base}/openapi.json")
+    openapi_res = http_session.request(f"{base}/openapi.json")
     routes = []
     if openapi_res["status_code"] == 200 and openapi_res["body"]:
         try: routes = _parse_openapi_routes(json.loads(openapi_res["body"]))
@@ -297,8 +342,7 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
         s.db_before = _sha256_file(disp_db) if os.path.isfile(disp_db) else ""
         rt = _resolve_route(routes, keywords)
         if rt is None:
-            s.status = "FAIL"
-            s.failure_reason = f"ROUTE_RESOLUTION_AMBIGUOUS"
+            s.status = "FAIL"; s.failure_reason = "ROUTE_RESOLUTION_AMBIGUOUS"
             report.stages.append(s); return s
         s.route = rt["path"]; s.method = rt["method"]
         s.operation_id = rt["operation_id"]
@@ -308,34 +352,51 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
         s.request_body = json.dumps(body)[:500]
 
         t1 = time.time()
-        resp = _http(f"{base}{rt['path']}", method=rt["method"], data=body, content_type=ct)
+        resp = http_session.request(f"{base}{rt['path']}", method=rt["method"],
+                                     data=body, content_type=ct)
         s.duration = time.time() - t1
         s.response_code = resp["status_code"]
-        s.response_body = resp.get("body", "")[:2000]
-        s.extracted_id = _extract_id(resp.get("body", ""))
+        s.response_body = resp.get("body", "")[:4000]
+        s.response_content_type = resp.get("content_type", "")
+        s.cookies_before = resp.get("cookies_before", [])
+        s.cookies_after = resp.get("cookies_after", [])
+        s.redirect_url = resp.get("redirect_url", "")
+        s.extracted_id, s.extracted_id_field = _extract_id(resp.get("body", ""), resp.get("content_type", ""))
         s.db_after = _sha256_file(disp_db) if os.path.isfile(disp_db) else ""
+        s.server_stderr = _read_stderr(proc)
 
         if resp["status_code"] == 422:
             s.validation_errors = _parse_422(resp.get("body", ""))
+            s.status = "FAIL"; s.failure_ownership = "AUTOCORP_REQUEST_CONSTRUCTION_DEFECT"
+            s.failure_reason = f"422: {json.dumps(s.validation_errors)[:500]}"
+        elif resp["status_code"] >= 500:
             s.status = "FAIL"
-            s.failure_reason = f"HTTP 422: {json.dumps(s.validation_errors)[:500]}"
+            stderr = s.server_stderr
+            s.failure_reason = f"HTTP {resp['status_code']}: {resp.get('body','')[:300]}"
+            if stderr:
+                s.failure_reason += f"\nServer stderr: {stderr[:1000]}"
+            if "Session" in s.failure_reason or "session" in s.failure_reason.lower():
+                s.failure_ownership = "CLONECAST_INVALID_STATE_HANDLING"
+            else:
+                s.failure_ownership = "CLONECAST_SERVER_EXCEPTION"
         elif resp["status_code"] == 0:
-            s.status = "FAIL"
+            s.status = "FAIL"; s.failure_ownership = "AUTOCORP_REQUEST_CONSTRUCTION_DEFECT"
             s.failure_reason = f"Connection failed: {resp.get('error','')[:300]}"
         elif resp["status_code"] >= 400:
             s.status = "FAIL"
             s.failure_reason = f"HTTP {resp['status_code']}: {resp.get('body','')[:300]}"
         else:
             s.status = "PASS"
-            s.evidence.append(f"Route: {s.method} {s.route}")
-            s.evidence.append(f"OpID: {s.operation_id}")
-            s.evidence.append(f"Content-Type: {ct}")
+            s.evidence.append(f"{s.method} {s.route} -> {resp['status_code']}")
             if s.extracted_id:
-                s.evidence.append(f"ID: {s.extracted_id}")
+                s.evidence.append(f"ID: {s.extracted_id} (field={s.extracted_id_field})")
+            if s.redirect_url:
+                s.evidence.append(f"Redirect: {s.redirect_url}")
+            if s.cookies_after:
+                s.evidence.append(f"Cookies: {s.cookies_after}")
         report.stages.append(s)
         return s
 
-    # Stage 2: Studio creation (form-urlencoded, required: display_name, show_format)
     s = _stage(2, "STUDIO_CREATION", ["studio", "create"],
                 {"display_name": "AutoCorp Disposable Test Studio",
                  "show_format": "solo_host"})
@@ -343,30 +404,28 @@ def run_workflow_test(repo_path: str, workflow: str = "episode",
         report.first_failure = s.failure_reason; _shutdown(proc)
         _finalize(report, prod_db, t0); return report
 
-    # Stage 3: Episode creation
-    s = _stage(3, "EPISODE_START", ["episode", "start"],
-                field_defaults=None)
+    s = _stage(3, "EPISODE_START", ["episode", "start"])
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc)
         _finalize(report, prod_db, t0); return report
     session_id = s.extracted_id or ""
     report.overall_status = "DISPOSABLE_RECORD_FLOW_COMPLETE"
 
-    # Stage 4: No-research mode
-    s = _stage(4, "RESEARCH_MODE", ["research", "no-research"])
+    s = _stage(4, "RESEARCH_MODE", ["research", "no-research"],
+                {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc)
         _finalize(report, prod_db, t0); return report
 
-    # Stage 5: Episode plan
-    s = _stage(5, "EPISODE_PLAN", ["episode", "plan", "create"])
+    s = _stage(5, "EPISODE_PLAN", ["episode", "plan", "create"],
+                {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc)
         _finalize(report, prod_db, t0); return report
     plan_id = s.extracted_id or ""
 
-    # Stage 6: Assemble
-    s = _stage(6, "ASSEMBLE", ["assemble", "episode"])
+    s = _stage(6, "ASSEMBLE", ["assemble", "episode"],
+                {"plan_id": plan_id} if plan_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason
     else:

@@ -687,7 +687,15 @@ def cmd_workflow_test(args) -> int:
             for ve in s.validation_errors[:5]:
                 print(f"         {ve}")
         if s.extracted_id:
-            print(f"       ID: {s.extracted_id}")
+            print(f"       ID: {s.extracted_id} (field={s.extracted_id_field})")
+        if s.cookies_after:
+            print(f"       Cookies: {s.cookies_after}")
+        if s.redirect_url:
+            print(f"       Redirect: {s.redirect_url}")
+        if s.failure_ownership:
+            print(f"       Ownership: {s.failure_ownership}")
+        if s.server_stderr:
+            print(f"       Server stderr: {s.server_stderr[:300]}")
         if s.request_body:
             print(f"       Body: {s.request_body[:200]}")
         if s.response_code:
