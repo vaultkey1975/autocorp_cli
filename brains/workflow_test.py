@@ -193,6 +193,38 @@ def _resolve_route(routes: list, keywords: list, method: str = "POST") -> dict |
     return None if len(tied) > 1 else best[2]
 
 
+_ID_FIELDS = {"id", "studio_id", "session_id", "plan_id", "job_id", "episode_id",
+              "conversation_id", "caller_id", "guest_id", "character_id",
+              "reviewer_id", "approver_id", "asset_id", "package_id"}
+_ENUM_FIELDS = {"decision", "status", "mode", "level", "format_key", "format",
+                "length_preset", "research_level", "privacy_status",
+                "recovery_policy", "show_format", "language", "role"}
+_SEMANTIC_FIELDS = _ID_FIELDS | _ENUM_FIELDS | {"reviewer", "approver",
+                    "stable_name", "speaking_style", "personality_summary"}
+
+_PLACEHOLDER_TERMS = {"test", "testing", "placeholder", "dummy", "example",
+                       "sample", "fake", "mock", "unknown", "temp",
+                       "temporary", "default", "autocorp test"}
+
+
+_SEMANTIC_DEFAULTS = {
+    "reviewer": "AutoCorp Disposable Reviewer",
+    "approver": "AutoCorp Disposable Approver",
+    "decision": "Accepted",
+    "notes": "AutoCorp disposable review.",
+    "show_format": "solo_host",
+    "language": "en-US",
+}
+
+
+def _is_free_form(field: str) -> bool:
+    return field not in _SEMANTIC_FIELDS or field in _SEMANTIC_DEFAULTS
+
+
+def _is_placeholder(value: str) -> bool:
+    return str(value).lower().strip() in _PLACEHOLDER_TERMS
+
+
 def _build_body(rt: dict, known: dict = None) -> tuple[str, dict]:
     schema = rt.get("request_schema", {})
     ct = rt.get("content_type", "application/json")
@@ -202,16 +234,28 @@ def _build_body(rt: dict, known: dict = None) -> tuple[str, dict]:
     known = known or {}
     for field, prop in properties.items():
         if field not in required: continue
-        if field in known and known[field] is not None:
+        if field in known and known[field] is not None and not _is_placeholder(known[field]):
             body[field] = known[field]
+        elif _is_free_form(field) and prop.get("type") == "string":
+            if field in _SEMANTIC_DEFAULTS:
+                body[field] = _SEMANTIC_DEFAULTS[field]
+            elif field in ("display_name", "stable_name"):
+                body[field] = "AutoCorp Disposable Test Studio"
+            elif field == "description":
+                body[field] = "Temporary disposable test studio."
+            elif field in ("reviewer", "approver"):
+                body[field] = "AutoCorp Disposable Reviewer"
+            elif field == "topic":
+                body[field] = "Why careful software testing matters"
+            else:
+                body[field] = "disposable-test-value"
         elif "enum" in prop:
-            body[field] = prop["enum"][0]
+            body[field] = prop["enum"][0]  # safest enum value
         elif prop.get("type") == "integer":
             body[field] = 1
         elif prop.get("type") == "boolean":
             body[field] = False
-        elif prop.get("type") == "string":
-            body[field] = "test"
+        # else: leave unresolved - request will fail prevalidation
     return ct, body
 
 
