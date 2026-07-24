@@ -647,6 +647,20 @@ def cmd_live_test(args) -> int:
 def cmd_workflow_test(args) -> int:
     """Disposable workflow test: runs a real CloneCast workflow against a
     disposable environment. Never modifies production data."""
+    if not getattr(args, "disposable", False):
+        print("Disposable Workflow Test")
+        print("========================")
+        print()
+        print("Overall Status:   SAFETY_BLOCKED")
+        print()
+        print("Blockers:")
+        print("  - --disposable flag is REQUIRED for workflow testing.")
+        print("  - Without it, no temporary files are created, no database is")
+        print("    copied, no server is started, and no HTTP requests are sent.")
+        print()
+        print("No Changes Made: Yes")
+        return 1
+
     repo_root = _resolve_repo(args)
     report = workflow_test.run_workflow_test(repo_root, workflow="episode")
 
@@ -662,8 +676,10 @@ def cmd_workflow_test(args) -> int:
     for s in report.stages:
         tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[SKIP]"
         print(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
-        if s.request:
-            print(f"       Request: {s.request}")
+        if s.route:
+            print(f"       Route: {s.method} {s.route}")
+        if s.request_body:
+            print(f"       Body: {s.request_body[:200]}")
         if s.response_code:
             print(f"       Response: {s.response_code}")
         for ev in s.evidence:
@@ -833,6 +849,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="disposable episode workflow test (safe, isolated)")
     sp.add_argument("--repo", default=None, metavar="PATH",
                     help="absolute path to target repository")
+    sp.add_argument("--disposable", action="store_true",
+                    help="REQUIRED: enable disposable isolation (refuses without it)")
     sp.set_defaults(func=cmd_workflow_test)
 
     return p
