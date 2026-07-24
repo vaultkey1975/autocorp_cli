@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, repair_executor, repair_proposal, scanner, workspace
+from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -644,6 +644,52 @@ def cmd_live_test(args) -> int:
     return report.exit_code
 
 
+def cmd_workflow_test(args) -> int:
+    """Disposable workflow test: runs a real CloneCast workflow against a
+    disposable environment. Never modifies production data."""
+    repo_root = _resolve_repo(args)
+    report = workflow_test.run_workflow_test(repo_root, workflow="episode")
+
+    print("Disposable Workflow Test")
+    print("========================")
+    print()
+    print(f"Repository:       {report.repo_path}")
+    print(f"Disposable Root:  {report.disposable_root}")
+    print(f"Production DB:    {report.production_db_path}")
+    print(f"Overall Status:   {report.overall_status}")
+    print()
+
+    for s in report.stages:
+        tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[SKIP]"
+        print(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
+        if s.request:
+            print(f"       Request: {s.request}")
+        if s.response_code:
+            print(f"       Response: {s.response_code}")
+        for ev in s.evidence:
+            print(f"       {ev}")
+        if s.failure_reason:
+            print(f"       FAILURE: {s.failure_reason}")
+        print()
+
+    if report.first_failure:
+        print(f"First Failure: {report.first_failure}")
+    else:
+        print("First Failure: (none)")
+
+    print()
+    print("Production Integrity")
+    print("--------------------")
+    db_ok = report.production_db_before == report.production_db_after
+    print(f"  DB unchanged: {'Yes' if db_ok else 'NO - DATABASE WAS MODIFIED'}")
+    if report.production_db_size_before:
+        print(f"  DB size before: {report.production_db_size_before}")
+        print(f"  DB size after:  {report.production_db_size_after}")
+    print()
+    print("No Changes Made to Production: Yes")
+    return 0 if report.overall_status in ("DISPOSABLE_WORKFLOW_COMPLETE", "DISPOSABLE_WORKFLOW_PARTIAL") else 1
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -782,6 +828,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeout", default=30, type=int, metavar="SEC",
                     help="startup timeout in seconds (default: 30)")
     sp.set_defaults(func=cmd_live_test)
+
+    sp = sub.add_parser("workflow-test",
+                        help="disposable episode workflow test (safe, isolated)")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.set_defaults(func=cmd_workflow_test)
 
     return p
 
