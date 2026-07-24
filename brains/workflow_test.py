@@ -275,7 +275,24 @@ def _extract_id_from_url(url: str) -> dict:
     return ids
 
 
-def _check_db_record(db_path: str, table: str, column: str, value: str) -> bool:
+def _extract_char_id_from_html(html: str, display_name: str) -> str:
+    """Extract a character UUID from rendered studio page HTML."""
+    ids = re.findall(r'character_([a-f0-9]{32})', html)
+    if not ids:
+        return ""
+    # One match = that's our character
+    if len(ids) == 1:
+        return ids[0]
+    # Multiple matches: find the one near our display name
+    for cid in ids:
+        # Check if display name appears within 200 chars of this ID
+        idx = html.find(cid)
+        if idx >= 0:
+            ctx = html[max(0, idx-200):idx+200]
+            if display_name in ctx:
+                return cid
+    # Fallback: return last one (most recently created)
+    return ids[-1]
     if not all([os.path.isfile(db_path), table, column, value]):
         return False
     try:
@@ -454,15 +471,42 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
     report.overall_status = "DISPOSABLE_STUDIO_READY"
 
     # Stage 3: Host character creation (required before episode creation)
+    host_name = f"AutoCorp Disp Host {report.disposable_root[-6:]}"
     s = _stage(7, "HOST_CHARACTER", ["create_character", "studios__studio_id__characters__create"],
-                {"display_name": "AutoCorp Disposable Host", "role": "host",
-                 "speaking_style": "warm and inquisitive", "stable_name": "autocorp-disposable-host"},
+                {"display_name": host_name, "role": "host"},
                 path_params={"studio_id": studio_id} if studio_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
+    # Stage 3b: Recover character ID from studio page HTML
+    character_id = ""
+    try:
+        resp = h.request(f"{base}/studios?studio_id={studio_id}", follow_redirects=True)
+        character_id = _extract_char_id_from_html(resp.get("body", ""), host_name)
+    except Exception:
+        pass
+
+    s_cid = StageRecord(number=8, stage="CHARACTER_ID_RECOVERY")
+    if character_id:
+        s_cid.status = "PASS"
+        s_cid.evidence = [f"character_id=character_{character_id}"]
+        s_cid.extracted_ids = {"character_id": character_id}
+    else:
+        s_cid.status = "FAIL"
+        s_cid.failure_reason = "Cannot recover character ID from studio page."
+        report.stages.append(s_cid)
+        report.first_failure = s_cid.failure_reason
+        _shutdown(proc); _finalize(report, prod_db, t0); return report
+    report.stages.append(s_cid)
+
+    # Stage 3c: Character activation
+    s = _stage(9, "HOST_ACTIVATION", ["activate_character", "characters__character_id__activate"],
+                path_params={"studio_id": studio_id, "character_id": character_id})
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
     # Stage 4: Episode start (with real studio_id)
-    s = _stage(9, "EPISODE_START", ["episode", "start"],
+    s = _stage(10, "EPISODE_START", ["episode", "start"],
                 {"studio_id": studio_id, "topic": "Why careful software testing matters",
                  "research_level": "none", "length_preset": "very_short", "format_key": "solo_host"})
     if s.status != "PASS":
@@ -472,20 +516,20 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
     report.overall_status = "DISPOSABLE_RECORD_FLOW_COMPLETE"
 
     # Stage 4: Research mode
-    s = _stage(10, "RESEARCH_MODE", ["research", "no-research"],
+    s = _stage(11, "RESEARCH_MODE", ["research", "no-research"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
     # Stage 5: Plan
-    s = _stage(11, "EPISODE_PLAN", ["episode", "plan", "create"],
+    s = _stage(12, "EPISODE_PLAN", ["episode", "plan", "create"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     plan_id = s.extracted_ids.get("plan_id", "") or ""
 
     # Stage 6: Assemble
-    s = _stage(12, "ASSEMBLE", ["assemble", "episode"],
+    s = _stage(13, "ASSEMBLE", ["assemble", "episode"],
                 {"plan_id": plan_id} if plan_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason
