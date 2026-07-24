@@ -453,8 +453,16 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     report.overall_status = "DISPOSABLE_STUDIO_READY"
 
-    # Stage 3: Episode start (with real studio_id)
-    s = _stage(7, "EPISODE_START", ["episode", "start"],
+    # Stage 3: Host character creation (required before episode creation)
+    s = _stage(7, "HOST_CHARACTER", ["create_character", "studios__studio_id__characters__create"],
+                {"display_name": "AutoCorp Disposable Host", "role": "host",
+                 "speaking_style": "warm and inquisitive", "stable_name": "autocorp-disposable-host"},
+                path_params={"studio_id": studio_id} if studio_id else None)
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
+    # Stage 4: Episode start (with real studio_id)
+    s = _stage(9, "EPISODE_START", ["episode", "start"],
                 {"studio_id": studio_id, "topic": "Why careful software testing matters",
                  "research_level": "none", "length_preset": "very_short", "format_key": "solo_host"})
     if s.status != "PASS":
@@ -464,20 +472,20 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
     report.overall_status = "DISPOSABLE_RECORD_FLOW_COMPLETE"
 
     # Stage 4: Research mode
-    s = _stage(8, "RESEARCH_MODE", ["research", "no-research"],
+    s = _stage(10, "RESEARCH_MODE", ["research", "no-research"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
     # Stage 5: Plan
-    s = _stage(9, "EPISODE_PLAN", ["episode", "plan", "create"],
+    s = _stage(11, "EPISODE_PLAN", ["episode", "plan", "create"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     plan_id = s.extracted_ids.get("plan_id", "") or ""
 
     # Stage 6: Assemble
-    s = _stage(10, "ASSEMBLE", ["assemble", "episode"],
+    s = _stage(12, "ASSEMBLE", ["assemble", "episode"],
                 {"plan_id": plan_id} if plan_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason
