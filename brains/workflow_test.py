@@ -381,15 +381,29 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     studio_id = s.extracted_ids.get("studio_id", "") or ""
 
-    # Stage 2b: Studio activation (required before episode creation)
-    s = _stage(3, "STUDIO_ACTIVATION", ["activate_studio", "studios__studio_id__activate"],
+    # Stage 2b: Studio review (required before approval)
+    s = _stage(3, "STUDIO_REVIEW", ["review_studio", "studios__studio_id__review"],
+                path_params={"studio_id": studio_id} if studio_id else None)
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+    report.overall_status = "DISPOSABLE_STUDIO_VALIDATED"
+
+    # Stage 2c: Studio approval (required before activation)
+    s = _stage(4, "STUDIO_APPROVAL", ["approve_studio", "studios__studio_id__approve"],
+                path_params={"studio_id": studio_id} if studio_id else None)
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+    report.overall_status = "DISPOSABLE_STUDIO_APPROVED"
+
+    # Stage 2c: Studio activation (required before episode creation)
+    s = _stage(5, "STUDIO_ACTIVATION", ["activate_studio", "studios__studio_id__activate"],
                 path_params={"studio_id": studio_id} if studio_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     report.overall_status = "DISPOSABLE_STUDIO_READY"
 
     # Stage 3: Episode start (with real studio_id)
-    s = _stage(4, "EPISODE_START", ["episode", "start"],
+    s = _stage(6, "EPISODE_START", ["episode", "start"],
                 {"studio_id": studio_id, "topic": "Why careful software testing matters",
                  "research_level": "none", "length_preset": "very_short", "format_key": "solo_host"})
     if s.status != "PASS":
@@ -399,20 +413,20 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
     report.overall_status = "DISPOSABLE_RECORD_FLOW_COMPLETE"
 
     # Stage 4: Research mode
-    s = _stage(4, "RESEARCH_MODE", ["research", "no-research"],
+    s = _stage(7, "RESEARCH_MODE", ["research", "no-research"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
     # Stage 5: Plan
-    s = _stage(5, "EPISODE_PLAN", ["episode", "plan", "create"],
+    s = _stage(8, "EPISODE_PLAN", ["episode", "plan", "create"],
                 {"session_id": session_id} if session_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
     plan_id = s.extracted_ids.get("plan_id", "") or ""
 
     # Stage 6: Assemble
-    s = _stage(6, "ASSEMBLE", ["assemble", "episode"],
+    s = _stage(9, "ASSEMBLE", ["assemble", "episode"],
                 {"plan_id": plan_id} if plan_id else None)
     if s.status != "PASS":
         report.first_failure = s.failure_reason
