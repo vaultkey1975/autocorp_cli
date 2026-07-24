@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, live_readiness, project_planner, repair_executor, repair_proposal, scanner, workspace
+from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, repair_executor, repair_proposal, scanner, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -569,6 +569,81 @@ def cmd_live_readiness(args) -> int:
     return 0
 
 
+def cmd_live_test(args) -> int:
+    """Controlled live application test: launch the target app, check
+    health endpoints and service readiness, then cleanly shut down.
+    Never modifies the target repository."""
+    repo_root = _resolve_repo(args)
+    timeout = getattr(args, "timeout", 30)
+    port = getattr(args, "port", 8000)
+    report = live_test.run_live_test(repo_root, timeout=timeout, port=port)
+
+    print("Live Application Test")
+    print("====================")
+    print()
+    print(f"Repository:     {report.repo_path}")
+    print(f"Project Type:   {report.project_type}")
+    print(f"Overall Status: {report.overall_status}")
+    print(f"Duration:       {report.duration_seconds:.1f}s")
+    print()
+
+    for stage in report.stages:
+        tag = {"PREFLIGHT_PASSED": "[OK]", "PREFLIGHT_FAILED": "[FAIL]",
+               "LAUNCH_PLAN_READY": "[OK]", "STARTUP_SUCCEEDED": "[OK]",
+               "STARTUP_FAILED": "[FAIL]",
+               "HEALTH_CHECKS_COMPLETE": "[OK]",
+               "SERVICE_CHECK_COMPLETE": "[OK]",
+               "DRY_RUN_DISCOVERY_COMPLETE": "[OK]",
+               "SHUTDOWN_COMPLETE": "[OK]",
+               "CHANGE_VERIFICATION_COMPLETE": "[OK]"}.get(stage.status, "[--]")
+        print(f"{tag} Stage {stage.stage}: {stage.title}  ({stage.status})")
+        for f in stage.findings:
+            print(f"    {f}")
+        for e in stage.errors:
+            print(f"    ERROR: {e}")
+        print()
+
+    if report.health_results:
+        print("Health Checks")
+        print("-------------")
+        for hr in report.health_results:
+            tag = "[PASS]" if hr.passed else "[FAIL]"
+            print(f"  {tag} {hr.method} {hr.url}")
+            print(f"       Status: {hr.status_code}  Time: {hr.response_time_ms:.0f}ms")
+            if hr.error:
+                print(f"       Error: {hr.error}")
+            if hr.body_preview:
+                print(f"       Body: {hr.body_preview[:120]}")
+        print()
+
+    if report.dependency_status:
+        print("Service Readiness")
+        print("-----------------")
+        for ds in report.dependency_status:
+            print(f"  {ds['service']}: {ds['state']}")
+        print()
+
+    if report.dry_run_capabilities:
+        print("Dry-Run Capabilities")
+        print("--------------------")
+        for dc in report.dry_run_capabilities:
+            print(f"  {dc['stage']}: {'safe' if dc.get('safe') else 'unsafe'}")
+            if dc.get("note"):
+                print(f"    {dc['note']}")
+        print()
+
+    if report.before_sha256:
+        print("Database Integrity")
+        print("------------------")
+        for path, h in report.before_sha256.items():
+            after = report.after_sha256.get(path, "")
+            unchanged = "Yes" if after == h else "NO - DATABASE WAS MODIFIED"
+            print(f"  {path}: unchanged={unchanged}")
+        print()
+
+    return report.exit_code
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -696,6 +771,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", default=None, metavar="PATH",
                     help="absolute path to target repository")
     sp.set_defaults(func=cmd_live_readiness)
+
+    sp = sub.add_parser("live-test",
+                        help="controlled live application test (safe startup, "
+                             "health checks, service readiness)")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--port", default=8000, type=int, metavar="PORT",
+                    help="expected application port (default: 8000)")
+    sp.add_argument("--timeout", default=30, type=int, metavar="SEC",
+                    help="startup timeout in seconds (default: 30)")
+    sp.set_defaults(func=cmd_live_test)
 
     return p
 
