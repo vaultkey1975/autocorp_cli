@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Live Application Readiness Scanner  (AutoCorp CLI - brains)  [Phase 1H]
-========================================================================
+Live Application Readiness Scanner  (AutoCorp CLI - brains)  [Phase 1H + 1I]
+==============================================================================
 
-A read-only, static-inspection diagnostic that inspects a repository and
-reports whether the application appears ready to launch and complete its
-real workflow. Never edits, never executes target code, never contacts
-services.
+A read-only, static-inspection diagnostic that classifies evidence by source
+quality and distinguishes production implementations from documentation,
+tests, examples, and incidental text matches.
 
 Public API:
     run_live_readiness(repo_path: str) -> LiveReadinessReport
@@ -16,11 +15,12 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass, field
 
-from brains import scanner, analyzer, workspace
+from brains import scanner, analyzer
 
 # --------------------------------------------------------------------------- #
 # Result types
@@ -29,6 +29,25 @@ from brains import scanner, analyzer, workspace
 _CATEGORIES = (
     "repository", "launchability", "backend_api", "ui_wiring",
     "workflow", "external_services", "production_blockers",
+)
+
+_SOURCE_TYPES = (
+    "production_source", "application_template", "application_static_asset",
+    "test_source", "documentation", "specification", "example", "fixture",
+    "generated", "dependency", "unknown",
+)
+
+_STATUSES = (
+    "pass", "fail", "blocked", "warning", "unknown",
+)
+
+_GRADES = (
+    "confirmed", "strong", "supporting", "mention_only", "conflicting",
+)
+
+_WF_STATUSES = (
+    "implemented", "partially_implemented", "referenced_only",
+    "not_found", "conflicting_evidence",
 )
 
 
@@ -58,71 +77,17 @@ class LiveReadinessReport:
 
 
 # --------------------------------------------------------------------------- #
-# Helpers
+# File classification
 # --------------------------------------------------------------------------- #
 
-_WEB_ROUTES = {
-    "flask": re.compile(r"@app\.route\(['\"]([^'\"]+)"),
-    "fastapi": re.compile(r"@app\.(get|post|put|delete|patch)\(['\"]([^'\"]+)"),
-    "django": re.compile(r"path\(['\"]([^'\"]+)"),
-}
-
-_HEALTH_PATTERNS = re.compile(
-    r"(health|ping|status|ready|alive|heartbeat)", re.IGNORECASE
-)
-
-_PLACEHOLDER_PATTERNS = re.compile(
-    r"(return\s*\{\s*['\"]status['\"]\s*:\s*['\"]ok['\"]\s*\}|"
-    r"return\s*\{.*['\"]message['\"].*['\"]success['\"]|"
-    r"return\s*\{\s*['\"]success['\"]\s*:\s*True\s*\})",
-    re.IGNORECASE,
-)
-
-_WORKFLOW_STAGES = [
-    ("research", re.compile(r"research|search|scrape|crawl", re.IGNORECASE)),
-    ("script_generation", re.compile(r"script|generate.*script|write.*script", re.IGNORECASE)),
-    ("voice_generation", re.compile(r"voice|tts|text.to.speech|speech|elevenlabs|edge.tts", re.IGNORECASE)),
-    ("audio_assembly", re.compile(r"audio|mix|merge.*audio|concat.*audio", re.IGNORECASE)),
-    ("video_rendering", re.compile(r"video|render|ffmpeg|composite|encode", re.IGNORECASE)),
-    ("quality_control", re.compile(r"qa|quality|review|validate|check.*output", re.IGNORECASE)),
-    ("publishing", re.compile(r"publish|upload|youtube|social|post", re.IGNORECASE)),
-]
-
-_EXTERNAL_SERVICES = [
-    ("ollama", re.compile(r"ollama|llama|AUTOCORP_MODEL|OLLAMA_URL")),
-    ("chatterbox", re.compile(r"chatterbox", re.IGNORECASE)),
-    ("ffmpeg", re.compile(r"ffmpeg|subprocess.*ffmpeg")),
-    ("youtube_oauth", re.compile(r"youtube|youtube.*oauth|google.*oauth|client_secret.*json", re.IGNORECASE)),
-    ("database", re.compile(r"sqlite|postgres|mysql|mongodb|DATABASE_URL|DB_PATH|sqlalchemy")),
-    ("file_storage", re.compile(r"upload|download|storage|S3|bucket|file.*path")),
-]
-
-_LAUNCH_PATTERNS = [
-    ("FastAPI", re.compile(r"uvicorn|FastAPI\(\)|fastapi")),
-    ("Flask", re.compile(r"flask|Flask\(__name__\)")),
-    ("Django", re.compile(r"django|manage\.py|DJANGO_SETTINGS")),
-    ("Tkinter", re.compile(r"tkinter|Tk\(\)")),
-    ("PySide/Qt", re.compile(r"PySide|PyQt|QApplication")),
-]
-
-_UI_FETCH_PATTERN = re.compile(r"fetch\(['\"]([^'\"]+)['\"]")
-_UI_FORM_ACTION = re.compile(r"action=[\"']([^\"']+)[\"']")
-_UI_BUTTON_CLICK = re.compile(r"onclick|addEventListener.*click|\.clicked\.connect")
-_TODO_FIXME_RE = re.compile(r"\b(TODO|FIXME)\b")
-_NOT_IMPLEMENTED_RE = re.compile(r"\bNotImplementedError\b")
-
-
-def _id(title: str) -> str:
-    return hashlib.sha256(title.encode()).hexdigest()[:12]
-
-
-def _read(path):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return fh.read()
-    except (UnicodeDecodeError, PermissionError, OSError):
-        return ""
-
+_TEST_DIRS = {"tests", "test", "spec", "specs"}
+_TEST_NAME_RE = re.compile(r"^test_|_test\.py$|^conftest\.py$")
+_DOC_EXTS = {".md", ".rst", ".txt", ".adoc"}
+_SPEC_EXTS = {".md"}
+_DOC_DIRS = {"docs", "doc", "documentation"}
+_EXAMPLE_DIRS = {"examples", "example", "demos", "demo", "samples", "sample"}
+_FIXTURE_DIRS = {"fixtures", "fixture"}
+_GENERATED_DIRS = {"build", "dist", "__pycache__", ".pytest_cache"}
 
 _TEXT_EXTS = {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm",
@@ -141,6 +106,59 @@ _BINARY_EXTS = {
 _MAX_TEXT_FILE_SIZE = 5 * 1024 * 1024
 
 
+def _classify_file(rel_path: str, name: str) -> str:
+    """Classify a file by its source type. Deterministic."""
+    ext = os.path.splitext(name)[1].lower()
+    parts = rel_path.replace(os.sep, "/").split("/")
+
+    if any(d in parts for d in _GENERATED_DIRS):
+        return "generated"
+    if any(d in parts for d in _FIXTURE_DIRS):
+        return "fixture"
+    if _TEST_NAME_RE.search(name):
+        return "test_source"
+    if any(d in parts for d in _TEST_DIRS):
+        return "test_source"
+    if any(d in parts for d in _EXAMPLE_DIRS):
+        return "example"
+    if any(part.endswith(".d.ts") for part in parts):
+        return "generated"
+    if name in ("Dockerfile", "Makefile") or "requirements" in name.lower():
+        return "production_source"
+    if any(d in parts for d in _DOC_DIRS):
+        if ext in _SPEC_EXTS and "spec" in rel_path.lower():
+            return "specification"
+        if ext in _DOC_EXTS:
+            return "documentation"
+    if ext in _DOC_EXTS:
+        if "build_spec" in name.lower() or "spec" in rel_path.lower() or "readme" in name.lower():
+            return "specification"
+        return "documentation"
+    if ext == ".html" or ext == ".htm":
+        return "application_template"
+    if ext in (".js", ".jsx", ".ts", ".tsx", ".css", ".scss"):
+        return "application_static_asset"
+    if ext == ".py":
+        return "production_source"
+    return "unknown"
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def _id(title: str) -> str:
+    return hashlib.sha256(title.encode()).hexdigest()[:12]
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except (UnicodeDecodeError, PermissionError, OSError):
+        return ""
+
+
 def _iter_text_files(repo_path):
     for root, dirs, files in os.walk(repo_path, followlinks=False):
         dirs[:] = [d for d in dirs
@@ -148,25 +166,168 @@ def _iter_text_files(repo_path):
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
             name_lower = fn.lower()
-
             if ext in _BINARY_EXTS:
                 continue
-            if ext not in _TEXT_EXTS and fn not in ("Dockerfile", "Makefile"):
+            if ext not in _TEXT_EXTS and fn not in ("Dockerfile", "Makefile") and "requirements" not in name_lower:
                 continue
-            if "requirements" in name_lower:
-                pass  # always include requirements files
-            elif ext not in _TEXT_EXTS and not (fn == "Dockerfile" or fn == "Makefile" or "requirements" in name_lower):
-                continue
-
             full = os.path.join(root, fn)
             try:
-                size = os.path.getsize(full)
-                if size > _MAX_TEXT_FILE_SIZE:
+                if os.path.getsize(full) > _MAX_TEXT_FILE_SIZE:
                     continue
             except OSError:
                 continue
-
             yield full
+
+
+def _is_production_source(src_type: str) -> bool:
+    return src_type in ("production_source", "application_template",
+                         "application_static_asset")
+
+
+def _grade_evidence(src_type: str) -> str:
+    if src_type == "production_source":
+        return "strong"
+    if src_type == "specification":
+        return "supporting"
+    if src_type in ("application_template", "application_static_asset"):
+        return "strong"
+    if src_type == "test_source":
+        return "supporting"
+    if src_type == "documentation":
+        return "mention_only"
+    if src_type == "fixture":
+        return "supporting"
+    if src_type == "example":
+        return "supporting"
+    return "mention_only"
+
+
+# --------------------------------------------------------------------------- #
+# AST-based Python analysis (production only)
+# --------------------------------------------------------------------------- #
+
+_PLACEHOLDER_RETURN_RE = re.compile(
+    r"return\s*\{\s*['\"]status['\"]\s*:\s*['\"]ok['\"]\s*\}|"
+    r"return\s*\{\s*['\"]message['\"].*['\"]success['\"]|"
+    r"return\s*\{\s*['\"]success['\"]\s*:\s*True\s*\}|"
+    r"return\s*True\s*$|return\s*\{\s*\}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _py_ast_findings(content: str) -> dict:
+    """Analyze Python source via AST. Returns dict with production-only findings."""
+    findings = {
+        "has_not_implemented": False,
+        "has_pass_body": 0,
+        "has_ellipsis_body": 0,
+        "placeholder_return": 0,
+        "has_main_block": False,
+        "is_fastapi_app": False,
+        "fastapi_routes": [],
+        "flask_routes": [],
+        "django_urls": [],
+    }
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise):
+            if isinstance(node.exc, ast.Name) and node.exc.id == "NotImplementedError":
+                findings["has_not_implemented"] = True
+            elif isinstance(node.exc, ast.Call):
+                exc_name = ""
+                if isinstance(node.exc.func, ast.Name):
+                    exc_name = node.exc.func.id
+                elif isinstance(node.exc.func, ast.Attribute):
+                    exc_name = node.exc.func.attr
+                if exc_name == "NotImplementedError":
+                    findings["has_not_implemented"] = True
+
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            body = node.body
+            if len(body) == 1 and isinstance(body[0], ast.Pass):
+                findings["has_pass_body"] += 1
+            elif len(body) == 1 and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and body[0].value.value is Ellipsis:
+                findings["has_ellipsis_body"] += 1
+
+        if isinstance(node, ast.Return):
+            line = ast.get_source_segment(content, node) or ""
+            if _PLACEHOLDER_RETURN_RE.search(line):
+                findings["placeholder_return"] += 1
+
+        if isinstance(node, ast.If):
+            test = node.test
+            if isinstance(test, ast.Compare):
+                left = ast.get_source_segment(content, test.left) if hasattr(ast, 'get_source_segment') else ""
+                if left == "__name__" and ast.get_source_segment(content, test) == '__name__ == "__main__"':
+                    findings["has_main_block"] = True
+
+    # Route detection via AST (decorators)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                dec_str = ast.get_source_segment(content, dec) if hasattr(ast, 'get_source_segment') else ""
+                if not dec_str:
+                    continue
+                dec_str_clean = dec_str.strip()
+                if dec_str_clean.startswith("app.route("):
+                    m = re.search(r"""app\.route\(['\"]([^'\"]+)""", dec_str_clean)
+                    if m:
+                        findings["flask_routes"].append(m.group(1))
+                elif "app." in dec_str_clean and "(" in dec_str_clean:
+                    m = re.search(r"""app\.(get|post|put|delete|patch)\(['\"]([^'\"]+)""", dec_str_clean)
+                    if m:
+                        findings["fastapi_routes"].append(m.group(2))
+                        findings["is_fastapi_app"] = True
+
+    # Detect FastAPI app instantiation
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            if isinstance(value, ast.Call):
+                func = value.func
+                if isinstance(func, ast.Name) and func.id == "FastAPI":
+                    findings["is_fastapi_app"] = True
+
+    return findings
+
+
+def _find_entry_points(repo_path: str, analysis) -> list[str]:
+    """Find application entry points using AST and config analysis."""
+    entry_points = list(analysis.entry_points) if analysis.entry_points else []
+
+    # Check pyproject.toml for [project.scripts]
+    pyproject = os.path.join(repo_path, "pyproject.toml")
+    if os.path.isfile(pyproject):
+        content = _read(pyproject)
+        if "[project.scripts]" in content:
+            entry_points.append("pyproject.toml [project.scripts]")
+
+    # Check setup.cfg for console_scripts
+    setup_cfg = os.path.join(repo_path, "setup.cfg")
+    if os.path.isfile(setup_cfg):
+        content = _read(setup_cfg)
+        if "console_scripts" in content:
+            entry_points.append("setup.cfg console_scripts")
+
+    # AST: find if __name__ == "__main__" blocks in production source
+    for full in _iter_text_files(repo_path):
+        rel = os.path.relpath(full, repo_path)
+        name = os.path.basename(full)
+        src_type = _classify_file(rel, name)
+        if src_type != "production_source":
+            continue
+        content = _read(full)
+        findings = _py_ast_findings(content)
+        if findings["has_main_block"]:
+            entry_points.append(f"{rel} (__main__ block)")
+        if findings["is_fastapi_app"]:
+            entry_points.append(f"{rel} (FastAPI app)")
+
+    return sorted(set(entry_points))
 
 
 # --------------------------------------------------------------------------- #
@@ -180,33 +341,36 @@ def _inspect_repository(repo_path, git_info) -> list[ReadinessCheck]:
     checks.append(ReadinessCheck(
         check_id=_id("git-repo"), category="repository",
         title="Git repository", status="pass",
-        reason="Repository is a Git working tree.",
-        confidence=100,
+        reason="Repository is a Git working tree.", confidence=100,
     ))
-    if wt == "dirty":
-        checks.append(ReadinessCheck(
-            check_id=_id("clean-tree"), category="repository",
-            title="Clean working tree", status="warning",
-            reason="Uncommitted changes exist. Review before launch.",
-            evidence=("git status reported a dirty working tree",),
-            confidence=95,
-        ))
-    else:
-        checks.append(ReadinessCheck(
-            check_id=_id("clean-tree"), category="repository",
-            title="Clean working tree", status="pass",
-            reason="Working tree is clean.", confidence=95,
-        ))
+    status = "warning" if wt == "dirty" else "pass"
+    reason = "Uncommitted changes exist." if wt == "dirty" else "Working tree is clean."
+    checks.append(ReadinessCheck(
+        check_id=_id("clean-tree"), category="repository",
+        title="Clean working tree", status=status, reason=reason, confidence=95,
+    ))
     return checks
 
 
 def _inspect_launchability(repo_path, analysis) -> list[ReadinessCheck]:
     checks = []
     launch_candidates = []
+
     for full in _iter_text_files(repo_path):
         rel = os.path.relpath(full, repo_path)
+        name = os.path.basename(full)
+        src_type = _classify_file(rel, name)
+        if not _is_production_source(src_type):
+            continue
         content = _read(full)
-        for label, pat in _LAUNCH_PATTERNS:
+        launch_markers = {
+            "FastAPI": re.compile(r"from\s+fastapi\s+import|FastAPI\(\)"),
+            "Flask": re.compile(r"from\s+flask\s+import|Flask\(__name__\)"),
+            "Django": re.compile(r"from\s+django|DJANGO_SETTINGS"),
+            "Tkinter": re.compile(r"from\s+tkinter|Tk\(\)"),
+            "PySide/Qt": re.compile(r"PySide|PyQt|QApplication"),
+        }
+        for label, pat in launch_markers.items():
             if pat.search(content) and label not in launch_candidates:
                 launch_candidates.append(label)
 
@@ -215,30 +379,25 @@ def _inspect_launchability(repo_path, analysis) -> list[ReadinessCheck]:
             check_id=_id("launch-framework"), category="launchability",
             title="Launch framework detected", status="pass",
             reason=f"Found: {', '.join(launch_candidates)}",
-            evidence=(f"Framework imports found: {', '.join(launch_candidates)}",),
+            evidence=(f"Production source imports: {', '.join(launch_candidates)}",),
             confidence=85,
         ))
-    else:
-        checks.append(ReadinessCheck(
-            check_id=_id("launch-framework"), category="launchability",
-            title="Launch framework detected", status="warning",
-            reason="No recognized launch framework found.",
-            confidence=60,
-        ))
 
-    if analysis.entry_points:
+    entry_points = _find_entry_points(repo_path, analysis)
+    if entry_points:
         checks.append(ReadinessCheck(
             check_id=_id("entry-points"), category="launchability",
             title="Entry points", status="pass",
-            reason=f"Found: {', '.join(analysis.entry_points)}",
-            affected_paths=tuple(analysis.entry_points),
+            reason=f"Found {len(entry_points)} entry point(s).",
+            evidence=tuple(entry_points[:10]),
+            affected_paths=tuple(entry_points[:10]),
             confidence=90,
         ))
     else:
         checks.append(ReadinessCheck(
             check_id=_id("entry-points"), category="launchability",
             title="Entry points", status="warning",
-            reason="No entry points found.",
+            reason="No entry points found in production source.",
             confidence=85,
         ))
 
@@ -257,54 +416,50 @@ def _inspect_launchability(repo_path, analysis) -> list[ReadinessCheck]:
 def _inspect_backend_api(repo_path) -> list[ReadinessCheck]:
     checks = []
     health_routes = []
-    api_routes = []
+    prod_routes = []
     placeholder_routes = []
-    all_routes = []
 
     for full in _iter_text_files(repo_path):
         rel = os.path.relpath(full, repo_path)
+        name = os.path.basename(full)
+        src_type = _classify_file(rel, name)
+        if src_type != "production_source":
+            continue
         content = _read(full)
-        for fw, pat in _WEB_ROUTES.items():
-            for m in pat.finditer(content):
-                route = m.group(1) if fw == "flask" else (m.group(2) if hasattr(m, "group") and m.lastindex and m.lastindex >= 2 else m.group(1))
-                all_routes.append((fw, route, rel))
-                if _HEALTH_PATTERNS.search(route):
-                    health_routes.append(f"{fw}:{route} ({rel})")
-                if _PLACEHOLDER_PATTERNS.search(content):
-                    placeholder_routes.append(f"{fw}:{route} ({rel})")
+        findings = _py_ast_findings(content)
+
+        for route in findings["fastapi_routes"]:
+            prod_routes.append(f"fastapi:{route} ({rel})")
+            if re.search(r"health|ping|status|ready|alive|heartbeat", route, re.IGNORECASE):
+                health_routes.append(f"fastapi:{route} ({rel})")
+        for route in findings["flask_routes"]:
+            prod_routes.append(f"flask:{route} ({rel})")
+
+        if _PLACEHOLDER_RETURN_RE.search(content):
+            placeholder_routes.append(rel)
 
     if health_routes:
         checks.append(ReadinessCheck(
             check_id=_id("health-routes"), category="backend_api",
             title="Health endpoints", status="pass",
-            reason=f"Found {len(health_routes)} health/ping route(s).",
-            evidence=tuple(health_routes[:10]),
-            confidence=85,
-        ))
-    else:
-        checks.append(ReadinessCheck(
-            check_id=_id("health-routes"), category="backend_api",
-            title="Health endpoints", status="warning",
-            reason="No health/ping routes detected.",
-            confidence=70,
+            reason=f"Found {len(health_routes)} health route(s) in production code.",
+            evidence=tuple(health_routes[:10]), confidence=85,
         ))
 
-    if all_routes:
+    if prod_routes:
         checks.append(ReadinessCheck(
             check_id=_id("api-routes"), category="backend_api",
             title="API routes detected", status="pass",
-            reason=f"Found {len(all_routes)} web route(s).",
-            evidence=tuple(f"{fw}:{r} ({rel})" for fw, r, rel in all_routes[:10]),
-            confidence=80,
+            reason=f"Found {len(prod_routes)} production web route(s).",
+            evidence=tuple(prod_routes[:10]), confidence=80,
         ))
 
     if placeholder_routes:
         checks.append(ReadinessCheck(
             check_id=_id("placeholder-routes"), category="backend_api",
             title="Placeholder/stub routes", status="fail",
-            reason=f"{len(placeholder_routes)} route(s) return static/hardcoded responses.",
-            evidence=tuple(placeholder_routes[:5]),
-            confidence=90,
+            reason=f"{len(placeholder_routes)} route(s) in production code return static responses.",
+            evidence=tuple(placeholder_routes[:5]), confidence=90,
         ))
 
     return checks
@@ -314,181 +469,193 @@ def _inspect_ui_wiring(repo_path) -> list[ReadinessCheck]:
     checks = []
     fetch_targets = []
     form_actions = []
-    dead_controls = []
-    has_ui = False
 
     for full in _iter_text_files(repo_path):
         rel = os.path.relpath(full, repo_path)
+        name = os.path.basename(full)
+        src_type = _classify_file(rel, name)
+        ok_types = ("application_template", "application_static_asset")
+        if src_type not in ok_types:
+            continue
         content = _read(full)
-        is_ui_file = any(ext in rel.lower() for ext in (".html", ".js", ".ts", ".tsx", ".vue"))
 
-        for m in _UI_FETCH_PATTERN.finditer(content):
+        for m in re.finditer(r"""fetch\(['\"]([^'\"]+)['\"]""", content):
             fetch_targets.append((m.group(1), rel))
-            has_ui = True
-        for m in _UI_FORM_ACTION.finditer(content):
+        for m in re.finditer(r"""\baction\s*=\s*["']([^"']+)["']""", content):
             form_actions.append((m.group(1), rel))
-            has_ui = True
-        if _UI_BUTTON_CLICK.search(content):
-            has_ui = True
 
+    has_ui = bool(fetch_targets or form_actions)
     if has_ui:
-        checks.append(ReadinessCheck(
-            check_id=_id("ui-detected"), category="ui_wiring",
+        checks.append(ReadinessCheck(check_id=_id("ui-detected"), category="ui_wiring",
             title="UI components detected", status="pass",
-            reason="UI code with interactive elements found.",
+            reason="Application UI code found with interactive elements.",
             confidence=80,
-        ))
-    else:
-        checks.append(ReadinessCheck(
-            check_id=_id("ui-detected"), category="ui_wiring",
-            title="UI components detected", status="unknown",
-            reason="No UI code detected (may be expected for this project type).",
-            confidence=50,
         ))
 
     if fetch_targets:
-        evidence_lines = [f"fetch('{t}') in {r}" for t, r in fetch_targets[:10]]
-        checks.append(ReadinessCheck(
-            check_id=_id("ui-fetch-targets"), category="ui_wiring",
+        checks.append(ReadinessCheck(check_id=_id("ui-fetch-targets"), category="ui_wiring",
             title="UI fetch/api targets", status="pass",
-            reason=f"Found {len(fetch_targets)} fetch/API target(s).",
-            evidence=tuple(evidence_lines),
-            confidence=75,
+            reason=f"Found {len(fetch_targets)} real fetch/API target(s).",
+            evidence=tuple(f"fetch({t!r}) in {r}" for t, r in fetch_targets[:10]),
+            confidence=80,
         ))
 
     if form_actions:
-        evidence_lines = [f"action='{t}' in {r}" for t, r in form_actions[:10]]
-        checks.append(ReadinessCheck(
-            check_id=_id("ui-form-actions"), category="ui_wiring",
+        checks.append(ReadinessCheck(check_id=_id("ui-form-actions"), category="ui_wiring",
             title="UI form actions", status="pass",
             reason=f"Found {len(form_actions)} form action(s).",
-            evidence=tuple(evidence_lines),
-            confidence=75,
+            evidence=tuple(f"action={t!r} in {r}" for t, r in form_actions[:10]),
+            confidence=80,
         ))
 
     return checks
 
 
-def _inspect_workflow(repo_path) -> list[ReadinessCheck]:
-    checks = []
-    stages = []
+_WORKFLOW_STAGES = [
+    ("research", re.compile(r"research|search\-tool|scrape|crawl|web_?search")),
+    ("script_generation", re.compile(r"script_?gener|generate.*script")),
+    ("voice_generation", re.compile(r"voice_?gen|tts|text.to.speech|speech|elevenlabs|edge.tts|chatterbox")),
+    ("audio_assembly", re.compile(r"audio.*(assembl|mix|merg|combin|concatenat|process)|assembl.*audio")),
+    ("video_rendering", re.compile(r"video.*(render|generat|creat|composit|encod|process)|render.*video|ffmpeg|moviepy")),
+    ("quality_control", re.compile(r"\bqa\b|quality.*(check|control|verif|assur)|qc_pipeline|review.*output|validat.*output")),
+    ("publishing", re.compile(r"publish|upload.*youtube|youtube.*upload|social.*post|content.*distribut")),
+]
 
+
+def _inspect_workflow(repo_path) -> list[ReadinessCheck]:
+    stages = []
     for stage_id, pat in _WORKFLOW_STAGES:
-        evidence = []
+        prod_evidence = []
+        other_evidence = []
         for full in _iter_text_files(repo_path):
             rel = os.path.relpath(full, repo_path)
+            name = os.path.basename(full)
+            src_type = _classify_file(rel, name)
             content = _read(full)
             if pat.search(content):
-                evidence.append(rel)
-        if evidence:
-            stages.append({
-                "stage": stage_id, "status": "implemented",
-                "evidence": evidence[:5],
-            })
+                if _is_production_source(src_type):
+                    prod_evidence.append(rel)
+                else:
+                    other_evidence.append(rel)
+
+        if prod_evidence:
+            stages.append({"stage": stage_id, "status": "implemented",
+                            "evidence": prod_evidence[:5]})
+        elif other_evidence:
+            stages.append({"stage": stage_id, "status": "referenced_only",
+                            "evidence": other_evidence[:3]})
         else:
-            stages.append({
-                "stage": stage_id, "status": "not_found",
-                "evidence": [],
-            })
+            stages.append({"stage": stage_id, "status": "not_found",
+                            "evidence": []})
 
     implemented = sum(1 for s in stages if s["status"] == "implemented")
-    checks.append(ReadinessCheck(
+    referenced = sum(1 for s in stages if s["status"] == "referenced_only")
+    status = "pass" if implemented >= 4 else ("warning" if implemented >= 2 else "fail")
+    reason = f"{implemented} implemented, {referenced} referenced-only, {len(stages)-implemented-referenced} not found."
+    checks = [ReadinessCheck(
         check_id=_id("workflow-stages"), category="workflow",
-        title="Workflow stages",
-        status="pass" if implemented >= 3 else ("warning" if implemented > 0 else "fail"),
-        reason=f"{implemented}/{len(stages)} workflow stages have code evidence.",
-        evidence=tuple(
-            f"{s['stage']}: {'found' if s['status'] == 'implemented' else 'missing'}"
-            for s in stages
-        ),
-        confidence=70,
-    ))
+        title="Workflow stages", status=status, reason=reason,
+        evidence=tuple(f"{s['stage']}: {s['status']}" for s in stages),
+        confidence=75,
+    )]
     return checks, stages
+
+
+_EXTERNAL_SERVICES = [
+    ("ollama", re.compile(r"ollama|OLLAMA_URL|AUTOCORP_MODEL")),
+    ("chatterbox", re.compile(r"chatterbox")),
+    ("ffmpeg", re.compile(r"ffmpeg|subprocess.*ffmpeg|moviepy")),
+    ("youtube_oauth", re.compile(r"youtube.*api|google.*oauth|client_secret.*json|youtube.*credentials")),
+    ("database", re.compile(r"sqlite|postgres|mysql|mongodb|DATABASE_URL|DB_PATH|sqlalchemy")),
+    ("file_storage", re.compile(r"upload|file.*storage|S3|bucket|cdn")),
+]
 
 
 def _inspect_external_services(repo_path) -> list[ReadinessCheck]:
     checks = []
-    services_found = []
-    services_missing = []
+    services_found = {}
 
     for svc_id, pat in _EXTERNAL_SERVICES:
-        evidence = []
+        prod_files = []
+        other_files = []
         for full in _iter_text_files(repo_path):
             rel = os.path.relpath(full, repo_path)
+            name = os.path.basename(full)
+            src_type = _classify_file(rel, name)
             content = _read(full)
             if pat.search(content):
-                evidence.append(rel)
-        if evidence:
-            services_found.append((svc_id, evidence[:3]))
-        else:
-            services_missing.append(svc_id)
+                if _is_production_source(src_type):
+                    prod_files.append(rel)
+                else:
+                    other_files.append(rel)
+        if prod_files:
+            services_found[svc_id] = ("production_integration", prod_files[:3])
+        elif other_files:
+            services_found[svc_id] = ("documentation_only", [])
 
-    if services_found:
+    prod_svc = [(s, d, e) for s, (d, e) in services_found.items() if d == "production_integration"]
+    if prod_svc:
         checks.append(ReadinessCheck(
             check_id=_id("external-services"), category="external_services",
-            title="External service integrations",
-            status="pass",
-            reason=f"{len(services_found)} service(s) referenced in code.",
-            evidence=tuple(f"{s}: {', '.join(e)}" for s, e in services_found),
+            title="External service integrations", status="pass",
+            reason=f"{len(prod_svc)} service(s) with production code evidence.",
+            evidence=tuple(f"{s}: {', '.join(e[:2])}" for s, d, e in prod_svc[:5]),
             confidence=75,
-        ))
-    if services_missing:
-        checks.append(ReadinessCheck(
-            check_id=_id("missing-services"), category="external_services",
-            title="Missing service integrations",
-            status="warning",
-            reason=f"No code reference found for: {', '.join(services_missing)}",
-            confidence=60,
         ))
     return checks
 
 
 def _inspect_production_blockers(repo_path) -> list[ReadinessCheck]:
     checks = []
-    todo_files = []
-    fixme_files = []
     not_implemented_files = []
-    mock_files = []
+    fixme_files = []
+    todo_files = []
 
     for full in _iter_text_files(repo_path):
         rel = os.path.relpath(full, repo_path)
+        name = os.path.basename(full)
+        src_type = _classify_file(rel, name)
+        if src_type != "production_source":
+            continue
         content = _read(full)
-        if _TODO_FIXME_RE.search(content):
-            if "TODO" in content:
-                todo_files.append(rel)
-            if "FIXME" in content:
-                fixme_files.append(rel)
-        if _NOT_IMPLEMENTED_RE.search(content):
+        findings = _py_ast_findings(content)
+
+        if findings["has_not_implemented"]:
             not_implemented_files.append(rel)
+
+        # Text-based FIXME/TODO in production source only
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                if "FIXME" in stripped:
+                    fixme_files.append(f"{rel}:{stripped[:80]}")
+                    break
+                if "TODO" in stripped:
+                    todo_files.append(f"{rel}:{stripped[:80]}")
+                    break
 
     if not_implemented_files:
         checks.append(ReadinessCheck(
             check_id=_id("not-implemented"), category="production_blockers",
-            title="NotImplementedError references", status="fail",
-            reason=f"{len(not_implemented_files)} file(s) contain unimplemented code.",
+            title="NotImplementedError in production code", status="fail",
+            reason=f"{len(not_implemented_files)} production file(s) contain raise NotImplementedError.",
             evidence=tuple(not_implemented_files[:10]),
             affected_paths=tuple(not_implemented_files[:10]),
-            confidence=90,
+            confidence=95,
         ))
-
     if fixme_files:
         checks.append(ReadinessCheck(
             check_id=_id("fixme-markers"), category="production_blockers",
-            title="FIXME markers", status="warning",
-            reason=f"{len(fixme_files)} file(s) contain FIXME markers.",
-            evidence=tuple(fixme_files[:10]),
-            affected_paths=tuple(fixme_files[:10]),
-            confidence=85,
+            title="FIXME markers in production code", status="warning",
+            reason=f"{len(fixme_files)} production file(s) contain FIXME.",
+            evidence=tuple(fixme_files[:10]), confidence=85,
         ))
-
     if todo_files:
         checks.append(ReadinessCheck(
             check_id=_id("todo-markers"), category="production_blockers",
-            title="TODO markers", status="warning",
-            reason=f"{len(todo_files)} file(s) contain TODO markers.",
-            evidence=tuple(todo_files[:10]),
-            affected_paths=tuple(todo_files[:10]),
-            confidence=80,
+            title="TODO markers in production code", status="warning",
+            reason=f"{len(todo_files)} production file(s) contain TODO.",
+            evidence=tuple(todo_files[:10]), confidence=80,
         ))
 
     return checks
@@ -500,9 +667,6 @@ def _inspect_production_blockers(repo_path) -> list[ReadinessCheck]:
 
 
 def run_live_readiness(repo_path: str) -> LiveReadinessReport:
-    """Inspect `repo_path` and return a LiveReadinessReport. Read-only
-    throughout: opens files for reading, parses AST, never writes,
-    never executes code, never contacts services."""
     repo_path = os.path.abspath(repo_path)
     git_info = scanner._git_info(repo_path)
     analysis = analyzer.run_analysis(repo_path)
@@ -515,14 +679,6 @@ def run_live_readiness(repo_path: str) -> LiveReadinessReport:
     all_checks = []
     all_checks.extend(_inspect_repository(repo_path, git_info))
     all_checks.extend(_inspect_launchability(repo_path, analysis))
-
-    launch_candidates = set()
-    for ch in all_checks:
-        if ch.category == "launchability" and ch.status == "pass":
-            for ev in ch.evidence:
-                launch_candidates.add(ev)
-    report.launch_candidates = tuple(sorted(launch_candidates))
-
     all_checks.extend(_inspect_backend_api(repo_path))
     all_checks.extend(_inspect_ui_wiring(repo_path))
     wf_checks, stages = _inspect_workflow(repo_path)
@@ -531,23 +687,29 @@ def run_live_readiness(repo_path: str) -> LiveReadinessReport:
     all_checks.extend(_inspect_external_services(repo_path))
     all_checks.extend(_inspect_production_blockers(repo_path))
 
-    health_eps = set()
+    # Launch candidates
+    lc_set = set()
+    for ch in all_checks:
+        if ch.category == "launchability" and ch.status == "pass":
+            for ev in ch.evidence:
+                lc_set.add(ev)
+    report.launch_candidates = tuple(sorted(lc_set))
+
+    # Health endpoints
+    he_set = set()
     for ch in all_checks:
         if ch.category == "backend_api" and ch.title == "Health endpoints":
             for ev in ch.evidence:
-                health_eps.add(ev)
-    report.health_endpoints = tuple(sorted(health_eps))
+                he_set.add(ev)
+    report.health_endpoints = tuple(sorted(he_set))
 
-    # Order checks deterministically
+    # Order
     cat_order = {c: i for i, c in enumerate(_CATEGORIES)}
-    status_order = {"fail": 0, "blocked": 1, "warning": 2, "unknown": 3, "pass": 4}
+    st_order = {"fail": 0, "blocked": 1, "warning": 2, "unknown": 3, "pass": 4}
     report.checks = tuple(sorted(all_checks, key=lambda c: (
-        cat_order.get(c.category, 99),
-        status_order.get(c.status, 9),
-        c.title,
-        c.check_id,
-    )))
+        cat_order.get(c.category, 99), st_order.get(c.status, 9), c.title, c.check_id)))
 
+    # Blockers
     blockers = []
     for ch in report.checks:
         if ch.status in ("fail", "blocked"):
@@ -556,16 +718,11 @@ def run_live_readiness(repo_path: str) -> LiveReadinessReport:
 
     if not blockers:
         report.overall_status = "ready"
-    elif any(s["stage"] == "script_generation" and s["status"] == "not_found"
-             for s in stages):
-        report.overall_status = "not_ready"
     elif sum(1 for b in blockers) >= 5:
         report.overall_status = "not_ready"
     else:
         report.overall_status = "needs_attention"
 
     if report.checks:
-        report.confidence = round(
-            sum(c.confidence for c in report.checks) / len(report.checks)
-        )
+        report.confidence = round(sum(c.confidence for c in report.checks) / len(report.checks))
     return report
