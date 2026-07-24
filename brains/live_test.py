@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Controlled Live Application Test  (AutoCorp CLI - brains)  [Phase 1J]
-======================================================================
+Controlled Live Application Test  (AutoCorp CLI - brains)  [Phase 1J + 1K]
+============================================================================
 
-A safety-first live-test engine that launches an application from a
-selected repository, checks its health endpoints, verifies service
-readiness, and reports failures — all without modifying the target.
+A safety-first live-test engine that resolves the correct web-server launch
+command from production source code, starts the application with uvicorn,
+adaptively polls for port readiness, runs health and route checks, and
+cleanly shuts down — all without modifying the target.
 
 Public API:
     run_live_test(repo_path, timeout, port) -> LiveTestReport
@@ -13,11 +14,13 @@ Public API:
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -25,7 +28,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from brains import scanner, analyzer, live_readiness, workspace
+from brains import scanner, analyzer, workspace
 
 # --------------------------------------------------------------------------- #
 # Result types
@@ -60,8 +63,12 @@ class LiveTestResult:
 class LiveTestReport:
     repo_path: str
     project_type: str = ""
+    launch_target: str = ""
+    launch_args: tuple[str, ...] = ()
+    port: int = 8000
     stages: tuple[StageResult, ...] = ()
     health_results: tuple[LiveTestResult, ...] = ()
+    runtime_routes: tuple[dict, ...] = ()
     dependency_status: tuple[dict, ...] = ()
     dry_run_capabilities: tuple[dict, ...] = ()
     overall_status: str = "INCONCLUSIVE"
@@ -80,6 +87,7 @@ _STARTUP_TIMEOUT = 30
 _REQUEST_TIMEOUT = 10
 _SHUTDOWN_TIMEOUT = 10
 _FORCE_KILL_TIMEOUT = 5
+_POLL_INTERVAL = 0.5
 
 _SECRET_ENV_KEYS = {
     "DEEPSEEK_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
@@ -108,18 +116,13 @@ def _redact_env(key: str, value: str) -> str:
 
 
 def _run_cmd(args: list[str], cwd: str = None, env: dict = None,
-             timeout: int = 30, capture: bool = True) -> dict:
-    """Run a subprocess safely. Never uses shell=True."""
-    result = {
-        "pid": None, "stdout": "", "stderr": "",
-        "exit_code": None, "timed_out": False, "error": "",
-    }
+             timeout: int = 30) -> dict:
+    result = {"pid": None, "stdout": "", "stderr": "",
+               "exit_code": None, "timed_out": False, "error": ""}
     try:
         proc = subprocess.Popen(
             args, cwd=cwd, env=env,
-            stdout=subprocess.PIPE if capture else None,
-            stderr=subprocess.PIPE if capture else None,
-            text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         result["pid"] = proc.pid
         try:
@@ -140,7 +143,6 @@ def _run_cmd(args: list[str], cwd: str = None, env: dict = None,
 
 
 def _http_get(url: str, timeout: int = _REQUEST_TIMEOUT) -> dict:
-    """Safe HTTP GET returning structured result."""
     result = {"status_code": 0, "content_type": "", "body_preview": "",
                "error": "", "elapsed_ms": 0.0}
     try:
@@ -149,14 +151,14 @@ def _http_get(url: str, timeout: int = _REQUEST_TIMEOUT) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             result["status_code"] = resp.status
             result["content_type"] = resp.headers.get("Content-Type", "")
-            body = resp.read(4096).decode("utf-8", errors="replace")
+            body = resp.read(8192).decode("utf-8", errors="replace")
             result["body_preview"] = body[:500]
             result["elapsed_ms"] = (time.time() - start) * 1000
     except urllib.error.HTTPError as exc:
         result["status_code"] = exc.code
-        result["error"] = f"HTTP {exc.code}: {exc.reason}"
+        result["error"] = f"HTTP {exc.code}"
     except Exception as exc:
-        result["error"] = str(exc)
+        result["error"] = str(exc)[:200]
     return result
 
 
@@ -165,226 +167,138 @@ def _find_executable(name: str) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
-# Stage 1: Preflight
+# Port helpers
 # --------------------------------------------------------------------------- #
 
-def _run_preflight(repo_path: str) -> StageResult:
-    findings = []
-    errors = []
 
+def _is_port_listening(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except (OSError, ConnectionRefusedError, TimeoutError):
+        return False
+
+
+def _wait_port(host: str, port: int, timeout: float,
+               proc: subprocess.Popen | None = None) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _is_port_listening(host, port):
+            return "port_listening"
+        if proc and proc.poll() is not None:
+            return "process_exited_early"
+        time.sleep(_POLL_INTERVAL)
+    return "startup_timed_out"
+
+
+# --------------------------------------------------------------------------- #
+# Launch target resolution
+# --------------------------------------------------------------------------- #
+
+
+def _detect_launch_target(repo_path: str, venv_python: str) -> tuple[str, list[str], str]:
+    """Detect the correct uvicorn launch target. Returns (label, args, reason)."""
+    web_app = os.path.join(repo_path, "src", "clonecast", "web_app.py")
+    if os.path.isfile(web_app):
+        content = _read_file(web_app)
+        findings = _py_ast_findings(content)
+
+        if findings["fastapi_factory"] and findings["fastapi_app"]:
+            target = "clonecast.web_app:create_app"
+            args = [venv_python, "-m", "uvicorn", target,
+                    "--factory", "--host", "127.0.0.1"]
+            return target, args, "FastAPI factory create_app() detected in web_app.py"
+
+        if findings["fastapi_app"]:
+            target = "clonecast.web_app:app"
+            args = [venv_python, "-m", "uvicorn", target,
+                    "--host", "127.0.0.1"]
+            return target, args, "FastAPI app=FastAPI() detected in web_app.py"
+
+    return "", [], "No FastAPI application target found in web_app.py"
+
+
+def _read_file(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _py_ast_findings(content: str) -> dict:
+    findings = {"fastapi_app": False, "fastapi_factory": False,
+                "app_name": "", "factory_name": ""}
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return findings
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets if isinstance(node.targets, list) else [node.targets]:
+                if isinstance(target, ast.Name):
+                    value = node.value
+                    if isinstance(value, ast.Call):
+                        func = value.func
+                        if isinstance(func, ast.Name) and func.id == "FastAPI":
+                            findings["fastapi_app"] = True
+                            findings["app_name"] = target.id
+
+        if isinstance(node, ast.FunctionDef) and node.name == "create_app":
+            returns = node.returns
+            if returns and isinstance(returns, ast.Name) and returns.id == "FastAPI":
+                findings["fastapi_factory"] = True
+                findings["factory_name"] = node.name
+            elif _returns_fastapi(node):
+                findings["fastapi_factory"] = True
+                findings["factory_name"] = node.name
+
+    return findings
+
+
+def _returns_fastapi(func_node: ast.FunctionDef) -> bool:
+    for node in ast.walk(func_node):
+        if isinstance(node, ast.Return):
+            val = node.value
+            if isinstance(val, ast.Call):
+                if isinstance(val.func, ast.Name) and val.func.id == "FastAPI":
+                    return True
+            if isinstance(val, ast.Name):
+                if "app" in val.id.lower():
+                    return True
+    # heuristic: function named create_app in file with FastAPI import
+    return func_node.name == "create_app"
+
+
+# --------------------------------------------------------------------------- #
+# Stages
+# --------------------------------------------------------------------------- #
+
+
+def _run_preflight(repo_path: str) -> StageResult:
+    findings, errors = [], []
     if not os.path.isdir(repo_path):
         errors.append("Repository path does not exist.")
         return StageResult(stage="1", status="PREFLIGHT_FAILED",
-                           title="Preflight Checks", findings=tuple(findings),
+                           title="Preflight", findings=tuple(findings),
                            errors=tuple(errors))
 
     git_info = scanner._git_info(repo_path)
-    findings.append(f"Repository: {repo_path}")
     findings.append(f"Git: branch={git_info[0]}, tree={git_info[1]}")
-
-    venvs = []
-    for entry in os.listdir(repo_path):
-        full = os.path.join(repo_path, entry)
-        venv_bin = os.path.join(full, "bin", "python")
-        if os.path.isdir(full) and os.path.isfile(venv_bin):
-            venvs.append(entry)
-    findings.append(f"Virtual environments: {', '.join(venvs) or 'none found'}")
-
+    venvs = [e for e in os.listdir(repo_path)
+             if os.path.isfile(os.path.join(repo_path, e, "bin", "python"))]
+    findings.append(f"Venvs: {', '.join(venvs) or 'none'}")
     if not venvs:
         errors.append("No Python virtual environment found.")
-        errors.append("A .venv with required dependencies is needed.")
 
-    for exe in ("ffmpeg", "ffprobe", "ollama", "uvicorn"):
-        found = _find_executable(exe)
-        findings.append(f"Executable {exe}: {'found' if found else 'missing'}")
+    for exe in ("ffmpeg", "ffprobe", "ollama"):
+        f = _find_executable(exe)
+        findings.append(f"{exe}: {'found' if f else 'missing'}")
 
     status = "PREFLIGHT_PASSED" if not errors else "PREFLIGHT_FAILED"
-    return StageResult(stage="1", status=status, title="Preflight Checks",
+    return StageResult(stage="1", status=status, title="Preflight",
                        findings=tuple(findings), errors=tuple(errors))
-
-
-# --------------------------------------------------------------------------- #
-# Stage 2: Safe Launch Plan
-# --------------------------------------------------------------------------- #
-
-def _build_launch_plan(repo_path: str, venv_path: str,
-                       port: int) -> tuple[str | None, list[str], dict]:
-    """Build a safe launch plan. Returns (python_exe, args, env)."""
-    env = os.environ.copy()
-    venv_python = os.path.join(repo_path, venv_path, "bin", "python")
-    if not os.path.isfile(venv_python):
-        return None, [], {}
-
-    env["PATH"] = os.path.join(repo_path, venv_path, "bin") + ":" + env.get("PATH", "")
-    env.pop("DEEPSEEK_API_KEY", None)
-
-    args = [venv_python, "-m", "clonecast.web_app"]
-
-    return venv_python, args, env
-
-
-# --------------------------------------------------------------------------- #
-# Stage 3: Controlled Startup
-# --------------------------------------------------------------------------- #
-
-def _start_app(python_exe: str, args: list[str], cwd: str, env: dict,
-               timeout: int) -> tuple[subprocess.Popen | None, dict]:
-    """Start the application. Returns (process, run_result)."""
-    try:
-        proc = subprocess.Popen(
-            [python_exe] + args[1:],
-            cwd=cwd, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, {"error": str(exc), "exit_code": -1}
-
-    time.sleep(3)
-    poll = proc.poll()
-    if poll is not None:
-        out, err = proc.communicate()
-        return None, {
-            "error": f"Process exited immediately with code {poll}",
-            "stdout": (out or "")[:_MAX_LOG_BYTES],
-            "stderr": (err or "")[:_MAX_LOG_BYTES],
-            "exit_code": poll,
-        }
-
-    return proc, {"pid": proc.pid, "exit_code": None, "running": True}
-
-
-# --------------------------------------------------------------------------- #
-# Stage 4: Health Checks
-# --------------------------------------------------------------------------- #
-
-def _run_health_checks(base_url: str, timeout: int) -> list[LiveTestResult]:
-    checks = []
-    endpoints = [
-        ("/health", "Health endpoint"),
-        ("/docs", "API docs"),
-        ("/openapi.json", "OpenAPI schema"),
-        ("/", "Root page"),
-    ]
-    for path, label in endpoints:
-        url = f"{base_url}{path}"
-        res = _http_get(url, timeout)
-        checks.append(LiveTestResult(
-            stage="4", label=label, url=url, method="GET",
-            status_code=res["status_code"],
-            response_time_ms=res.get("elapsed_ms", 0),
-            content_type=res.get("content_type", ""),
-            body_preview=res.get("body_preview", ""),
-            error=res.get("error", ""),
-            passed=200 <= res["status_code"] < 500,
-        ))
-    return checks
-
-
-# --------------------------------------------------------------------------- #
-# Stage 6: Service Readiness
-# --------------------------------------------------------------------------- #
-
-def _check_services() -> list[dict]:
-    results = []
-    for name, exe in (("ollama", "ollama"), ("ffmpeg", "ffmpeg"),
-                       ("ffprobe", "ffprobe"), ("uvicorn", "uvicorn")):
-        found = _find_executable(exe)
-        if found:
-            ver = _run_cmd([exe, "--version"], timeout=5)
-            results.append({"service": name, "state": "installed",
-                            "version": ver["stdout"].strip()[:100] if ver["stdout"] else "unknown"})
-        else:
-            results.append({"service": name, "state": "missing"})
-
-    # ollama endpoint
-    ollama_res = _http_get("http://127.0.0.1:11434/api/tags", timeout=3)
-    results.append({
-        "service": "ollama_endpoint", "state": "ready" if ollama_res["status_code"] == 200 else "not_running",
-        "detail": str(ollama_res["status_code"]),
-    })
-
-    # chatterbox venv
-    chatterbox_venv = "/home/larry/clonecast/.venv-chatterbox/bin/python"
-    if os.path.isfile(chatterbox_venv):
-        results.append({"service": "chatterbox_venv", "state": "installed"})
-    else:
-        results.append({"service": "chatterbox_venv", "state": "missing"})
-
-    return results
-
-
-# --------------------------------------------------------------------------- #
-# Stage 7: Dry-run capability
-# --------------------------------------------------------------------------- #
-
-def _discover_dry_run(analysis) -> list[dict]:
-    caps = []
-    caps.append({"stage": "episode_creation", "safe": False,
-                  "note": "Requires further investigation of CloneCast CLI flags for dry-run modes."})
-    caps.append({"stage": "research", "safe": False,
-                  "note": "Check if CloneCast has --dry-run or --preview flags."})
-    caps.append({"stage": "script_generation", "safe": False,
-                  "note": "Inspect cli.py for dry-run/preview arguments."})
-    caps.append({"stage": "voice_generation", "safe": False,
-                  "note": "Check voice_service.py for test mode."})
-    caps.append({"stage": "publishing", "safe": False,
-                  "note": "YouTube publishing requires OAuth — not safe for automated testing."})
-    return caps
-
-
-# --------------------------------------------------------------------------- #
-# Stage 8: Clean Shutdown
-# --------------------------------------------------------------------------- #
-
-def _shutdown(proc: subprocess.Popen | None) -> dict:
-    if proc is None:
-        return {"status": "no_process_to_shutdown"}
-    result = {"pid": proc.pid, "method": "SIGTERM", "killed": False}
-    try:
-        proc.terminate()
-        try:
-            proc.wait(timeout=_SHUTDOWN_TIMEOUT)
-            result["exit_code"] = proc.returncode
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            result["method"] = "SIGKILL"
-            result["killed"] = True
-            proc.wait(timeout=_FORCE_KILL_TIMEOUT)
-            result["exit_code"] = proc.returncode
-    except (OSError, subprocess.SubprocessError):
-        result["status"] = "already_dead"
-    return result
-
-
-# --------------------------------------------------------------------------- #
-# Stage 9: Change Verification
-# --------------------------------------------------------------------------- #
-
-def _verify_no_changes(repo_path: str, before_state: dict) -> dict:
-    result = {"modified": False, "new_files": [], "db_unchanged": True,
-              "git_clean": True}
-    try:
-        git_status = _run_cmd(["git", "status", "--short"], cwd=repo_path, timeout=5)
-        if git_status["stdout"].strip():
-            result["git_clean"] = False
-            result["new_files"] = git_status["stdout"].strip().splitlines()
-    except Exception:
-        pass
-
-    for db_path, before_hash in before_state.get("databases", {}).items():
-        full = os.path.join(repo_path, db_path)
-        if os.path.isfile(full):
-            after_hash = _sha256_file(full)
-            if after_hash != before_hash:
-                result["db_unchanged"] = False
-
-    return result
-
-
-# --------------------------------------------------------------------------- #
-# Public entry point
-# --------------------------------------------------------------------------- #
 
 
 def run_live_test(repo_path: str, timeout: int = _STARTUP_TIMEOUT,
@@ -393,113 +307,220 @@ def run_live_test(repo_path: str, timeout: int = _STARTUP_TIMEOUT,
     t0 = time.time()
     analysis = analyzer.run_analysis(repo_path)
     report = LiveTestReport(repo_path=repo_path,
-                            project_type=analysis.project_type)
-    stages = []
-    health_results = []
-    before_state = {"start_time": t0, "databases": {}}
+                            project_type=analysis.project_type, port=port)
+    stages, health_results, runtime_routes = [], [], []
+    before_state = {"databases": {}}
 
-    # Capture before-state hashes
     db_path = os.path.join(repo_path, "db", "cloneshow.db")
     if os.path.isfile(db_path):
         before_state["databases"]["db/cloneshow.db"] = _sha256_file(db_path)
-    report.before_sha256 = dict(before_state.get("databases", {}))
+    report.before_sha256 = dict(before_state["databases"])
 
     # Stage 1: Preflight
     s1 = _run_preflight(repo_path)
     stages.append(s1)
-
     if s1.status == "PREFLIGHT_FAILED":
         report.stages = tuple(stages)
         report.overall_status = "UNSAFE_TO_LAUNCH"
         report.duration_seconds = time.time() - t0
         return report
 
-    # Stage 2: Launch plan
-    venv_python, args, env = _build_launch_plan(repo_path, ".venv", port)
-    if venv_python is None:
-        stages.append(StageResult(stage="2", status="LAUNCH_PLAN_FAILED",
-                     title="Safe Launch Plan",
-                     errors=("No valid Python virtual environment found.",)))
+    # Resolve launch target
+    venv_python = os.path.join(repo_path, ".venv", "bin", "python")
+    if not os.path.isfile(venv_python):
+        stages.append(StageResult(stage="2", status="LAUNCH_TARGET_INVALID",
+                       title="Launch Resolution",
+                       errors=("No valid Python venv found.",)))
+        report.stages = tuple(stages)
+        report.overall_status = "LAUNCH_TARGET_INVALID"
+        report.duration_seconds = time.time() - t0
+        return report
+
+    target, args, reason = _detect_launch_target(repo_path, venv_python)
+    if not target:
+        stages.append(StageResult(stage="2", status="LAUNCH_TARGET_INVALID",
+                       title="Launch Resolution",
+                       errors=(reason,)))
+        report.stages = tuple(stages)
+        report.overall_status = "LAUNCH_TARGET_INVALID"
+        report.duration_seconds = time.time() - t0
+        return report
+
+    # Resolve port
+    if _is_port_listening("127.0.0.1", port):
+        for alt in range(port + 1, port + 100):
+            if not _is_port_listening("127.0.0.1", alt):
+                port = alt
+                report.port = alt
+                break
+    args.append(f"--port={port}")
+    report.launch_target = target
+    report.launch_args = tuple(args)
+
+    env = os.environ.copy()
+    env["PATH"] = os.path.join(repo_path, ".venv", "bin") + ":" + env.get("PATH", "")
+    env.pop("DEEPSEEK_API_KEY", None)
+
+    stages.append(StageResult(stage="2", status="LAUNCH_PLAN_READY",
+                   title="Launch Resolution",
+                   findings=(f"Target: {target}", f"Reason: {reason}",
+                             f"Args: {' '.join(args)}",
+                             f"Port: {port}")))
+
+    # Stage 3: Startup
+    try:
+        proc = subprocess.Popen(
+            args, cwd=repo_path, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        stages.append(StageResult(stage="3", status="STARTUP_FAILED",
+                       title="Startup", errors=(str(exc),)))
         report.stages = tuple(stages)
         report.overall_status = "STARTUP_FAILED"
         report.duration_seconds = time.time() - t0
         return report
 
-    redacted_env = {k: _redact_env(k, str(v)) for k, v in env.items()
-                    if k not in os.environ or env[k] != os.environ.get(k)}
-    plan_lines = [f"Python: {venv_python}", f"Args: {' '.join(args)}",
-                  f"CWD: {repo_path}",
-                  f"Extra env vars: {', '.join(sorted(redacted_env))}",
-                  f"Timeout: {timeout}s", f"Port: {port}"]
-    stages.append(StageResult(stage="2", status="LAUNCH_PLAN_READY",
-                   title="Safe Launch Plan",
-                   findings=tuple(plan_lines)))
+    port_status = _wait_port("127.0.0.1", port, timeout, proc)
 
-    # Stage 3: Controlled startup
-    proc, start_result = _start_app(venv_python, args, repo_path, env, timeout)
-    if proc is None:
-        stages.append(StageResult(stage="3", status="STARTUP_FAILED",
-                       title="Controlled Startup",
-                       errors=(start_result.get("error", "App failed to start"),
-                               start_result.get("stderr", "")[:500])))
-    else:
-        stages.append(StageResult(stage="3", status="STARTUP_SUCCEEDED",
-                       title="Controlled Startup",
-                       findings=(f"PID: {start_result.get('pid')}",)))
+    if port_status == "process_exited_early":
+        out, err = proc.communicate()
+        stages.append(StageResult(stage="3", status="PROCESS_EXITED_EARLY",
+                       title="Startup",
+                       findings=(f"Exit code: {proc.returncode}",),
+                       errors=(f"Process exited before port listened.\n"
+                               f"stderr: {(err or '')[:500]}",)))
+        report.stages = tuple(stages)
+        report.overall_status = "PROCESS_EXITED_EARLY"
+        report.duration_seconds = time.time() - t0
+        return report
+
+    if port_status == "startup_timed_out":
+        proc.kill()
+        proc.communicate()
+        stages.append(StageResult(stage="3", status="PORT_NOT_LISTENING",
+                       title="Startup",
+                       errors=(f"Port {port} did not listen within {timeout}s.",)))
+        report.stages = tuple(stages)
+        report.overall_status = "PORT_NOT_LISTENING"
+        report.duration_seconds = time.time() - t0
+        return report
+
+    stages.append(StageResult(stage="3", status="APPLICATION_RESPONDING",
+                   title="Startup",
+                   findings=(f"PID: {proc.pid}", f"Port {port} listening")))
 
     # Stage 4: Health checks
-    if proc is not None:
-        base_url = f"http://127.0.0.1:{port}"
-        hr = _run_health_checks(base_url, timeout)
-        health_results = hr
-        passed = sum(1 for r in hr if r.passed)
-        stages.append(StageResult(stage="4", status="HEALTH_CHECKS_COMPLETE",
-                       title="Live Health Checks",
-                       findings=(f"{passed}/{len(hr)} endpoints healthy",)))
+    base_url = f"http://127.0.0.1:{port}"
+    endpoints = [
+        ("/health", "Health endpoint"),
+        ("/docs", "API docs"),
+        ("/openapi.json", "OpenAPI schema"),
+        ("/", "Root page"),
+        ("/api/jobs/nonexistent", "Safe read-only API route"),
+    ]
+    for path, label in endpoints:
+        url = f"{base_url}{path}"
+        res = _http_get(url, _REQUEST_TIMEOUT)
+        if path == "/openapi.json" and res["status_code"] == 200:
+            try:
+                schema = json.loads(res["body_preview"])
+                for route_path, methods in schema.get("paths", {}).items():
+                    runtime_routes.append({"path": route_path,
+                                           "methods": list(methods.keys())})
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        health_results.append(LiveTestResult(
+            stage="4", label=label, url=url, method="GET",
+            status_code=res["status_code"],
+            response_time_ms=res.get("elapsed_ms", 0),
+            content_type=res.get("content_type", ""),
+            body_preview=res.get("body_preview", ""),
+            error=res.get("error", ""),
+            passed=200 <= res["status_code"] < 500,
+        ))
 
-    # Stage 6: Service readiness
+    passed = sum(1 for r in health_results if r.passed)
+    stages.append(StageResult(stage="4", status="HEALTH_CHECKS_COMPLETE",
+                   title="Health Checks",
+                   findings=(f"{passed}/{len(health_results)} endpoints healthy",
+                             f"{len(runtime_routes)} runtime routes detected")))
+
+    report.runtime_routes = tuple(runtime_routes)
+
+    # Stage 6: Services
     svcs = _check_services()
     report.dependency_status = tuple(svcs)
     ready = sum(1 for s in svcs if s["state"] in ("installed", "ready"))
     stages.append(StageResult(stage="6", status="SERVICE_CHECK_COMPLETE",
-                   title="Service Readiness",
-                   findings=(f"{ready}/{len(svcs)} services available",)))
+                   title="Services", findings=(f"{ready}/{len(svcs)} available",)))
 
-    # Stage 7: Dry-run capabilities
-    dry_runs = _discover_dry_run(analysis)
-    report.dry_run_capabilities = tuple(dry_runs)
+    # Stage 7: Dry-run caps
+    caps = [{"stage": s, "safe": False,
+             "note": "Requires further investigation of CloneCast dry-run modes."}
+            for s in ("episode", "research", "script", "voice", "publish")]
+    report.dry_run_capabilities = tuple(caps)
     stages.append(StageResult(stage="7", status="DRY_RUN_DISCOVERY_COMPLETE",
-                   title="Dry-Run Capability Discovery",
-                   findings=(f"{len(dry_runs)} stages checked",)))
+                   title="Dry-Run Caps", findings=(f"{len(caps)} checked",)))
 
     # Stage 8: Shutdown
-    shutdown_result = _shutdown(proc)
+    shutdown = {"pid": proc.pid, "method": "SIGTERM", "killed": False}
+    try:
+        proc.terminate()
+        try:
+            proc.wait(timeout=_SHUTDOWN_TIMEOUT)
+            shutdown["exit_code"] = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            shutdown["method"] = "SIGKILL"
+            shutdown["killed"] = True
+            proc.wait(timeout=_FORCE_KILL_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        shutdown["status"] = "already_dead"
     stages.append(StageResult(stage="8", status="SHUTDOWN_COMPLETE",
-                   title="Clean Shutdown",
-                   findings=(f"Method: {shutdown_result.get('method')}",
-                             f"Killed: {shutdown_result.get('killed', False)}")))
+                   title="Shutdown",
+                   findings=(f"Method: {shutdown['method']}",
+                             f"Killed: {shutdown['killed']}")))
 
-    # Stage 9: Change verification
-    change_result = _verify_no_changes(repo_path, before_state)
+    # Stage 9: Verification
     if os.path.isfile(db_path):
         report.after_sha256 = {"db/cloneshow.db": _sha256_file(db_path)}
+    db_ok = report.before_sha256 == report.after_sha256
+    git_r = _run_cmd(["git", "status", "--short"], cwd=repo_path, timeout=5)
+    git_clean = not git_r["stdout"].strip()
     stages.append(StageResult(stage="9", status="CHANGE_VERIFICATION_COMPLETE",
-                   title="Change Verification",
-                   findings=(f"Modified: {change_result.get('modified')}",
-                             f"DB unchanged: {change_result.get('db_unchanged')}",
-                             f"Git clean: {change_result.get('git_clean')}")))
+                   title="Verification",
+                   findings=(f"DB unchanged: {db_ok}",
+                             f"Git clean: {git_clean}")))
 
     report.stages = tuple(stages)
     report.health_results = tuple(health_results)
     report.duration_seconds = time.time() - t0
 
-    if any(s.status.endswith("_FAILED") for s in stages if s.stage in ("3",)):
-        report.overall_status = "STARTUP_FAILED"
-    elif not health_results:
-        report.overall_status = "HEALTH_CHECK_FAILED"
-    elif all(r.passed for r in health_results):
-        report.overall_status = "LIVE_READY"
+    if passed == len(health_results):
+        report.overall_status = "LIVE_HTTP_READY"
+    elif passed >= 2:
+        report.overall_status = "LIVE_HTTP_READY_WITH_WARNINGS"
+    elif passed >= 1:
+        report.overall_status = "HEALTH_ENDPOINT_FAILED"
     else:
-        report.overall_status = "STARTS_WITH_WARNINGS"
+        report.overall_status = "INCONCLUSIVE"
 
     return report
+
+
+def _check_services() -> list[dict]:
+    results = []
+    for name, exe in (("ollama", "ollama"), ("ffmpeg", "ffmpeg"),
+                       ("ffprobe", "ffprobe")):
+        f = _find_executable(exe)
+        results.append({"service": name, "state": "installed" if f else "missing"})
+
+    ollama_res = _http_get("http://127.0.0.1:11434/api/tags", timeout=3)
+    results.append({"service": "ollama_endpoint",
+                    "state": "ready" if ollama_res["status_code"] == 200 else "not_running"})
+
+    chatterbox_py = "/home/larry/clonecast/.venv-chatterbox/bin/python"
+    results.append({"service": "chatterbox_venv",
+                    "state": "installed" if os.path.isfile(chatterbox_py) else "missing"})
+    return results
