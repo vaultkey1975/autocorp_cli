@@ -120,20 +120,53 @@ def _read(path):
     try:
         with open(path, encoding="utf-8") as fh:
             return fh.read()
-    except OSError:
+    except (UnicodeDecodeError, PermissionError, OSError):
         return ""
 
 
+_TEXT_EXTS = {
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm",
+    ".css", ".scss", ".json", ".toml", ".yaml", ".yml", ".ini", ".cfg",
+    ".md", ".rst", ".txt", ".sql", ".sh", ".bash", ".xml", ".env",
+}
+
+_BINARY_EXTS = {
+    ".pb", ".onnx", ".pt", ".pth", ".safetensors", ".bin", ".so",
+    ".dll", ".dylib", ".pyc", ".pyo", ".db", ".sqlite", ".sqlite3",
+    ".wav", ".mp3", ".flac", ".ogg", ".mp4", ".mkv", ".avi", ".png",
+    ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar",
+    ".gz", ".7z",
+}
+
+_MAX_TEXT_FILE_SIZE = 5 * 1024 * 1024
+
+
 def _iter_text_files(repo_path):
-    text_exts = {".py", ".js", ".ts", ".html", ".css", ".sh", ".json",
-                  ".yaml", ".yml", ".toml", ".cfg", ".ini", ".txt", ".md",
-                  ".xml", ".env"}
-    for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in scanner.IGNORE_DIRS]
+    for root, dirs, files in os.walk(repo_path, followlinks=False):
+        dirs[:] = [d for d in dirs
+                   if not scanner._should_skip_dir(d, scanner.IGNORE_DIRS)]
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
-            if ext in text_exts:
-                yield os.path.join(root, fn)
+            name_lower = fn.lower()
+
+            if ext in _BINARY_EXTS:
+                continue
+            if ext not in _TEXT_EXTS and fn not in ("Dockerfile", "Makefile"):
+                continue
+            if "requirements" in name_lower:
+                pass  # always include requirements files
+            elif ext not in _TEXT_EXTS and not (fn == "Dockerfile" or fn == "Makefile" or "requirements" in name_lower):
+                continue
+
+            full = os.path.join(root, fn)
+            try:
+                size = os.path.getsize(full)
+                if size > _MAX_TEXT_FILE_SIZE:
+                    continue
+            except OSError:
+                continue
+
+            yield full
 
 
 # --------------------------------------------------------------------------- #

@@ -35,7 +35,15 @@ from dataclasses import dataclass
 
 # Directories that never hold project source and would otherwise inflate or
 # skew the counts (VCS internals, virtualenvs, caches, build artifacts).
-IGNORE_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", "build", "dist"}
+IGNORE_DIRS = {
+    ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".tox", ".nox", "build", "dist", "site-packages", "node_modules",
+    ".venv", "venv", "env",
+}
+
+# Directories whose NAME STARTS WITH these prefixes are also excluded.
+# This catches .venv-chatterbox, .venv-anything, venv-backup, etc.
+_IGNORE_DIR_PREFIXES = (".venv", "venv", "env")
 
 _TODO_RE = re.compile(r"\bTODO\b")
 _FIXME_RE = re.compile(r"\bFIXME\b")
@@ -122,6 +130,16 @@ def is_test_file(name: str) -> bool:
     return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
 
 
+def _should_skip_dir(dirname: str, ignore_dirs: set) -> bool:
+    """Return True if `dirname` should be excluded from the file walk."""
+    if dirname in ignore_dirs:
+        return True
+    for prefix in _IGNORE_DIR_PREFIXES:
+        if dirname.startswith(prefix) and dirname != prefix:
+            return True
+    return False
+
+
 def iter_python_files(repo_path: str, ignore_dirs: set = None):
     """Yield (full_path, name) for every .py file under `repo_path`, skipping
     `ignore_dirs` (defaults to IGNORE_DIRS) anywhere in the tree. Callers that
@@ -130,7 +148,7 @@ def iter_python_files(repo_path: str, ignore_dirs: set = None):
     re-walking the tree themselves."""
     ignore = IGNORE_DIRS if ignore_dirs is None else ignore_dirs
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in ignore]
+        dirs[:] = [d for d in dirs if not _should_skip_dir(d, ignore)]
         for name in files:
             if name.endswith(".py"):
                 yield os.path.join(root, name), name
