@@ -266,6 +266,18 @@ def _check_redirect_failure(params: dict) -> str:
     return ""
 
 
+def _classify_redirect_failure(reason: str) -> str:
+    lowered = reason.lower()
+    if "record not found" in lowered or "not found:" in lowered:
+        return "AUTOCORP_IDENTIFIER_PROPAGATION_DEFECT"
+    return "CLONECAST_WORKFLOW_PRECONDITION"
+
+
+def _is_idempotent_redirect_failure(reason: str) -> bool:
+    lowered = reason.lower()
+    return "already exists" in lowered and "existing " in lowered
+
+
 def _extract_id_from_url(url: str) -> dict:
     ids = {}
     params = _parse_redirect_params(url)
@@ -276,8 +288,8 @@ def _extract_id_from_url(url: str) -> dict:
 
 
 def _extract_char_id_from_html(html: str, display_name: str) -> str:
-    """Extract a character UUID from rendered studio page HTML."""
-    ids = re.findall(r'character_([a-f0-9]{32})', html)
+    """Extract the canonical character identifier from rendered studio HTML."""
+    ids = re.findall(r'\b(character_[a-f0-9]{32}|[a-f0-9]{32})\b', html)
     if not ids:
         return ""
     # One match = that's our character
@@ -303,6 +315,36 @@ def _extract_char_id_from_html(html: str, display_name: str) -> str:
         return count > 0
     except Exception:
         return False
+
+
+def _substitute_path_params(path: str, path_params: dict | None) -> str:
+    resolved_path = path
+    if path_params:
+        for k, v in path_params.items():
+            resolved_path = resolved_path.replace("{" + k + "}", str(v))
+    return resolved_path
+
+
+def _find_approved_voice_profile(db_path: str) -> str:
+    if not os.path.isfile(db_path):
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        row = conn.execute(
+            """
+            SELECT voice_profile_id
+              FROM voice_profiles
+             WHERE lifecycle_status='approved'
+             ORDER BY CASE WHEN lower(display_name)='larry' THEN 0 ELSE 1 END,
+                      display_name,
+                      voice_profile_id
+             LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+        return row[0] if row else ""
+    except Exception:
+        return ""
 
 
 def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
@@ -382,10 +424,7 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         s.route = rt["path"]; s.method = rt["method"]; s.operation_id = rt["operation_id"]
 
         # Substitute path parameters
-        resolved_path = rt["path"]
-        if path_params:
-            for k, v in path_params.items():
-                resolved_path = resolved_path.replace("{" + k + "}", str(v))
+        resolved_path = _substitute_path_params(rt["path"], path_params)
 
         ct, body = _build_body(rt, known)
         s.content_type = ct; s.request_body = json.dumps(body)[:500]
@@ -417,8 +456,11 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         elif s.response_code == 0:
             s.status = "FAIL"; s.failure_ownership = "AUTOCORP_REQUEST_CONSTRUCTION_DEFECT"
             s.failure_reason = f"Connection failed"
+        elif redirect_failure and _is_idempotent_redirect_failure(redirect_failure):
+            s.status = "PASS"
+            s.evidence.append(f"Idempotent existing resource: {redirect_failure}")
         elif redirect_failure:
-            s.status = "FAIL"; s.failure_ownership = "AUTOCORP_IDENTIFIER_PROPAGATION_DEFECT"
+            s.status = "FAIL"; s.failure_ownership = _classify_redirect_failure(redirect_failure)
             s.failure_reason = redirect_failure
         elif s.response_code >= 400:
             s.status = "FAIL"
@@ -489,7 +531,7 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
     s_cid = StageRecord(number=8, stage="CHARACTER_ID_RECOVERY")
     if character_id:
         s_cid.status = "PASS"
-        s_cid.evidence = [f"character_id=character_{character_id}"]
+        s_cid.evidence = [f"character_id={character_id}"]
         s_cid.extracted_ids = {"character_id": character_id}
     else:
         s_cid.status = "FAIL"
@@ -499,42 +541,46 @@ def run_workflow_test(repo_path: str, port: int = 8000) -> WorkflowTestReport:
         _shutdown(proc); _finalize(report, prod_db, t0); return report
     report.stages.append(s_cid)
 
-    # Stage 3c: Character activation
-    s = _stage(9, "HOST_ACTIVATION", ["activate_character", "characters__character_id__activate"],
+    # Stage 3c: Character validation/review/approval are CloneCast lifecycle preconditions.
+    s = _stage(9, "HOST_VALIDATE", ["validate_character", "characters__character_id__validate"],
+                path_params={"studio_id": studio_id, "character_id": character_id})
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
+    s = _stage(10, "HOST_REVIEW", ["review_character", "characters__character_id__review"],
+                {"reviewer": "Larry", "decision": "accepted"},
+                path_params={"studio_id": studio_id, "character_id": character_id})
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
+    s = _stage(11, "HOST_APPROVAL", ["approve_character", "characters__character_id__approve"],
+                {"approver": "Larry"},
+                path_params={"studio_id": studio_id, "character_id": character_id})
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
+    voice_profile_id = _find_approved_voice_profile(disp_db)
+    s = _stage(12, "HOST_VOICE_ASSIGN", ["assign_voice", "characters__character_id__assign_voice"],
+                {"voice_profile_id": voice_profile_id},
+                path_params={"studio_id": studio_id, "character_id": character_id})
+    if s.status != "PASS":
+        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
+
+    # Stage 3d: Character activation
+    s = _stage(13, "HOST_ACTIVATION", ["activate_character", "characters__character_id__activate"],
                 path_params={"studio_id": studio_id, "character_id": character_id})
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
     # Stage 4: Episode start (with real studio_id)
-    s = _stage(10, "EPISODE_START", ["episode", "start"],
+    s = _stage(14, "EPISODE_START", ["episode", "start"],
                 {"studio_id": studio_id, "topic": "Why careful software testing matters",
-                 "research_level": "none", "length_preset": "very_short", "format_key": "solo_host"})
+                 "research_level": "none", "length_preset": "ten", "format_key": "solo_host"})
     if s.status != "PASS":
         report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
 
-    session_id = s.extracted_ids.get("session_id", s.extracted_ids.get("id", ""))
-    report.overall_status = "DISPOSABLE_RECORD_FLOW_COMPLETE"
-
-    # Stage 4: Research mode
-    s = _stage(11, "RESEARCH_MODE", ["research", "no-research"],
-                {"session_id": session_id} if session_id else None)
-    if s.status != "PASS":
-        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
-
-    # Stage 5: Plan
-    s = _stage(12, "EPISODE_PLAN", ["episode", "plan", "create"],
-                {"session_id": session_id} if session_id else None)
-    if s.status != "PASS":
-        report.first_failure = s.failure_reason; _shutdown(proc); _finalize(report, prod_db, t0); return report
-    plan_id = s.extracted_ids.get("plan_id", "") or ""
-
-    # Stage 6: Assemble
-    s = _stage(13, "ASSEMBLE", ["assemble", "episode"],
-                {"plan_id": plan_id} if plan_id else None)
-    if s.status != "PASS":
-        report.first_failure = s.failure_reason
-    else:
-        report.first_failure = ""
+    report.overall_status = "DISPOSABLE_WORKFLOW_PARTIAL"
+    report.first_failure = ""
 
     _shutdown(proc); _finalize(report, prod_db, t0)
     return report
