@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -725,6 +725,12 @@ def cmd_workflow_test(args) -> int:
     return 0 if report.overall_status in ("DISPOSABLE_WORKFLOW_COMPLETE", "DISPOSABLE_WORKFLOW_PARTIAL") else 1
 
 
+def cmd_quick_podcast(args) -> int:
+    report = quick_podcast.run(args)
+    quick_podcast.print_report(report)
+    return 0 if report.overall == "PASS" else 1
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -871,6 +877,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--disposable", action="store_true",
                     help="REQUIRED: enable disposable isolation (refuses without it)")
     sp.set_defaults(func=cmd_workflow_test)
+
+    sp = sub.add_parser("quick-podcast",
+                        help="generate a real disposable CloneCast podcast for listening")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to CloneCast repository")
+    sp.add_argument("--topic", required=True,
+                    help="podcast topic")
+    sp.add_argument("--show", default="CloneCast",
+                    help="show name (default: CloneCast)")
+    sp.add_argument("--duration", default="10m",
+                    help="target duration such as 10m or 600s (default: 10m)")
+    sp.add_argument("--voice", default="",
+                    help="approved CloneCast voice_profile_id to use")
+    sp.add_argument("--output", default="",
+                    help="output directory (default: <repo>/output/test_episode)")
+    sp.add_argument("--test", action="store_true",
+                    help="required safety mode: never publish externally")
+    sp.set_defaults(func=cmd_quick_podcast)
 
     return p
 
