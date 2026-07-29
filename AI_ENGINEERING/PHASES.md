@@ -232,19 +232,28 @@ docstring header.
 - **Completion Evidence:** Committed (`ce4d614`), plus fixes (`1339aaf
   "accept --provider ollama alias"`, `ea71d54 "harden proposal secret and
   provider safety"`).
-- **Known gaps (from a real audit, not invented):** an AI-generated safety
-  audit of this phase (`claude_phase_1g_audit.txt`, present but untracked
-  in the repository) found and documented: (1) the secret-file exclusion
-  patterns miss compound filenames such as `db_credentials.json`; (2)
-  inline secret redaction misses plain `password =`, bare `SECRET =`, and
-  connection-string-embedded credentials; (3) `--provider claude` raises a
-  `TypeError` at construction (a real, reproducible bug, confirmed in that
-  report); (4) `--provider deepseek` without an API key resolves the wrong
-  local Ollama model tag; (5) one test
-  (`tests/test_provider_contracts.py::test_no_silent_fallback`) fails in
-  any environment with an ambient `DEEPSEEK_API_KEY`, because it makes a
-  real network call instead of exercising the intended offline path. None
-  of these have been fixed as of the current `HEAD` — see `NEXT_STEPS.md`.
+- **Known gaps (from a real audit, not invented) — status corrected
+  2026-07-29:** an AI-generated safety audit of this phase
+  (`claude_phase_1g_audit.txt`, present but untracked in the repository)
+  found and documented five issues. Re-verifying each against current
+  `HEAD` (rather than trusting the untracked report's claims, which had
+  gone stale — see `PROJECT_MEMORY.md`'s "Lessons learned" for why this
+  matters) found: (1) the secret-file exclusion gap (compound filenames
+  like `db_credentials.json`) — **already fixed** by `ea71d54`; (2) inline
+  secret redaction gaps — **partially already fixed** by `ea71d54`
+  (`api_key`/`AUTH_TOKEN`/`client_secret`/`AWS_SECRET_ACCESS_KEY`-style
+  keys), with the two remaining gaps (`DB_PASSWORD`-style compound keys,
+  JSON-quoted `"Authorization": "Bearer ..."`) **fixed this session**; (3)
+  `--provider claude`'s `TypeError` at construction — **already fixed** by
+  `ea71d54`; (4) `--provider deepseek`'s model-tag conflation — **already
+  fixed** by `ea71d54` (the no-key path now returns a clean blocked result
+  before ever constructing the engine); (5)
+  `tests/test_provider_contracts.py::test_no_silent_fallback` — **no
+  longer exists**; `ea71d54` replaced it with four narrower regression
+  tests that all pass even with an ambient `DEEPSEEK_API_KEY`. See
+  `NEXT_STEPS.md` "Known bugs" for the full, per-item evidence trail (git
+  commit, direct verification command, and test name) — none of these five
+  audit findings represent a currently-open bug as of this session's end.
 
 ### Phase 1H + 1I — Live Application Readiness Scanner
 - **Purpose:** Determine whether a target application is ready to be
@@ -401,31 +410,38 @@ docstring header.
   after both runs.
 - **Completion Evidence:** **Committed** as `143825a "refactor: modularize
   quick podcast runner and add live progress reporting"` — module-level
-  code only. The `quick-podcast` CLI subcommand registration in
-  `autocorp.py` (`cmd_quick_podcast`, the `sub.add_parser("quick-podcast",
-  ...)` block) is **not** part of this commit and remains in the
-  uncommitted working tree alongside Phase 1X/1Y. A fresh `git clone` of
-  this repository at `HEAD` would not expose `quick-podcast` as a runnable
-  command today, even though the module it depends on is present.
-- **Notes:** This is the concrete example cited throughout this
-  documentation system of "committed, but partially wired" (Tier 3 in
-  `PHASE_COMPLETION_POLICY.md`).
+  code only, at the time of that commit. The `quick-podcast` CLI
+  subcommand registration was uncommitted for five further days until the
+  repository owner explicitly authorized committing it (2026-07-29); it is
+  now committed separately as `53f0d7d "feat: wire quick-podcast CLI
+  subcommand"`. As of `53f0d7d`, a fresh `git clone` of this repository at
+  `HEAD` DOES expose `quick-podcast` as a runnable command.
+- **Notes:** This was, for five days, the concrete example cited
+  throughout this documentation system of "committed, but partially wired"
+  (Tier 3 in `PHASE_COMPLETION_POLICY.md`); it has since moved to Tier 2
+  ("committed, untagged"). Kept here as a record of that history, per
+  `DOCUMENTATION_POLICY.md`'s "do not delete a phase's entry once written;
+  correct it in place."
 
 ---
 
 ## ERA 5 — Reliability Engine (entirely uncommitted)
 
 ### Reliability Engine
-- **Purpose:** Unable to determine a stated purpose from any committed
-  commit message, since no commit references this subsystem at all. Based
-  on module names present in the working tree (`self_consistency.py`,
-  `state_store.py`, `patch_apply.py`, `dep_graph.py`, `config_loader.py`,
-  `orchestrator.py`, `rag_index.py`, `planner_spec.py`, `edit_router.py`,
-  `env_isolation.py`, `test_loop.py`, `static_gate.py`,
-  `regression_runner.py`, `grammar_constraints.py`, `worktree_sandbox.py`,
-  `model_router.py`), this appears to be a subtask-oriented build
-  reliability/orchestration layer, but its actual scope should be
-  confirmed from its own source rather than inferred here.
+- **Purpose:** No commit references this subsystem (still true as of
+  2026-07-29). A full read-only investigation of its actual source was
+  performed this date, at the repository owner's request, to produce an
+  integration proposal. Confirmed purpose (from reading the code, not
+  inferring from filenames): a second, parallel build-and-repair
+  orchestration pipeline, structurally analogous to
+  `core/orchestrator.py::Session` but not composed with it — see
+  `ARCHITECTURE.md`'s "Reliability Engine" section for the full
+  architecture, risk findings, and staged integration plan. It reimplements
+  (rather than reuses) the existing pipeline's self-heal/retry/repair-budget
+  logic, and its own true end-to-end entry point
+  (`ReliabilityOrchestrator.run()`) is never exercised by its own test
+  suite — the 59 passing tests prove unit-level correctness of individual
+  modules, not integrated behavior.
 - **Deliverables (working tree only):** `reliability_engine/` (16 modules,
   2,346 lines), `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
   `tests/test_reliability_engine.py` (1,304 lines), plus supporting,
@@ -444,12 +460,17 @@ docstring header.
   any `brains/*.py` module, and has no CLI entry point. It has passing
   tests but is not integrated into the production application in any way.
 - **Notes:** Two branches, `reliability/subtask-1` and
-  `reliability/subtask-2`, exist and share the name, but both point at the
+  `reliability/subtask-2`, exist and share the name, both pointing at the
   same old commit (`1615cf8`, dated 2026-07-24) with zero commits of their
-  own ahead of `main` — they predate this working-tree content by several
-  days and appear to be stale checkpoint branches unrelated to the current
-  uncommitted `reliability_engine/` directory. Do not assume the branches
-  contain or explain the working-tree subsystem.
+  own ahead of `main`. **Corrected 2026-07-29:** these are not unrelated —
+  `reliability_engine/worktree_sandbox.py` itself creates real git worktree
+  branches named exactly `reliability/subtask-{id}`. These two branches are
+  almost certainly leftover artifacts from an earlier real run of this
+  subsystem's code (consistent with `data/chroma/` also existing on disk —
+  `rag_index.py`'s default Chroma persist path), where `rollback()`'s
+  branch cleanup was not reached. They are stale and behind `main`, not a
+  separate origin for the working-tree subsystem, but they are evidence
+  this code has been executed live at least once outside the test suite.
 
 ---
 

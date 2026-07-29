@@ -7,26 +7,36 @@ discovers any item — see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate work
 
-1. **Decide the fate of the uncommitted Phase 1X/1Y work**
-   (`brains/workflow_test.py`, `autocorp.py`'s `workflow-test`/
-   `publish-test` wiring, `tests/test_workflow_character_id_propagation.py`).
-   It is implemented and has real, if incomplete, verification (see
-   "Blocked work" below) — the repository owner needs to review and either
-   commit it or direct further changes.
-2. **Decide the fate of the uncommitted `quick-podcast` CLI wiring** in
-   `autocorp.py`. The module it depends on is already committed
-   (`143825a`) and is otherwise unreachable.
-3. **Decide the fate of the Reliability Engine.** It is untested-in-
-   production (no CLI entry point), but has its own passing unit tests and
-   represents 2,346+ lines of real, working code sitting disconnected from
-   the application. Either integrate it deliberately (with its own
-   `ARCHITECTURE.md` section once its actual design is reviewed) or
-   explicitly defer/remove it — leaving it in this state indefinitely
-   means every future session has to re-discover it.
-4. **Fix the missing `README.md` update.** It describes only the original
-   `v0.1.0` architecture. At minimum, it should mention that the CLI now
-   has 13–15 subcommands, not 5, and point to `AI_ENGINEERING/` for the
-   rest.
+1. **Phase 1X/1Y work stays uncommitted for now, by owner decision
+   (2026-07-29).** The repository owner reviewed the three independent
+   uncommitted efforts recorded in `CURRENT_PHASE.md` and directed: keep
+   iterating on Phase 1X/1Y (`brains/workflow_test.py`, `autocorp.py`'s
+   `publish-test` wiring, `tests/test_workflow_character_id_propagation.py`)
+   uncommitted rather than committing it now. Do not commit this work
+   without a fresh, explicit instruction to do so.
+2. ~~Decide the fate of the uncommitted `quick-podcast` CLI wiring~~ —
+   **Done (2026-07-29).** Committed as `53f0d7d "feat: wire quick-podcast
+   CLI subcommand"`, by owner decision. `quick-podcast` is now reachable
+   from a fresh checkout of `main`.
+3. **Reliability Engine: investigation complete (2026-07-29), integration
+   NOT authorized.** Full findings are in `ARCHITECTURE.md`'s "Reliability
+   Engine" section. Summary: it is a second, parallel build/repair
+   orchestration pipeline (duplicates rather than composes with
+   `core/orchestrator.py::Session`), functionally complete and unit-tested,
+   but its true end-to-end entry point (`ReliabilityOrchestrator.run()`) has
+   never been exercised by any test, and reading the code found real,
+   unaddressed risks (a worktree-ID collision that silently destroys
+   preserved diagnostic state for a blocked subtask; missing
+   `ruff`/`mypy`/`chromadb`/`PyYAML` treated inconsistently; full repo
+   rescans on every call). A 7-step staged integration plan is recorded in
+   `ARCHITECTURE.md`. **Do not import or register any `reliability_engine/`
+   module, and do not act on the staged plan, until the repository owner
+   reviews this proposal and explicitly approves proceeding.**
+4. ~~Fix the missing `README.md` update~~ — **Done (2026-07-29).** Added a
+   "Current commands" section listing all fifteen subcommands (fourteen
+   committed as of `53f0d7d`, `publish-test` still uncommitted per item 1
+   above), and pointers to `AI_ENGINEERING/ARCHITECTURE.md`/`CURRENT_PHASE.md`
+   for the parts of the system the original four-brains description predates.
 
 ## Technical debt
 
@@ -39,33 +49,78 @@ discovers any item — see `DOCUMENTATION_POLICY.md`.
   and commit-message search results, going forward) to avoid future
   confusion — this cannot retroactively fix commit messages, but new work
   should not add a third overloaded "Phase 1."
-- `brains/model_router.py` and `reliability_engine/model_router.py` share a
-  filename. If the Reliability Engine is ever integrated, this collision
-  needs to be resolved (rename one, or ensure import paths never ambiguity
-  between them) before it's wired in.
+- `brains/model_router.py::ModelRouter` (a deterministic engine selector)
+  and `reliability_engine/model_router.py::ReliabilityModelRouter` (an
+  Ollama liveness/fallback checker — unrelated function) share a filename.
+  Confirmed harmless today (both are proper subpackages, no live import
+  collision), but if the Reliability Engine is ever integrated, rename the
+  latter (e.g. to `model_availability.py`) first — see `ARCHITECTURE.md`'s
+  Reliability Engine section, step 2 of the staged integration plan.
 
 ## Known bugs
 
-All five items below are documented in detail in `PHASES.md` under
-"Phase 1G" and were found by a real, adversarial-input audit
-(`claude_phase_1g_audit.txt`), not by static review:
+The five items below were originally documented here verbatim from
+`claude_phase_1g_audit.txt` without being re-verified against current
+`HEAD` — exactly the anti-pattern `AI_ENGINEERING_CONSTITUTION.md` §3 warns
+against ("a prior AI-generated report... is evidence to be checked against
+the repository, never a substitute for checking it"). Re-verified directly
+against current source on 2026-07-29; corrected below. See `PHASES.md`
+Phase 1G for the full, corrected account.
 
-1. `--provider claude` on `propose-repair` raises a `TypeError` at engine
-   construction and never actually works.
-2. `--provider deepseek` on `propose-repair`, without an API key
-   configured, resolves the DeepSeek *API* model name into the field used
-   by the *local* Ollama transport — a field-conflation bug in
-   `brains/providers.py`'s `_resolve_model`.
-3. Secret-file exclusion in `brains/repair_proposal.py` misses compound
-   filenames such as `db_credentials.json` or `user_auth.py` — the pattern
-   requires the sensitive keyword to start a path component.
-4. Inline secret redaction in the same module misses plain `password =`,
-   bare `SECRET =`, `client_secret`, and credentials embedded in
-   connection-string URLs.
-5. `tests/test_provider_contracts.py::test_no_silent_fallback` fails (makes
-   a real network call instead of testing the intended offline path) in
-   any environment with an ambient `DEEPSEEK_API_KEY` — confirmed
-   reproducible in this repository's own development environment.
+1. ~~`--provider claude` raises a `TypeError` at construction~~ — **Already
+   fixed**, by `ea71d54 "fix: harden proposal secret and provider safety"`,
+   which predates this session. `brains/providers.py` no longer passes
+   `model=` when constructing `ClaudeEngine`. Verified directly: calling
+   `generate_proposal_json(..., provider="claude")` now reaches
+   `engine.generate()` (no `TypeError`); regression test
+   `test_claude_does_not_raise_type_error` in
+   `tests/test_provider_contracts.py` passes.
+2. ~~`--provider deepseek` without an API key resolves the wrong local
+   model tag~~ — **Already fixed**, same commit. `generate_proposal_json`
+   now returns a clean `blocked=True, error="DeepSeek API key not
+   configured..."` result *before* ever constructing `DeepSeekEngine` when
+   no key is present — the conflated-field code path the audit found is no
+   longer reachable via the no-key case. Verified directly with
+   `DEEPSEEK_API_KEY` unset; regression tests
+   `test_deepseek_missing_credentials_fails_cleanly` and
+   `test_deepseek_never_falls_back_to_ollama` pass.
+3. ~~Secret-file exclusion misses compound filenames~~ — **Already fixed**,
+   same commit. `_SECRET_FILE_PATTERNS` in `brains/repair_proposal.py` now
+   anchors on `(^|[/_])` instead of `(^|/)`, so `db_credentials.json`,
+   `app_secrets.py`, `user_auth.py`, and `my_token_store.py` are all
+   correctly excluded. Verified directly against all four filenames named
+   in the original audit.
+4. **Inline secret redaction — partially fixed already, two real gaps
+   remained and were fixed this session (2026-07-29).** `ea71d54` had
+   already added redaction for `api_key`/`AUTH_TOKEN`/`client_secret`/
+   `AWS_SECRET_ACCESS_KEY`-style compound keys. Two of the audit's nine
+   adversarial cases were still genuinely unredacted as of this session's
+   start: `DB_PASSWORD = "..."` (a compound key — the old pattern's `\b`
+   word boundary doesn't cross an underscore, so it only matched bare
+   `password`/`secret`) and `{"Authorization": "Bearer ..."}` (JSON-quoted
+   form — the old pattern only matched the unquoted `Authorization: Bearer
+   ...` shape). Both are fixed in `brains/repair_proposal.py`'s
+   `_INLINE_SECRET_RE`/`_redact_inline_secrets` (this session): the plain
+   password/secret alternative now treats `_` as a boundary the same way
+   the file-pattern fix does (catching `DB_PASSWORD` without false-
+   positive-matching `secretary_name`), and the Authorization/Bearer
+   alternative now allows optional surrounding quotes. All nine of the
+   audit's original adversarial lines, plus a `secretary_name` false-
+   positive check, are now covered by tests
+   (`test_compound_password_key_redacted`,
+   `test_compound_secret_key_does_not_match_secretary`,
+   `test_quoted_json_authorization_bearer_redacted` in
+   `tests/test_repair_proposal.py`).
+5. ~~`tests/test_provider_contracts.py::test_no_silent_fallback` fails with
+   an ambient `DEEPSEEK_API_KEY`~~ — **No longer applicable.** That specific
+   test no longer exists; `ea71d54` replaced it with
+   `test_claude_does_not_raise_type_error`,
+   `test_deepseek_missing_credentials_fails_cleanly`,
+   `test_deepseek_never_falls_back_to_ollama`, and
+   `test_provider_tests_make_no_live_calls`. Verified directly: this
+   session's development environment has a real `DEEPSEEK_API_KEY` set
+   (the same condition that used to trigger the failure), and
+   `tests/test_provider_contracts.py` passes in full (12/12) regardless.
 
 Additionally:
 

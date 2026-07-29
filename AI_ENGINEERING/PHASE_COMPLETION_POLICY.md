@@ -29,14 +29,19 @@ about which tier applies — do not round up.
    the full test suite passes against it, but no release tag marks it. Most
    of this repository's current functionality (the repair/self-healing
    pipeline, the Phase 1A–1S CloneCast-testing infrastructure, the
-   quick-podcast observability refactor) is in this tier.
+   quick-podcast observability refactor and its CLI wiring) is in this
+   tier.
 3. **Committed, but partially wired.** The underlying module is committed,
    but its CLI entry point or another integration point is not (verified
-   by diffing `git show HEAD:autocorp.py` against the working tree — this
-   repository has at least one concrete current example: `quick_podcast.py`
-   and `quick_podcast_runner.py` are committed as of `143825a`, but the
-   `quick-podcast` CLI subcommand registration in `autocorp.py` is not).
-   Do not describe this tier as "shipped."
+   by diffing `git show HEAD:autocorp.py` against the working tree). This
+   was true of `quick_podcast.py`/`quick_podcast_runner.py` (committed as
+   of `143825a`) and the `quick-podcast` CLI subcommand registration
+   (uncommitted) for five days, until the repository owner authorized
+   committing the wiring separately as `53f0d7d` (2026-07-29) — see
+   `PHASES.md`'s Quick Podcast entry for that history. There is currently
+   no other concrete example of this tier in the repository; the Phase
+   1X/1Y work is Tier 4 (below), not this tier, because none of it —
+   module or CLI — is committed. Do not describe this tier as "shipped."
 4. **Uncommitted, working tree only.** Real files exist and may even have
    passing tests, but nothing has been committed. This repository currently
    has two examples: the Phase 1X/1Y extensions to

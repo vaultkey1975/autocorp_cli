@@ -67,8 +67,13 @@ _INLINE_SECRET_RE = re.compile(
     r'|auth[_-]?token|private[_-]?key|client[_-]?secret'
     r'|aws[_-]?secret[_-]?access[_-]?key'
     r')\s*[:=]\s*\S+|'
-    r'\b(password|secret)\s*[:=]\s*\S+|'
-    r'authorization\s*:\s*bearer\s+\S+|'
+    # Plain/compound password or secret keys (DB_PASSWORD, MY_SECRET_TOKEN,
+    # etc.) - underscore is treated as the word boundary, not letters/digits,
+    # so this catches compound names without matching "secretary"-style
+    # substrings (nothing follows the keyword but "_", "[:=]", or end).
+    r'(?:[a-z0-9]*_)?(?:password|secret)(?:_[a-z0-9]*)?\s*[:=]\s*\S+|'
+    # Authorization/Bearer, with or without surrounding JSON quotes.
+    r'"?authorization"?\s*:\s*"?bearer\s+[^"\s,}]+|'
     r'(postgres|mysql|mongodb|redis)://[^@]*:[^@]*@[^\s]+',
     re.IGNORECASE,
 )
@@ -135,7 +140,8 @@ def _redact_inline_secrets(content: str) -> tuple[str, int]:
 
     def _replace(m: re.Match) -> str:
         matched = m.group(0)
-        if matched.startswith("authorization") or matched.startswith("Authorization"):
+        low = matched.lower()
+        if "authorization" in low and "bearer" in low:
             return "Authorization: Bearer [REDACTED]"
         if "://" in matched and "@" in matched:
             proto_end = matched.index("://") + 3

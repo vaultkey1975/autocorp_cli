@@ -156,8 +156,85 @@ working tree:
   status the current `workflow_test.py` produces, confirming it predates
   the current implementation).
 
+### 2026-07-29 — Owner decisions on the three uncommitted efforts; quick-podcast wired; Phase 1G re-verified
+The repository owner reviewed the three independent uncommitted efforts
+recorded in the prior entry and directed, per effort: keep Phase 1X/1Y
+iterating uncommitted; commit the Quick Podcast CLI wiring now; investigate
+the Reliability Engine and propose integration, do not wire it in; and
+proceed with the README fix and Phase 1G bug fixes without further
+sign-off.
+
+**Quick Podcast CLI wiring committed as `53f0d7d`.** `autocorp.py`'s working
+diff had the quick-podcast wiring and the Phase 1X/1Y changes interleaved in
+one region (both touch code adjacent to `cmd_workflow_test`). Isolated by
+reconstructing a `HEAD`-plus-quick-podcast-only version of the file (import
+line, `cmd_quick_podcast`, the `quick-podcast` subparser — verified via
+`py_compile` and a direct diff against both `HEAD` and the full working
+tree before committing), committing that, then restoring the Phase 1X/1Y
+portions back into the working tree from a backup taken before the split.
+Full suite re-run after both the split and the restore: 933 passed, 1
+xfailed, unchanged.
+
+**Phase 1G's five audit findings re-verified against current `HEAD` rather
+than trusted from the untracked report — four of five were already fixed.**
+`claude_phase_1g_audit.txt` was written against `1339aaf`; commit `ea71d54
+"fix: harden proposal secret and provider safety"` (already in this
+repository's history) fixed the `--provider claude` `TypeError`, the
+`--provider deepseek` model-tag conflation, the secret-file-exclusion
+compound-filename gap, and replaced
+`test_provider_contracts.py::test_no_silent_fallback` with four narrower
+regression tests that pass regardless of an ambient `DEEPSEEK_API_KEY`
+(confirmed: this session's environment has a real key set, and the full
+`test_provider_contracts.py` file — 12/12 — passes). This repository's own
+prior `NEXT_STEPS.md`/`PHASES.md`/`CURRENT_PHASE.md` had carried the
+audit's stale claims forward without re-verification — exactly the failure
+mode `AI_ENGINEERING_CONSTITUTION.md` §3 warns against, this time inside
+the documentation system meant to prevent it. Corrected in all three files
+this session.
+
+**Inline secret redaction — the one genuinely remaining gap — fixed.** Two
+of the audit's nine adversarial cases were still unredacted: compound
+`DB_PASSWORD`-style keys (the old pattern's `\b` doesn't cross an
+underscore) and JSON-quoted `{"Authorization": "Bearer ..."}` headers.
+Fixed in `brains/repair_proposal.py`'s `_INLINE_SECRET_RE`/
+`_redact_inline_secrets`: the plain password/secret alternative now treats
+`_` as a boundary (catching `DB_PASSWORD` without matching `secretary_name`
+— verified both ways), and the Authorization/Bearer alternative allows
+optional surrounding quotes. Three new regression tests added to
+`tests/test_repair_proposal.py`. All nine of the audit's original
+adversarial lines now redact correctly (verified directly, not just via the
+new unit tests).
+
+**README.md updated** with a "Current commands" section (all fifteen
+current subcommands, noting which are committed vs. not) and pointers to
+`AI_ENGINEERING/` for the parts of the system the original four-brains
+description predates.
+
+**Reliability Engine investigated in full (read-only), not integrated.**
+Confirmed: a second, parallel build/repair orchestration pipeline that
+duplicates rather than composes with `core/orchestrator.py::Session`; its
+own true end-to-end entry point is never exercised by its 59 passing unit
+tests; the two stale `reliability/subtask-*` branches are almost certainly
+leftover artifacts from an earlier real run of this same code (its
+`worktree_sandbox.py` produces branches with that exact naming pattern),
+not evidence of a separate origin. Real, unaddressed risks found by reading
+the code (worktree-ID collision destroying preserved diagnostic state for
+blocked subtasks; missing-tool-vs-real-issue conflation in the static gate;
+uncached full-repo rescans per call) are recorded in `ARCHITECTURE.md`
+along with a 7-step staged integration plan. Integration itself remains
+unauthorized.
+
+**This session's changes remain uncommitted, pending owner review:**
+`README.md`, `brains/repair_proposal.py`, `tests/test_repair_proposal.py`,
+and the `AI_ENGINEERING/*.md` corrections above. Only the quick-podcast CLI
+wiring was committed, per explicit owner instruction to do so.
+
+Full suite after all of this session's changes: **936 passed, 1 xfailed, 0
+failed**, exit code 0 (933 plus 3 new tests for the inline-redaction fix).
+
 ## Full test suite status at time of writing
 
 `.venv/bin/python -m pytest -q` (rerun to produce this entry, not copied
-from an old report): **933 passed, 1 xfailed, 0 failed**, exit code 0 —
-against the full working tree, uncommitted changes included.
+from an old report): **936 passed, 1 xfailed, 0 failed**, exit code 0 —
+against the full working tree, uncommitted changes included (933 passed
+prior to this session's 3 new regression tests).

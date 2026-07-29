@@ -7,6 +7,15 @@ can later approve or block every action.
 
 Everything runs **locally**. No cloud, no API keys, no fine-tuning.
 
+> **This section describes the original build→test→explain loop.** The CLI has
+> grown well beyond it since: pluggable code-generation engines (local/Claude/
+> DeepSeek), a repair/self-healing pipeline, and a read-only-or-disposable
+> repository-intelligence toolchain that can safely analyze and validate an
+> external target repository end-to-end. See [Current commands](#current-commands)
+> below for the full CLI surface, and `AI_ENGINEERING/ARCHITECTURE.md` /
+> `AI_ENGINEERING/CURRENT_PHASE.md` for the complete, evidence-based picture of
+> what's built, what's committed, and what's still in progress.
+
 ---
 
 ## The four brains
@@ -86,6 +95,39 @@ python autocorp.py memory               # show what it has learned
 python autocorp.py --auto build "..."   # skip confirmations (allow-all gate)
 ```
 
+### Current commands
+
+The build→plan→test→explain→memory loop above is the original core. The CLI
+has since grown to fifteen subcommands in total (run `python autocorp.py
+--help` for the authoritative, current list — this table can drift, that
+command cannot). Not all of them are committed to `main` yet — see
+`AI_ENGINEERING/CURRENT_PHASE.md` for exactly which:
+
+| Command | Purpose |
+|---|---|
+| `build` | plan → build → test a request (confirms each action) |
+| `plan` | show a build plan only — writes nothing |
+| `test` | run tests on an existing workspace |
+| `explain` | explain a source file |
+| `memory` | show stored builds and lessons |
+| `scan` | read-only repository scan (git, files, TODO/FIXME markers) |
+| `analyze` | read-only project architecture/health analysis |
+| `plan-project` | read-only, evidence-cited project action planner |
+| `repair` | narrow, deterministic repair executor (dry-run by default) |
+| `propose-repair` | AI-generated repair proposal (review-only, never applies) |
+| `live-readiness` | checks whether a target app is ready to be live-tested |
+| `live-test` | controlled, non-mutating live test of a target FastAPI app |
+| `workflow-test` | disposable end-to-end episode workflow test against a target repo (requires `--disposable`) |
+| `publish-test` | disposable publishing-pipeline validation, up to but never past a real external upload (requires `--disposable`) |
+| `quick-podcast` | generate a real, disposable, locally-listenable podcast episode against a target repo |
+
+`scan`/`analyze`/`plan-project`/`repair`/`propose-repair`/`live-readiness`/
+`live-test`/`workflow-test` all accept `--repo <path>` to safely target an
+external repository (never AutoCorp's own, and never without confirming the
+path is a real Git working tree first) — see `AI_ENGINEERING/ARCHITECTURE.md`
+for how that safety boundary works. See `AI_ENGINEERING/PHASES.md` for the
+full history of when and why each of these was added.
+
 By default the assistant **confirms before every file write and command**
 (answer `y`, `n`, or `a` for "yes to all"). Generated projects land in
 `workspace/<project_name>/`.
@@ -164,6 +206,11 @@ Env vars: `AUTOCORP_WATCHDOG_PATH`, `AUTOCORP_WATCHDOG_BLOCK`,
 ---
 
 ## Project structure
+
+The tree below shows only the original build→test→explain core. `brains/` has
+grown to 37 tracked modules (engine abstraction, repair/self-healing, and the
+repository-intelligence/CloneCast-validation toolchain) — see
+`AI_ENGINEERING/ARCHITECTURE.md` for the complete, current directory structure.
 
 ```
 autocorp_cli/

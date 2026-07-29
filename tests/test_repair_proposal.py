@@ -325,3 +325,33 @@ def test_redacted_values_never_appear():
     assert "secret" not in r or r.count("secret") <= 1
     assert "key" not in r or r.count("key") <= 1
     assert "tok" not in r
+
+
+def test_compound_password_key_redacted():
+    """DB_PASSWORD-style compound keys: the keyword is bounded by
+    underscore/start/end, not by a plain \\b (which does not cross an
+    underscore). Found by claude_phase_1g_audit.txt, section 5."""
+    content = 'DB_PASSWORD = "hunter2"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "hunter2" not in r
+
+
+def test_compound_secret_key_does_not_match_secretary():
+    """The compound-key redaction must not treat "secret" as a substring of
+    an unrelated word like "secretary" - only an underscore/start/end
+    boundary counts."""
+    content = 'secretary_name = "Jane"\n'
+    r, c = _redact_inline_secrets(content)
+    assert c == 0
+    assert r == content
+
+
+def test_quoted_json_authorization_bearer_redacted():
+    """JSON-shaped {"Authorization": "Bearer ..."} headers, not just the
+    bare "Authorization: Bearer ..." form. Found by
+    claude_phase_1g_audit.txt, section 5."""
+    content = 'headers = {"Authorization": "Bearer sk-abc123"}\n'
+    r, c = _redact_inline_secrets(content)
+    assert c >= 1
+    assert "sk-abc123" not in r

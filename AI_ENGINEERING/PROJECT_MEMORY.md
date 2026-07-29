@@ -60,6 +60,25 @@ disposable-workflow infrastructure (Phase 1M–1S onward) exists. **Do not
 substitute a plausible-looking mock for a real disposable run when the
 task explicitly needs to prove real behavior.**
 
+**This documentation system itself fell into the exact trap it warns
+against, within days of being written.** `NEXT_STEPS.md`/`PHASES.md`/
+`CURRENT_PHASE.md` carried forward all five findings of
+`claude_phase_1g_audit.txt` (an untracked report against an old commit,
+`1339aaf`) as currently-open bugs, without re-running the audit's own
+adversarial checks against current `HEAD`. Re-verifying on 2026-07-29 found
+four of the five had already been fixed by `ea71d54`, a commit that
+predates the audit's own report timestamp being trusted at face value. The
+fix was mechanical once caught (re-run the exact checks the audit
+described, correct the three documents), but the lesson is the one
+`AI_ENGINEERING_CONSTITUTION.md` §3 already states in the abstract: a
+report is evidence to check against the repository, not a substitute for
+checking it — and that applies with full force to this documentation
+system's own prior entries, not just to external reports like the audit
+file. **Before restating any "known bug"/"known gap" from an existing
+`AI_ENGINEERING/` document, re-run the specific check that originally found
+it.** Do not assume a document written last week is still accurate just
+because it was carefully evidence-based when written.
+
 **A resource leak can hide until a specific test flag surfaces it.** New
 unit tests for the Quick Podcast refactor's `Progress`/`_TeeLog` classes
 passed individually, then failed only when run as part of the full suite
@@ -159,6 +178,22 @@ its own top level (its target-specific imports are all deferred, inside
 the function that actually runs, so the module is still importable —
 and thus unit-testable — from AutoCorp's own venv even though it's
 designed to run in the target's).
+
+**To commit one logical change out of a working tree where multiple
+unrelated efforts share the same file's diff, reconstruct rather than
+`git add -p`.** `autocorp.py`'s working-tree diff had the Quick Podcast CLI
+wiring and the Phase 1X/1Y `cmd_workflow_test`/`cmd_publish_test` work
+physically interleaved in the same region of the file (both edit code near
+each other), producing one large replace-style diff hunk that `git add -p`
+could not cleanly split by hunk. The reliable approach: take `git show
+HEAD:<file>`, manually apply only the target change on top of it (verified
+by diffing the result against both `HEAD` and the full working tree to
+confirm the two diffs partition cleanly with no overlap), `py_compile` it,
+copy it over the real file, commit, then restore the original full
+working-tree file from a backup taken before starting. Keep the backup
+until the restore is verified — it's easy to forget the restore step after
+committing and leave the working tree short of the other, still-uncommitted
+work.
 
 ## Patterns to reuse
 

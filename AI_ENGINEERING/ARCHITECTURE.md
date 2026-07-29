@@ -187,27 +187,105 @@ they solve different problems and share no code.
 
 ## Reliability Engine (uncommitted, unintegrated)
 
-`reliability_engine/` contains 16 modules (`self_consistency.py`,
-`state_store.py`, `patch_apply.py`, `dep_graph.py`, `config_loader.py`,
-`orchestrator.py`, `rag_index.py`, `planner_spec.py`, `edit_router.py`,
-`env_isolation.py`, `test_loop.py`, `static_gate.py`,
-`regression_runner.py`, `grammar_constraints.py`, `worktree_sandbox.py`,
-`model_router.py` — note the name collision with `brains/model_router.py`,
-a **different, existing, committed file**; confirm which one any given
-import statement resolves to before relying on either). It has its own
-passing test file (`tests/test_reliability_engine.py`) but:
+Investigated in full (read-only, no code changed) on 2026-07-29 at the
+repository owner's request, for an integration proposal — not integrated.
+`reliability_engine/` (16 modules, 2,346 lines) is a **second, parallel
+build-and-repair orchestration pipeline**, structurally analogous to
+`core/orchestrator.py::Session` but not composed with it: its entry point,
+`ReliabilityOrchestrator.run()` (`reliability_engine/orchestrator.py`),
+independently recalls lessons from `memory.store`, picks a builder model,
+classifies a request as "edit" (touches an existing tracked file, found via
+a filepath-token regex or, absent an explicit path, an optional
+Chroma-backed RAG lookup over the repo) or "greenfield" (delegates to the
+existing `PlannerBrain`/`BuilderBrain.build()` unmodified), and for edit-mode
+work:
 
-- Is not imported by `autocorp.py`.
-- Is not imported by any file under `brains/`.
-- Has no CLI subcommand.
-- Is not referenced in `ARCHITECTURE.md`'s CLI architecture section above,
-  because it has no place in it yet.
+1. Builds a whole-repo `DependencyGraph` (AST import/call-edge walk) to
+   compute blast radius and whether "core" paths (`core/`, `memory/`,
+   `safety/`, `brains/`, `reliability_engine/` itself) are touched.
+2. Runs each subtask inside a real, isolated `git worktree` (`git worktree
+   add -B reliability/subtask-<id> ...`), using the new
+   `BuilderBrain.generate_edit_diff` (added by the uncommitted
+   `brains/builder.py` diff) to get FIND/REPLACE blocks instead of a raw
+   diff, verified and applied by `patch_apply.py` before anything touches
+   the file.
+3. Gates every change through a static gate (`py_compile` + `ruff`/`mypy`,
+   absolute or delta-only), a bounded test-fix loop with several distinct
+   repair strategies (format/grounding/relevance/test-coverage), and — for
+   core-touching or high-blast-radius subtasks — N-sample self-consistency
+   voting instead of iterative repair.
+4. Runs a full regression suite in the worktree before merging back, and
+   persists subtask/attempt/known-issue history to the three new SQLite
+   tables in `memory/store.py`'s uncommitted diff.
 
-Document what this subsystem actually does by reading its own source
-directly if you need to work on it — this document deliberately does not
-describe its internal design, because doing so here without the module
-being integrated or reviewed would risk stating intent as if it were
-verified architecture.
+**It does not import or use** `brains/acceptance.py`, `brains/fixer_executor.py`,
+`brains/retry_controller.py`, `brains/gated_repair_fixer.py`, or the
+committed `brains/model_router.py` — its self-heal/retry logic and its model
+routing are both reimplemented from scratch, not composed from the existing
+pipeline's equivalents. Net assessment: a materially more capable
+surgical-edit/repair engine (verified per-file patching, blast-radius-aware
+strategy switching, durable attempt history, real worktree isolation) that
+currently **duplicates rather than composes with** `Session`'s plan/build/
+test/fix/record loop.
+
+**Confirmed not imported anywhere**: not by `autocorp.py`, not by any
+`brains/*.py` file — only by its own test file. No CLI subcommand exists.
+The two stale branches `reliability/subtask-1`/`reliability/subtask-2`
+(pointing at old commit `1615cf8`) are themselves worktree-sandbox branches
+this subsystem's own naming convention (`worktree_sandbox.py`'s
+`reliability/subtask-{id}` pattern) would produce — i.e. leftover artifacts
+from an earlier real run of this code, left behind by `rollback()` not being
+reached, not evidence of a separate git-history origin.
+
+**Name collision, confirmed harmless today but worth fixing before
+integration**: `brains/model_router.py::ModelRouter` (a deterministic,
+rule-based *engine* selector — local/deepseek/claude) and
+`reliability_engine/model_router.py::ReliabilityModelRouter` (a narrow
+Ollama-liveness/fallback checker) are unrelated in function despite the
+identical filename and class-naming convention. No live import collision
+exists (both are proper subpackages), but the ambiguity is a real hazard for
+a future maintainer.
+
+**Test coverage proves unit-level correctness, not integrated behavior.**
+`tests/test_reliability_engine.py`'s 59 tests each exercise one module in
+isolation (often with a fake engine/tester); `ReliabilityOrchestrator.run()`
+— the actual end-to-end entry point — is never called anywhere in the test
+suite. Passing tests here do not demonstrate the full request → worktree →
+patch → gate → test → regression → merge pipeline has ever run successfully
+against a real Ollama model.
+
+**Concrete risks found by reading the code** (not integrated as-is until
+these are addressed): (1) `chromadb`/`PyYAML` are only in the uncommitted
+requirements files — `config_loader.py` silently degrades to a hand-rolled,
+two-level-only YAML parser without PyYAML, and `rag_index.py` hard-fails
+without chromadb; (2) a missing `ruff`/`flake8`/`mypy` binary is treated as
+a blocking static-gate *issue* indistinguishable from a real lint/type
+failure, rather than a distinct environment-setup error; (3)
+`DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` both do a full,
+uncached repo rescan on every single `run()` call; (4) `WorktreeSandbox`
+reuses SQLite-autoincrement subtask IDs that `reset_subtasks()` clears at
+the start of every run, so a worktree left behind after a `blocked` result
+(kept intentionally, for inspection) will be silently destroyed the next
+time an ID collides — undermining the apparent intent of preserving blocked
+diagnostic state.
+
+**Staged integration plan, if the repository owner decides to proceed**
+(none of this has been done): (1) triage/commit-or-discard the unrelated
+Phase 1X/1Y and repair-redaction changes currently sharing the working tree
+first, so the integration diff is reviewable on its own; (2) rename
+`reliability_engine/model_router.py` to remove the collision; (3) commit the
+three purely-additive, low-risk pieces first and separately — the
+`brains/builder.py` diff, the `memory/store.py` diff, and the
+`chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions; (4) fix the
+worktree-ID-collision-destroys-blocked-state issue; (5) decide the
+missing-tool-vs-real-issue distinction in `StaticGate`; (6) add a true
+end-to-end test of `ReliabilityOrchestrator.run()` before trusting it with
+real edits; (7) only then add a CLI subcommand (following the
+`cmd_workflow_test`/`cmd_build` pattern, confirming the existing
+`console.confirm("Proceed with this plan?")` gate at
+`orchestrator.py:172-174/199-200` stays intact and is not bypassed by
+`--auto`-style defaults without the owner's explicit intent). See
+`NEXT_STEPS.md` for the live status of this decision.
 
 ## Data flow (build loop, original architecture, still current)
 

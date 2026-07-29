@@ -61,32 +61,35 @@ an owner decision, not one this document makes.
 
 ## Current phase
 
-See `CURRENT_PHASE.md` for the live snapshot. In summary as of this
-document's writing: the repository's working tree has uncommitted changes
-spanning at least three distinct, unrelated efforts (Phase 1X/1Y
-publishing-validation extensions, the Quick Podcast CLI wiring, and the
-entirely separate, unintegrated Reliability Engine). **The current phase
-is not complete and should not be described as such.**
+See `CURRENT_PHASE.md` for the live snapshot. As of 2026-07-29, the
+repository owner reviewed the three uncommitted efforts previously
+described here and gave explicit direction on each: keep Phase 1X/1Y
+iterating uncommitted; the Quick Podcast CLI wiring is now committed
+(`53f0d7d`); the Reliability Engine has been fully investigated with a
+staged integration plan delivered, but integration itself remains
+unauthorized. **The current phase is still not complete and should not be
+described as such** — Phase 1X/1Y and the Reliability Engine integration
+decision are both still open.
 
 ## Remaining phases (repository evidence only)
 
-The only "remaining" work with direct repository evidence is what is
-already sitting, unfinished, in the working tree:
+The only "remaining" work with direct repository evidence:
 
-1. **Commit or discard the Phase 1X/1Y workflow-test extensions** and the
-   matching `autocorp.py` CLI wiring (`workflow-test`'s new report
-   sections, the `publish-test` subcommand).
-2. **Commit or discard the `quick-podcast` CLI wiring** in `autocorp.py` —
-   the module it depends on is already committed and inert without it.
-3. **Decide the fate of the Reliability Engine** — integrate it (wire it
-   into `autocorp.py`, document its purpose properly, add it to
-   `ARCHITECTURE.md`) or explicitly defer/remove it. It currently has
-   passing tests but no production entry point and no commit.
-4. **Address the five documented Phase 1G gaps** (secret-file exclusion,
-   inline-secret redaction, the `--provider claude` constructor bug, the
-   `--provider deepseek` model-tag conflation, and the
-   `test_no_silent_fallback` environment-isolation gap) — all recorded
-   with specifics in `PHASES.md` and `NEXT_STEPS.md`.
+1. **Phase 1X/1Y**: continue iterating uncommitted (owner decision,
+   2026-07-29) — `brains/workflow_test.py`'s extensions and `autocorp.py`'s
+   `publish-test` wiring.
+2. ~~Commit or discard the `quick-podcast` CLI wiring~~ — **done**,
+   committed as `53f0d7d`.
+3. **Reliability Engine integration** — a concrete, evidence-based
+   proposal exists (`ARCHITECTURE.md`'s "Reliability Engine" section,
+   `NEXT_STEPS.md` item 3), but awaits owner review/approval before any of
+   its 7 staged steps are acted on.
+4. ~~Address the five documented Phase 1G gaps~~ — **corrected 2026-07-29:
+   four of five were already fixed** by a commit predating the audit
+   report being trusted at face value; the fifth (inline-redaction) was
+   fixed this session (uncommitted, pending owner review of this session's
+   changes as a whole). See `NEXT_STEPS.md` "Known bugs" for the full,
+   re-verified account.
 5. **Investigate the CloneCast audio-clipping finding** — reproduced four
    times across two phases and four real runs
    (`ConversationAssemblyError: master conversation audio has severe
