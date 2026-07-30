@@ -1,0 +1,21 @@
+model_router:
+  builder_model: "qwen2.5-coder:14b"
+  fallback_model: "qwen2.5:14b"
+
+patch_apply:
+  full_file_line_threshold: 150
+
+test_loop:
+  max_attempts: 5
+
+self_consistency:
+  n_samples: 3
+  trigger_blast_radius: 5
+
+worktree_sandbox:
+  base_branch: "main"
+  cleanup_on_success: true
+  keep_failure_hours: 24
+
+regression_runner:
+  test_framework: "pytest"

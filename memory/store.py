@@ -123,6 +123,65 @@ def init_db() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subtasks (
+                    id INTEGER PRIMARY KEY,
+                    description TEXT,
+                    status TEXT,
+                    files_touched TEXT,
+                    blast_radius INTEGER,
+                    attempts INTEGER DEFAULT 0,
+                    inferred_target INTEGER DEFAULT 0
+                )
+                """
+            )
+            try:
+                columns = [
+                    row["name"] for row in conn.execute("PRAGMA table_info(subtasks)").fetchall()
+                ]
+                if "inferred_target" not in columns:
+                    conn.execute("ALTER TABLE subtasks ADD COLUMN inferred_target INTEGER DEFAULT 0")
+            except sqlite3.Error:
+                pass
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS attempts (
+                    id INTEGER PRIMARY KEY,
+                    subtask_id INTEGER,
+                    attempt_num INTEGER,
+                    model_used TEXT,
+                    prompt TEXT,
+                    diff TEXT,
+                    raw_output TEXT,
+                    static_gate_result TEXT,
+                    test_result TEXT,
+                    error_trace TEXT,
+                    timestamp TEXT
+                )
+                """
+            )
+            try:
+                columns = [
+                    row["name"] for row in conn.execute("PRAGMA table_info(attempts)").fetchall()
+                ]
+                if "raw_output" not in columns:
+                    conn.execute("ALTER TABLE attempts ADD COLUMN raw_output TEXT")
+                if "prompt" not in columns:
+                    conn.execute("ALTER TABLE attempts ADD COLUMN prompt TEXT")
+            except sqlite3.Error:
+                pass
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS known_issues (
+                    id INTEGER PRIMARY KEY,
+                    subtask_id INTEGER,
+                    reason TEXT,
+                    last_error TEXT,
+                    timestamp TEXT
+                )
+                """
+            )
     except sqlite3.Error:
         pass
 
