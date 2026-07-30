@@ -672,14 +672,15 @@ when the base disposable workflow stops before publishing stages can run.
 now covers dirty-tree safety blocking, workspace creation failure,
 database copy failure, application startup failure, publishing blocked
 before validation, cleanup failure, partial finalization, successful
-cleanup after failure, and missing publishing credentials without network
-calls. Focused verification passed:
+cleanup after failure, git-inspection exceptions, cleanup-time
+`AttributeError`, and missing publishing credentials without network calls.
+Focused verification passed:
 `.venv/bin/python -m pytest -W error -q
-tests/test_workflow_character_id_propagation.py` -> exit code 0, 21
+tests/test_workflow_character_id_propagation.py` -> exit code 0, 23
 passed. Required verification passed: `git diff --check` -> exit code 0;
 `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
 maintained Python files compiled; `.venv/bin/python -m pytest -W error
--q` -> exit code 0, 1010 tests collected with the existing xfail visible
+-q` -> exit code 0, 1012 tests collected with the existing xfail visible
 in progress output.
 
 **Real CloneCast smoke after the fix.** With `/home/larry/clonecast`

@@ -37,7 +37,7 @@ Focused verification so far:
 .venv/bin/python -m pytest -W error -q tests/test_workflow_character_id_propagation.py
 ```
 
-Result: exit code 0, 21 passed.
+Result: exit code 0, 23 passed.
 
 Required verification:
 
@@ -57,7 +57,7 @@ Result: exit code 0, 171 maintained Python files compiled.
 .venv/bin/python -m pytest -W error -q
 ```
 
-Result: exit code 0. Pytest collected 1010 tests; the existing xfail was
+Result: exit code 0. Pytest collected 1012 tests; the existing xfail was
 visible in progress output.
 
 Manual smoke checks so far:

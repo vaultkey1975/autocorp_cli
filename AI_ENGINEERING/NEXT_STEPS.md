@@ -29,14 +29,14 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
    Focused verification has passed:
    `.venv/bin/python -m pytest -W error -q
-   tests/test_workflow_character_id_propagation.py` -> exit code 0, 21
+   tests/test_workflow_character_id_propagation.py` -> exit code 0, 23
    passed.
 
    Required verification has passed:
    `git diff --check` -> exit code 0;
    `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
    maintained Python files compiled; `.venv/bin/python -m pytest -W error
-   -q` -> exit code 0, 1010 tests collected with the existing xfail
+   -q` -> exit code 0, 1012 tests collected with the existing xfail
    visible in progress output.
 
    Post-verification real CloneCast command checks:

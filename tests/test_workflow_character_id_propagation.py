@@ -246,6 +246,23 @@ def test_workspace_creation_failure_returns_structured_report(monkeypatch, tmp_p
     assert report.repository_unchanged is True
 
 
+def test_git_status_exception_returns_structured_report(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    def fail_git_info(repo_path):
+        raise RuntimeError("git inspection exploded")
+
+    monkeypatch.setattr(workflow_test.scanner, "_git_info", fail_git_info)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "SAFETY_BLOCKED"
+    assert report.workflow_stage == "ISOLATION_PROOF"
+    assert "git inspection exploded" in report.failure_reason
+    assert report.cleanup_attempted is False
+    assert report.exit_code == 1
+
+
 def test_database_copy_failure_returns_structured_report(monkeypatch, tmp_path):
     _init_clonecast_like_repo(tmp_path)
 
@@ -300,6 +317,23 @@ def test_cleanup_failure_is_reported_without_attribute_error(monkeypatch, tmp_pa
     assert report.cleanup_attempted is True
     assert report.cleanup_removed is False
     assert "cleanup denied" in report.cleanup_error
+    assert report.exit_code == 1
+
+
+def test_cleanup_attribute_error_is_reported(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    def fail_rmtree(path, ignore_errors=False):
+        raise AttributeError("partial cleanup state")
+
+    monkeypatch.setattr(workflow_test.shutil, "rmtree", fail_rmtree)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "CLEANUP_FAILED"
+    assert report.cleanup_attempted is True
+    assert report.cleanup_removed is False
+    assert "partial cleanup state" in report.cleanup_error
     assert report.exit_code == 1
 
 

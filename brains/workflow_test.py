@@ -1837,7 +1837,7 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
             report.cleanup_removed = not os.path.exists(disp)
             if not report.cleanup_removed:
                 report.cleanup_error = "Disposable root still exists after rmtree."
-        except OSError as exc:
+        except Exception as exc:
             report.cleanup_removed = False
             report.cleanup_error = str(exc)
 
