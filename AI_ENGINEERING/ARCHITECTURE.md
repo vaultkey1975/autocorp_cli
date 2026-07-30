@@ -219,6 +219,18 @@ are checked before and after, and the disposable directory is removed
 (with the removal itself verified, as of Phase 1X) when the run ends,
 success or failure.
 
+Workflow-test and publish-test reports now also carry explicit structured
+failure metadata (`success`, `failure_reason`, `workflow_stage`,
+`repository_unchanged`, `verification_summary`, `recommended_next_action`,
+and `exit_code`). `brains/workflow_test.py` initializes disposable runtime
+resources (`disp`, `disp_db`, and `proc`) before any early-return path can
+finalize, classifies workspace creation, disposable database copy, startup,
+publishing-not-run, and cleanup failures into report fields, and makes
+cleanup safe when initialization only partially succeeded. This was added
+after real `/home/larry/clonecast` runs showed dirty-tree safety blocking
+could previously crash with `UnboundLocalError` before a structured report
+was rendered.
+
 ## Planner
 
 Two unrelated planners exist:

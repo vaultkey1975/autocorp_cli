@@ -124,7 +124,15 @@ class WorkflowTestReport:
         self.overall_status = "INCONCLUSIVE"
         self.first_failure = ""
         self.duration = 0.0
+        self.success = False
+        self.failure_reason = ""
+        self.workflow_stage = "NOT_STARTED"
+        self.repository_unchanged = False
+        self.verification_summary = "Verification has not run."
+        self.recommended_next_action = "Run the disposable workflow validation."
+        self.exit_code = 1
         # Phase 1Y: publishing validation
+        self.include_publishing = False
         self.publishing_readiness = "NOT_RUN"   # PASS | WARNING | FAIL | NOT_RUN
         self.publishing_findings: list[PublishingFinding] = []
         self.external_dependency_status: list[ExternalDependencyStatus] = []
@@ -682,42 +690,120 @@ def _check_external_publishing_dependencies() -> list:
 def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool = False) -> WorkflowTestReport:
     repo_path = os.path.abspath(repo_path)
     t0 = time.time()
+    disp = None
+    disp_db = None
+    proc = None
     report = WorkflowTestReport()
     report.repo_path = repo_path
+    report.include_publishing = include_publishing
     prod_db = os.path.join(repo_path, "db", "cloneshow.db")
     report.production_db_path = prod_db
-    report.clonecast_git_status_before = subprocess.run(
-        ["git", "status", "--short"], cwd=repo_path, text=True, capture_output=True
-    ).stdout.strip()
+    try:
+        report.clonecast_git_status_before = subprocess.run(
+            ["git", "status", "--short"], cwd=repo_path, text=True, capture_output=True
+        ).stdout.strip()
+    except Exception as exc:
+        report.clonecast_git_status_before = f"GIT_STATUS_FAILED: {exc}"
     if os.path.isfile(prod_db):
         report.production_db_before = _sha256_file(prod_db)
         report.production_db_size_before = os.path.getsize(prod_db)
 
-    if scanner._git_info(repo_path)[1] != "clean":
+    try:
+        git_state = scanner._git_info(repo_path)[1]
+    except Exception as exc:
+        git_state = "unknown"
+        report.stages.append(StageRecord(
+            number=0,
+            stage="ISOLATION_PROOF",
+            status="FAIL",
+            failure_reason=f"Unable to inspect target git status: {exc}",
+            failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT",
+        ))
+        report.overall_status = "SAFETY_BLOCKED"
+        report.first_failure = report.stages[-1].failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
+
+    if git_state != "clean":
         s = StageRecord(number=0, stage="ISOLATION_PROOF", status="FAIL",
                          failure_reason="Dirty working tree.")
         report.stages.append(s); report.overall_status = "SAFETY_BLOCKED"
+        report.first_failure = s.failure_reason
         _finalize(report, prod_db, t0, disp, disp_db); return report
 
-    disp = tempfile.mkdtemp(prefix="acwf-")
+    try:
+        disp = tempfile.mkdtemp(prefix="acwf-")
+    except Exception as exc:
+        s = StageRecord(
+            number=1,
+            stage="DISPOSABLE_WORKSPACE_CREATE",
+            status="FAIL",
+            failure_reason=f"FAILED TO CREATE DISPOSABLE WORKSPACE: {exc}",
+            failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT",
+        )
+        report.stages.append(s)
+        report.overall_status = "FAILED TO CREATE DISPOSABLE WORKSPACE"
+        report.first_failure = s.failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
     report.disposable_root = disp
     disp_db = os.path.join(disp, "db", "cloneshow.db")
-    os.makedirs(os.path.dirname(disp_db), exist_ok=True)
-    if os.path.isfile(prod_db):
-        shutil.copy2(prod_db, disp_db)
+    try:
+        os.makedirs(os.path.dirname(disp_db), exist_ok=True)
+        if os.path.isfile(prod_db):
+            shutil.copy2(prod_db, disp_db)
+    except Exception as exc:
+        s = StageRecord(
+            number=1,
+            stage="DISPOSABLE_DATABASE_COPY",
+            status="FAIL",
+            failure_reason=f"DATABASE COPY FAILED: {exc}",
+            failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT",
+        )
+        report.stages.append(s)
+        report.overall_status = "DATABASE COPY FAILED"
+        report.first_failure = s.failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
     if os.path.commonpath([disp, repo_path]).startswith(repo_path):
-        report.stages.append(StageRecord(number=0, status="FAIL")); report.overall_status = "SAFETY_BLOCKED"
+        s = StageRecord(
+            number=1,
+            stage="DISPOSABLE_WORKSPACE_CREATE",
+            status="FAIL",
+            failure_reason="Disposable workspace was created inside the target repository.",
+            failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT",
+        )
+        report.stages.append(s); report.overall_status = "SAFETY_BLOCKED"; report.first_failure = s.failure_reason
         _finalize(report, prod_db, t0, disp, disp_db); return report
 
     s0 = StageRecord(number=0, stage="ISOLATION_PROOF", status="PASS",
                       evidence=[f"Root: {disp}"])
-    copied_refs = _prepare_disposable_voice_assets(disp_db, disp)
+    try:
+        copied_refs = _prepare_disposable_voice_assets(disp_db, disp)
+    except Exception as exc:
+        s = StageRecord(
+            number=1,
+            stage="DISPOSABLE_DATABASE_COPY",
+            status="FAIL",
+            failure_reason=f"DATABASE COPY FAILED: {exc}",
+            failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT",
+        )
+        report.stages.append(s)
+        report.overall_status = "DATABASE COPY FAILED"
+        report.first_failure = s.failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
     s0.evidence.append(f"Copied voice references: {len(copied_refs)}")
     report.stages.append(s0)
 
     venv = os.path.join(repo_path, ".venv", "bin", "python")
     if not os.path.isfile(venv):
         report.overall_status = "REQUIRED_SERVICE_MISSING"
+        s = StageRecord(
+            number=1,
+            stage="CLONECAST_ENVIRONMENT_CHECK",
+            status="FAIL",
+            failure_reason=f"Required Python executable is missing: {venv}",
+            failure_ownership="CLONECAST_WORKFLOW_PRECONDITION",
+        )
+        report.stages.append(s)
+        report.first_failure = s.failure_reason
         _finalize(report, prod_db, t0, disp, disp_db); return report
     if _port_listening("127.0.0.1", port):
         for alt in range(port + 1, port + 100):
@@ -726,19 +812,49 @@ def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool
     env = _clonecast_env(repo_path, disp, disp_db)
 
     args = [venv, "-m", "uvicorn", "clonecast.web_app:create_app", "--factory", "--host", "127.0.0.1", f"--port={port}"]
-    proc = subprocess.Popen(args, cwd=repo_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        proc = subprocess.Popen(args, cwd=repo_path, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except Exception as exc:
+        s = StageRecord(
+            number=1,
+            stage="APPLICATION_STARTUP",
+            status="FAIL",
+            failure_reason=f"APPLICATION FAILED TO START: {exc}",
+            failure_ownership="CLONECAST_WORKFLOW_PRECONDITION",
+        )
+        report.stages.append(s)
+        report.overall_status = "APPLICATION FAILED TO START"
+        report.first_failure = s.failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
     for _ in range(40):
         if _port_listening("127.0.0.1", port): break
         if proc.poll() is not None:
             _, err = proc.communicate()
-            report.overall_status = "STAGE_FAILED"
+            s = StageRecord(
+                number=1,
+                stage="APPLICATION_STARTUP",
+                status="FAIL",
+                failure_reason=f"APPLICATION FAILED TO START: {err.strip()[:1000] or 'server exited before listening'}",
+                failure_ownership="CLONECAST_WORKFLOW_PRECONDITION",
+            )
+            report.stages.append(s)
+            report.overall_status = "APPLICATION FAILED TO START"
+            report.first_failure = s.failure_reason
             _finalize(report, prod_db, t0, disp, disp_db); return report
         time.sleep(0.5)
 
     base = f"http://127.0.0.1:{port}"
     h = SessionHTTP()
     if h.request(f"{base}/health")["status_code"] != 200:
-        _shutdown(proc); report.overall_status = "STAGE_FAILED"
+        s = StageRecord(
+            number=1,
+            stage="APPLICATION_HEALTHCHECK",
+            status="FAIL",
+            failure_reason="APPLICATION FAILED TO START: /health did not return HTTP 200",
+            failure_ownership="CLONECAST_WORKFLOW_PRECONDITION",
+        )
+        report.stages.append(s)
+        _shutdown(proc); report.overall_status = "APPLICATION FAILED TO START"; report.first_failure = s.failure_reason
         _finalize(report, prod_db, t0, disp, disp_db); return report
 
     time.sleep(1)
@@ -1698,13 +1814,19 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
         report.production_db_after = _sha256_file(prod_db)
         report.production_db_size_after = os.path.getsize(prod_db)
     if report.repo_path:
-        report.clonecast_git_status_after = subprocess.run(
-            ["git", "status", "--short"], cwd=report.repo_path, text=True, capture_output=True
-        ).stdout.strip()
+        try:
+            report.clonecast_git_status_after = subprocess.run(
+                ["git", "status", "--short"], cwd=report.repo_path, text=True, capture_output=True
+            ).stdout.strip()
+        except Exception as exc:
+            report.clonecast_git_status_after = f"GIT_STATUS_FAILED: {exc}"
 
     # Database verification MUST run before cleanup removes the disposable DB.
     if disp_db and os.path.isfile(disp_db):
-        report.database_verification = _verify_database(disp_db)
+        try:
+            report.database_verification = _verify_database(disp_db)
+        except Exception as exc:
+            report.database_verification = DatabaseVerification(error=str(exc))
 
     # Cleanup verification: the disposable root must be fully removable, and
     # actually removed, regardless of whether the workflow passed or failed.
@@ -1726,3 +1848,59 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
     if disp and report.cleanup_attempted and not report.cleanup_removed:
         report.overall_status = "CLEANUP_FAILED"
     report.duration = time.time() - t0
+    report.repository_unchanged = (
+        report.production_db_before == report.production_db_after
+        and report.clonecast_git_status_before == report.clonecast_git_status_after
+    )
+
+    last_failed = next((s for s in report.stages if s.status == "FAIL"), None)
+    last_stage = report.stages[-1] if report.stages else None
+    report.workflow_stage = (last_failed or last_stage).stage if (last_failed or last_stage) else "NOT_STARTED"
+    report.failure_reason = report.first_failure or (last_failed.failure_reason if last_failed else "")
+
+    if report.include_publishing and report.publishing_readiness == "NOT_RUN":
+        report.publishing_readiness = "FAIL"
+        report.publishing_findings.append(PublishingFinding(
+            severity="FAIL",
+            category="publishing_validation",
+            evidence=(
+                "Publishing validation could not run because the disposable "
+                f"workflow stopped at {report.workflow_stage}."
+            ),
+            recommendation="Resolve the earlier workflow failure before rerunning publish-test.",
+        ))
+
+    report.success = (
+        report.overall_status == "DISPOSABLE_WORKFLOW_COMPLETE"
+        and report.repository_unchanged
+        and (not disp or (report.cleanup_attempted and report.cleanup_removed))
+    )
+    report.exit_code = 0 if report.success else 1
+
+    cleanup_status = "NOT_CREATED"
+    if report.cleanup_attempted:
+        cleanup_status = "REMOVED" if report.cleanup_removed else "FAILED"
+    database_status = "NOT_RUN"
+    if report.database_verification.checked:
+        database_status = "PASS" if report.database_verification.integrity_ok else "FAIL"
+    elif report.database_verification.error:
+        database_status = "FAIL"
+    report.verification_summary = (
+        f"database={database_status}; cleanup={cleanup_status}; "
+        f"repository_unchanged={'yes' if report.repository_unchanged else 'no'}"
+    )
+    if report.success:
+        report.recommended_next_action = "Review the generated report and keep production credentials disabled."
+    elif report.overall_status == "SAFETY_BLOCKED":
+        report.recommended_next_action = "Clean or review the target repository before rerunning disposable validation."
+    elif report.overall_status == "FAILED TO CREATE DISPOSABLE WORKSPACE":
+        report.recommended_next_action = "Check temporary-directory permissions and available disk space, then rerun."
+    elif report.overall_status == "DATABASE COPY FAILED":
+        report.recommended_next_action = "Verify the target database exists and is readable, then rerun."
+    elif report.overall_status == "APPLICATION FAILED TO START":
+        report.recommended_next_action = "Inspect the captured startup failure and fix the target application startup."
+    elif report.overall_status == "CLEANUP_FAILED":
+        report.recommended_next_action = "Remove the disposable directory manually after inspecting cleanup_error."
+    else:
+        report.recommended_next_action = "Resolve the reported workflow stage failure and rerun disposable validation."
+    return report.exit_code

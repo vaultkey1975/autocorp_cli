@@ -634,3 +634,58 @@ tests/test_manager.py tests/test_discovery.py tests/test_autocorp_chat.py`
 maintained Python files compiled; `.venv/bin/python -m pytest -W error
 -q` -> exit code 0, 1002 tests collected with the existing xfail visible
 in progress output.
+
+### 2026-07-30 — Workflow Engine Reliability Correction
+
+Explicitly requested: repair the disposable workflow engine so
+`workflow-test --disposable` and `publish-test --disposable` never crash
+from partially initialized runtime resources and always produce structured
+reports.
+
+**Crash reproduced from repository evidence.** Running
+`.venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast
+--disposable` and `.venv/bin/python autocorp.py publish-test --repo
+/home/larry/clonecast --disposable` both exited 1 with an
+`UnboundLocalError`: the dirty-tree safety branch called
+`_finalize(report, prod_db, t0, disp, disp_db)` before `disp` or `disp_db`
+had been assigned.
+
+**Workflow finalization hardened.** `brains/workflow_test.py` now
+initializes `disp`, `disp_db`, and `proc` before any early-return path,
+classifies disposable workspace creation failures as `FAILED TO CREATE
+DISPOSABLE WORKSPACE`, disposable database copy and voice-asset repointing
+failures as `DATABASE COPY FAILED`, CloneCast process/health failures as
+`APPLICATION FAILED TO START`, and cleanup failures as `CLEANUP_FAILED`.
+`WorkflowTestReport` now stores explicit success, failure reason,
+workflow stage, repository-unchanged, verification-summary,
+recommended-next-action, and exit-code fields. `_finalize()` tolerates
+missing resources and no longer references a nonexistent `report.exit_code`.
+
+**Report rendering hardened.** `autocorp.py`'s shared workflow report
+renderer now always prints the required structured fields: Overall Status,
+Success, Failure Reason, Workflow Stage, Duration, Disposable Cleanup
+Status, Repository Unchanged, Verification Summary, and Recommended Next
+Action. `publish-test` reports a structured publishing validation finding
+when the base disposable workflow stops before publishing stages can run.
+
+**Regression tests added.** `tests/test_workflow_character_id_propagation.py`
+now covers dirty-tree safety blocking, workspace creation failure,
+database copy failure, application startup failure, publishing blocked
+before validation, cleanup failure, partial finalization, successful
+cleanup after failure, and missing publishing credentials without network
+calls. Focused verification passed:
+`.venv/bin/python -m pytest -W error -q
+tests/test_workflow_character_id_propagation.py` -> exit code 0, 21
+passed. Required verification passed: `git diff --check` -> exit code 0;
+`.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
+maintained Python files compiled; `.venv/bin/python -m pytest -W error
+-q` -> exit code 0, 1010 tests collected with the existing xfail visible
+in progress output.
+
+**Real CloneCast smoke after the fix.** With `/home/larry/clonecast`
+currently dirty, both disposable commands were rerun after full
+verification and now exit 1 normally with no traceback, report `Overall
+Status: SAFETY_BLOCKED`, report `Repository Unchanged: Yes`, and save the
+standard phase reports. `publish-test` additionally reports `Publishing
+Readiness: FAIL` because publishing validation could not run after
+isolation failed.

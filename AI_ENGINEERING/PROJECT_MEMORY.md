@@ -198,6 +198,21 @@ right shape: running HTTP evidence is not rounded up into release
 readiness, and database integrity findings are not hidden just because the
 server responds.
 
+**Every disposable workflow failure path must be structured before it can
+be safe.** A real 2026-07-30 run of both
+`autocorp workflow-test --repo /home/larry/clonecast --disposable` and
+`autocorp publish-test --repo /home/larry/clonecast --disposable` crashed
+with `UnboundLocalError` in the dirty-tree safety branch because
+`run_workflow_test()` referenced `disp`/`disp_db` before those variables
+were initialized. The same audit found `_finalize()` returning a
+nonexistent `report.exit_code`. The fix pattern is now explicit:
+initialize runtime resources to `None` before any branch can finalize,
+make cleanup tolerate absent resources, and put failure stage/reason/
+cleanup/repository-unchanged/next-action fields on the report object so
+even early safety blocks render normally. This is the workflow-engine
+equivalent of the Live Inspector's earlier copy-failure lesson: no
+traceback should be the user-facing report for a validation tool.
+
 **Disposable source copies must exclude runtime/model/output artifacts.**
 The first CloneCast `autocorp inspect --json` smoke attempted to copy
 `runtime/models/` and generated audio artifacts into `/tmp`, hit

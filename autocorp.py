@@ -660,7 +660,7 @@ def _render_workflow_report(report) -> str:
     Shared by Phase 1X (audio production) and Phase 1Y (publishing
     validation, which reuses this same report shape with additional
     stages/artifacts/findings appended)."""
-    is_publishing = report.publishing_readiness != "NOT_RUN"
+    is_publishing = getattr(report, "include_publishing", False) or report.publishing_readiness != "NOT_RUN"
     lines = []
     p = lines.append
 
@@ -675,7 +675,19 @@ def _render_workflow_report(report) -> str:
     p(f"Disposable Root:  {report.disposable_root}")
     p(f"Production DB:    {report.production_db_path}")
     p(f"Overall Status:   {report.overall_status}")
+    p(f"Success:          {'Yes' if getattr(report, 'success', False) else 'No'}")
+    p(f"Failure Reason:   {getattr(report, 'failure_reason', '') or '(none)'}")
+    p(f"Workflow Stage:   {getattr(report, 'workflow_stage', 'UNKNOWN')}")
     p(f"Runtime:          {report.duration:.1f}s")
+    p(f"Duration:         {report.duration:.1f}s")
+    if report.cleanup_attempted:
+        cleanup_status = "REMOVED" if report.cleanup_removed else "FAILED"
+    else:
+        cleanup_status = "NOT_CREATED"
+    p(f"Disposable Cleanup Status: {cleanup_status}")
+    p(f"Repository Unchanged: {'Yes' if getattr(report, 'repository_unchanged', False) else 'No'}")
+    p(f"Verification Summary: {getattr(report, 'verification_summary', '(not recorded)')}")
+    p(f"Recommended Next Action: {getattr(report, 'recommended_next_action', '(not recorded)')}")
     p("")
 
     p("Workflow Stages")

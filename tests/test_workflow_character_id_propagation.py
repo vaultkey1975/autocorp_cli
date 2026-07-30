@@ -1,5 +1,6 @@
 from brains import workflow_test
 import sqlite3
+import subprocess
 import wave
 
 
@@ -194,3 +195,140 @@ def test_ffprobe_records_real_audio_metadata(tmp_path):
     assert meta.codec == "pcm_s16le"
     assert meta.sample_rate == 24000
     assert meta.channels == 1
+
+
+def _init_clonecast_like_repo(path):
+    subprocess.run(["git", "init", "-b", "main"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    db_dir = path / "db"
+    db_dir.mkdir()
+    conn = sqlite3.connect(db_dir / "cloneshow.db")
+    conn.execute(
+        "CREATE TABLE voice_reference_assets (reference_asset_id TEXT, managed_path TEXT)"
+    )
+    conn.commit()
+    conn.close()
+    (path / ".venv" / "bin").mkdir(parents=True)
+    (path / ".venv" / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True)
+
+
+def test_dirty_tree_failure_returns_structured_report_without_disposable_unbound(tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+    (tmp_path / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.exit_code == 1
+    assert report.overall_status == "SAFETY_BLOCKED"
+    assert report.workflow_stage == "ISOLATION_PROOF"
+    assert report.failure_reason == "Dirty working tree."
+    assert report.cleanup_attempted is False
+    assert report.verification_summary
+    assert report.recommended_next_action
+
+
+def test_workspace_creation_failure_returns_structured_report(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    def fail_mkdtemp(prefix):
+        raise OSError("no temp space")
+
+    monkeypatch.setattr(workflow_test.tempfile, "mkdtemp", fail_mkdtemp)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "FAILED TO CREATE DISPOSABLE WORKSPACE"
+    assert "FAILED TO CREATE DISPOSABLE WORKSPACE" in report.failure_reason
+    assert report.cleanup_attempted is False
+    assert report.repository_unchanged is True
+
+
+def test_database_copy_failure_returns_structured_report(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    def fail_copy(src, dst):
+        raise OSError("copy denied")
+
+    monkeypatch.setattr(workflow_test.shutil, "copy2", fail_copy)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "DATABASE COPY FAILED"
+    assert "DATABASE COPY FAILED" in report.failure_reason
+    assert report.cleanup_attempted is True
+    assert report.cleanup_removed is True
+    assert report.repository_unchanged is True
+
+
+def test_startup_failure_returns_structured_report_and_cleans_up(tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "APPLICATION FAILED TO START"
+    assert "APPLICATION FAILED TO START" in report.failure_reason
+    assert report.cleanup_attempted is True
+    assert report.cleanup_removed is True
+    assert report.repository_unchanged is True
+
+
+def test_publish_validation_records_structured_block_when_workflow_cannot_run(tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    report = workflow_test.run_workflow_test(str(tmp_path), include_publishing=True)
+
+    assert report.publishing_readiness == "FAIL"
+    assert report.publishing_findings
+    assert report.publishing_findings[0].category == "publishing_validation"
+    assert "could not run" in report.publishing_findings[0].evidence
+
+
+def test_cleanup_failure_is_reported_without_attribute_error(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+
+    def fail_rmtree(path, ignore_errors=False):
+        raise OSError("cleanup denied")
+
+    monkeypatch.setattr(workflow_test.shutil, "rmtree", fail_rmtree)
+
+    report = workflow_test.run_workflow_test(str(tmp_path))
+
+    assert report.overall_status == "CLEANUP_FAILED"
+    assert report.cleanup_attempted is True
+    assert report.cleanup_removed is False
+    assert "cleanup denied" in report.cleanup_error
+    assert report.exit_code == 1
+
+
+def test_partial_finalize_handles_uncreated_resources(tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+    report = workflow_test.WorkflowTestReport()
+    report.repo_path = str(tmp_path)
+    report.production_db_path = str(tmp_path / "db" / "cloneshow.db")
+    report.production_db_before = workflow_test._sha256_file(report.production_db_path)
+    report.clonecast_git_status_before = ""
+    report.overall_status = "FAILED TO CREATE DISPOSABLE WORKSPACE"
+    report.first_failure = "FAILED TO CREATE DISPOSABLE WORKSPACE: no temp space"
+
+    rc = workflow_test._finalize(report, report.production_db_path, 0, None, None)
+
+    assert rc == 1
+    assert report.cleanup_attempted is False
+    assert report.workflow_stage == "NOT_STARTED"
+    assert report.failure_reason.startswith("FAILED TO CREATE DISPOSABLE WORKSPACE")
+    assert "cleanup=NOT_CREATED" in report.verification_summary
+
+
+def test_missing_publishing_credentials_are_reported_without_network_calls(monkeypatch):
+    for env_vars in workflow_test._PLATFORM_CREDENTIAL_ENV_VARS.values():
+        for name in env_vars:
+            monkeypatch.delenv(name, raising=False)
+
+    statuses = workflow_test._check_external_publishing_dependencies()
+
+    assert statuses
+    assert all(status.credentials_configured is False for status in statuses)
+    assert all(status.real_upload_code_exists is False for status in statuses)

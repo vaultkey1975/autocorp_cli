@@ -7,7 +7,46 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Owner review of the Live Application Inspector.**
+1. **Finish workflow-engine reliability verification and commit.**
+
+   A real run reproduced an AutoCorp-side crash before the fix:
+
+   ```
+   .venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast --disposable
+   .venv/bin/python autocorp.py publish-test --repo /home/larry/clonecast --disposable
+   ```
+
+   Both exited 1 with an `UnboundLocalError` because the dirty-tree safety
+   branch in `brains/workflow_test.py` referenced `disp` before assignment.
+
+   The working-tree correction now returns structured reports for both
+   commands. With CloneCast's current dirty worktree, both commands exit 1
+   normally with no traceback, report `Overall Status: SAFETY_BLOCKED`,
+   preserve CloneCast's production database and git status, and explain
+   the next action. `publish-test` additionally reports
+   `Publishing Readiness: FAIL` because publishing validation could not
+   run before the workflow passed isolation.
+
+   Focused verification has passed:
+   `.venv/bin/python -m pytest -W error -q
+   tests/test_workflow_character_id_propagation.py` -> exit code 0, 21
+   passed.
+
+   Required verification has passed:
+   `git diff --check` -> exit code 0;
+   `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
+   maintained Python files compiled; `.venv/bin/python -m pytest -W error
+   -q` -> exit code 0, 1010 tests collected with the existing xfail
+   visible in progress output.
+
+   Post-verification real CloneCast command checks:
+   `.venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast
+   --disposable` -> exit code 1, structured `SAFETY_BLOCKED` report, no
+   traceback; `.venv/bin/python autocorp.py publish-test --repo
+   /home/larry/clonecast --disposable` -> exit code 1, structured
+   `SAFETY_BLOCKED` report, `Publishing Readiness: FAIL`, no traceback.
+
+2. **Owner review of the Live Application Inspector.**
 
    Focused verification has passed:
 
@@ -32,13 +71,13 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
    -q` -> exit code 0, 1002 tests collected with the existing xfail
    visible in progress output.
 
-2. **Do not push without owner instruction.**
+3. **Do not push without owner instruction.**
    The owner requested commits if verification passes and explicitly said
    not to push. Do not include unrelated untracked artifacts
    (`claude_phase_1g_audit.txt`, `clonecast_live_readiness_report.txt`,
    `data/`, `phase_1q_runtime_output.txt`).
 
-3. **Reliability Engine integration decision.** Repository evidence now
+4. **Reliability Engine integration decision.** Repository evidence now
    includes an end-to-end test for `ReliabilityOrchestrator.run()` against
    a disposable git repository, plus production-hardening coverage for
    dirty-target refusal and merge-failure diagnostics. Discovery and the
@@ -78,10 +117,9 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   to peak clipping during real disposable runs. This blocks CloneCast
   workflow/publishing validation from reaching a full successful PASS, but
   it is not an AutoCorp implementation defect.
-- No current AutoCorp implementation bug is documented here after the
-  production-hardening commit `99db951`, manager commit `ff31c1a`,
-  discovery commit `cc89467`, and the Live Inspector focused tests run in
-  this session.
+- No other current AutoCorp implementation bug is documented here after
+  the workflow-engine reliability correction currently in the working
+  tree.
 
 ## Future Improvements
 

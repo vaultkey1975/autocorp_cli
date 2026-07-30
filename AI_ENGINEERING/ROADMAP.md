@@ -79,8 +79,11 @@ includes a committed Reliability Engine end-to-end
 `ReliabilityOrchestrator.run()` test, a committed AutoCorp Chat CLI
 subcommand, the production-hardening commit `99db951`, and committed
 Autonomous Engineering Manager `ff31c1a`, and Universal Repository
-Discovery `cc89467`. The current work adds Live Application Inspector
-(`autocorp inspect` / `brains/live_inspector.py`).
+Discovery `cc89467`, and Live Application Inspector `276fcc3`. The
+current working-tree task is a workflow-engine reliability correction for
+`autocorp workflow-test --disposable` and `autocorp publish-test
+--disposable`, after real CloneCast runs reproduced an AutoCorp-side
+`UnboundLocalError` in the dirty-tree safety branch.
 Official phase completion remains owner-gated by
 `PHASE_COMPLETION_POLICY.md`.
 
