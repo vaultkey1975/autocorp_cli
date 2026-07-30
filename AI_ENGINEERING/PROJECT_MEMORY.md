@@ -60,6 +60,32 @@ disposable-workflow infrastructure (Phase 1M–1S onward) exists. **Do not
 substitute a plausible-looking mock for a real disposable run when the
 task explicitly needs to prove real behavior.**
 
+**Write-capable orchestration needs a disposable repository test before it
+is trusted with a user's repository.** The Reliability Engine had extensive
+unit coverage for its individual modules, but until 2026-07-30 it had no
+test that called `ReliabilityOrchestrator.run()`, the entry point that
+creates git worktrees and merges diffs back with `git apply`. The new E2E
+test constructs a temporary git repository, runs a realistic edit request
+through the real orchestrator pipeline with a deterministic engine at the
+model boundary, verifies planning/analysis/validation/regression/merge/
+cleanup, and asserts AutoCorp's own git status is unchanged. This pattern
+should be reused for any future tool that can write to a target repository.
+
+**Verification scope must match repository ownership, or it becomes noise
+instead of rigor.** The bare `python -m compileall .` command failed in
+this repository for reasons outside maintained AutoCorp source: the current
+shell has no bare `python` shim selected, and using the project venv to
+compile `.` traverses ignored `.venv/` dependency files and ignored
+`workspace/` generated apps with known syntax errors. Repository evidence
+already established those paths are not maintained source: `.gitignore`
+ignores them, `pytest.ini` excludes them from collection, and
+`brains/analyzer.py` explicitly excludes `workspace/`/`data/` when
+describing AutoCorp's architecture. The correct fix was not to suppress
+errors and not to repair old generated scratch projects; it was to add
+`scripts/verify_compileall.py`, which compiles tracked Python files plus
+non-ignored untracked Python files and still fails on any maintained-source
+syntax error.
+
 **This documentation system itself fell into the exact trap it warns
 against, within days of being written.** `NEXT_STEPS.md`/`PHASES.md`/
 `CURRENT_PHASE.md` carried forward all five findings of
@@ -116,6 +142,15 @@ duplicate it.** `brains/scanner.py` exposes `iter_python_files`,
 `brains/repair_proposal.py` don't reimplement the same ignore-directory
 walk and TODO/FIXME/pass/NotImplementedError counting rules four times.
 When one of those rules needs to change, it changes in one place.
+
+**Repository chat should route to existing capabilities, not duplicate
+business logic.** The first production `autocorp chat` implementation is a
+thin conversational router over `scanner`, `analyzer`, `project_planner`,
+existing workflow/publish-test commands, git inspection, and
+`AI_ENGINEERING/` documentation. It intentionally does not call a generic
+LLM provider. This keeps answers grounded in repository evidence and gives
+future provider-backed chat a clean layer to add synthesis without moving
+the facts out of their existing modules.
 
 **Exclude `workspace/` (and `data/`) from architecture-level analysis, but
 not from raw scan totals.** `brains/analyzer.py` deliberately uses a wider

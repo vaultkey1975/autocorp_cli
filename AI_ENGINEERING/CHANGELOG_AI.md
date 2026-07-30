@@ -348,12 +348,13 @@ CLI command backed by a path that has never once completed successfully
 end-to-end would violate this repository's own repeatedly-stated "no fake
 verification" principle.
 
-**VERDICT: NOT READY for production integration.** No CLI subcommand was
-added; no part of `reliability_engine/` was committed. What remains: a real
-end-to-end test of `ReliabilityOrchestrator.run()` (a disposable temp git
-repo, a real request, a real or realistically-faked engine wired all the
-way through, asserting on the final status) is the single blocking
-precondition before this review could be repeated with a different outcome.
+**VERDICT AT THAT TIME: NOT READY for production integration.** No CLI
+subcommand was added; no part of `reliability_engine/` was committed. At
+that time, what remained was a real end-to-end test of
+`ReliabilityOrchestrator.run()` (a disposable temp git repo, a real
+request, a real or realistically-faked engine wired all the way through,
+asserting on the final status) before this review could be repeated with a
+different outcome. A later 2026-07-30 entry below records the new E2E test.
 
 Verification performed: `git diff --check` (exit 0, no whitespace errors);
 `python -m compileall` on every real source directory (`autocorp.py`,
@@ -364,11 +365,80 @@ fixtures contain expected, unrelated syntax errors and were excluded);
 **938 passed, 1 xfailed, 0 failed**, exit 0; `tests/test_reliability_engine.py`
 alone: 61/61 passed.
 
+### 2026-07-30 — Reliability Engine E2E verification and AutoCorp Chat added
+
+Explicitly requested: complete the remaining Reliability Engine
+production-readiness work by adding a real end-to-end verification for
+`ReliabilityOrchestrator.run()`, then add a production-ready
+repository-aware chat interface.
+
+**Reliability Engine E2E verification added.** The new regression test in
+`tests/test_reliability_engine.py` creates a disposable git repository with
+real source and pytest files, calls `ReliabilityOrchestrator.run()` with a
+realistic edit request, routes the model boundary to a deterministic engine,
+and verifies the complete local pipeline: worktree creation, planning,
+dependency analysis, validation, regression testing, merge behavior,
+cleanup, and no mutation of AutoCorp's own repository status during the
+test. Focused verification passed:
+`.venv/bin/python -m pytest -W error -q tests/test_reliability_engine.py
+tests/test_autocorp_chat.py` -> exit code 0, 69 passed.
+
+**AutoCorp Chat added.** `brains/chat.py` implements
+`AutoCorpChatSession`, a repository-aware conversational router over
+existing AutoCorp modules (`scanner`, `analyzer`, `project_planner`),
+existing workflow/publish-test command paths, git inspection, repair-plan
+guidance, prompt preparation, and `AI_ENGINEERING/` documentation reads.
+`autocorp.py` wires the new `chat` subcommand with both one-shot prompt
+mode and an interactive loop. Tests in `tests/test_autocorp_chat.py` cover
+parser registration, scanner reuse, health/project-planner reuse,
+workflow-test command guidance, engineering-doc reads, prompt preparation,
+and one-shot CLI output.
+
+**Verification result before the compile-policy fix:** `git diff --check`
+passed (exit 0); `.venv/bin/python -m pytest -W error -q` passed (exit 0,
+947 tests collected, existing xfail visible). The exact requested
+`python -m compileall .` did not pass because `python` was unavailable
+through pyenv in this shell (exit 127). Running the same all-tree compile
+through `.venv/bin/python` also failed on ignored artifacts: one third-party
+`.venv/` template and five generated files under `workspace/`. No commit
+was created at that point because the requested verification gate had not
+yet been resolved.
+
+### 2026-07-30 — Compile verification gate corrected
+
+Root-cause analysis of `compileall .` classified the failures as outside
+maintained AutoCorp source:
+
+- `.venv/lib/python3.13/site-packages/PySide6/.../__init__.tmpl.py` —
+  dependency/build artifact, ignored by `.gitignore` and excluded by
+  `pytest.ini`.
+- `workspace/calculator_app_2/ui/main_window.py`,
+  `workspace/customer_crm_app_9/ui/main_window.py`,
+  `workspace/numbers/test_numbers2.py`,
+  `workspace/textkit/test_strutils.py`, and
+  `workspace/todo_app_2/main.py` — ignored generated workspace output.
+- `workspace/.reliability_worktrees/` — ignored temporary Reliability
+  Engine disposable worktrees; no syntax failure was found there during the
+  failure enumeration.
+
+Repository evidence supports excluding these paths from maintained-source
+verification: `.gitignore` ignores `.venv/`, `workspace/`, and runtime data;
+`pytest.ini` sets `testpaths = tests` and `norecursedirs = workspace .venv
+data .git *.egg-info __pycache__`; `brains/analyzer.py` explicitly
+excludes `workspace/` and `data/` from architecture analysis because they
+are generated/output directories.
+
+Added `scripts/verify_compileall.py`, the repository-approved compile
+gate. It compiles tracked Python files plus non-ignored untracked Python
+files, so maintained source and tests are still checked while ignored
+generated/runtime/dependency artifacts are not. Added
+`tests/test_verify_compileall.py` to prove ignored broken workspace/venv
+files do not fail the gate, while a non-ignored untracked Python syntax
+error does fail it.
+
 ## Full test suite status at time of writing
 
-`.venv/bin/python -m pytest -q` (rerun to produce this entry, not copied
-from an old report): **938 passed, 1 xfailed, 0 failed**, exit code 0 —
-against the full working tree, uncommitted changes included (933 passed
-before two days' worth of 5 new regression tests: 3 for the inline-redaction
-fix, 1 for the worktree-ID-collision fix, 1 for the
-self-consistency static-gate fix).
+`.venv/bin/python -m pytest -W error -q` (rerun to produce the current
+entry, not copied from an old report): exit code 0; 947 tests collected;
+the strict run completed successfully with the existing xfail visible in
+progress output.

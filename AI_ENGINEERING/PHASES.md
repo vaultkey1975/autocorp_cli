@@ -446,10 +446,7 @@ docstring header.
   `ARCHITECTURE.md`'s "Reliability Engine" section for the full
   architecture, risk findings, and staged integration plan. It reimplements
   (rather than reuses) the existing pipeline's self-heal/retry/repair-budget
-  logic, and its own true end-to-end entry point
-  (`ReliabilityOrchestrator.run()`) is never exercised by its own test
-  suite — the 61 passing tests prove unit-level correctness of individual
-  modules, not integrated behavior. **Update, 2026-07-29:** every finding
+  logic. **Update, 2026-07-29:** every finding
   above was independently re-verified against the source (not re-stated at
   face value) and two were fixed in the working tree — a worktree-ID
   collision that could destroy a preserved blocked-subtask's diagnostic
@@ -468,17 +465,24 @@ docstring header.
   re-checked every caller rather than the one already known. Fixed the same
   way its sibling `choose_edit()` already handled it correctly. This
   three-strikes history (two "independent" reviews, then a third finding
-  what the first two missed) is itself the strongest evidence for the
-  verdict: `ReliabilityOrchestrator.run()`, the actual production entry
-  point, has never been tested end-to-end, and untested paths in this
-  subsystem have now been shown twice to hide real bugs. See
+  what the first two missed) was the strongest evidence for the verdict at
+  that time: `ReliabilityOrchestrator.run()`, the actual production entry
+  point, had not yet been tested end-to-end, and untested paths in this
+  subsystem had been shown twice to hide real bugs. See
   `ARCHITECTURE.md`'s "Production-readiness verdict" and
-  `PROJECT_MEMORY.md` for full detail. The subsystem remains entirely
-  uncommitted; integration remains unauthorized, and is not recommended
-  until a real end-to-end test of `run()` exists.
-- **Deliverables (working tree only):** `reliability_engine/` (16 modules,
+  `PROJECT_MEMORY.md` for full detail. At that point the subsystem
+  remained entirely uncommitted; integration was unauthorized, and was not
+  recommended until a real end-to-end test of `run()` existed.
+  **Update, later 2026-07-30:** the working tree now adds that real
+  end-to-end test. It calls `ReliabilityOrchestrator.run()` against a
+  disposable git repository and verifies worktree creation, planning,
+  analysis, validation, regression testing, merge behavior, cleanup, and
+  no mutation of AutoCorp's own repository status. The remaining
+  Reliability Engine decision is dedicated CLI/product integration, not
+  absence of E2E evidence.
+- **Deliverables (working tree only):** `reliability_engine/` (17 modules,
   2,346 lines), `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
-  `tests/test_reliability_engine.py` (1,304 lines), plus supporting,
+  `tests/test_reliability_engine.py`, plus supporting,
   uncommitted changes to `brains/builder.py` (an `EDIT_DIFF_SYSTEM_PROMPT`
   and `generate_edit_diff`/`edit_diff_prompt` methods), `memory/store.py`
   (new `subtasks`, `attempts`, and `known_issues` tables), and
@@ -508,19 +512,41 @@ docstring header.
 
 ---
 
+## Current Working Tree Feature — AutoCorp Chat
+
+- **Purpose:** Add a repository-aware conversational interface for common
+  AutoCorp engineering questions without turning it into a generic LLM
+  wrapper.
+- **Deliverables (working tree only):** `brains/chat.py`, `autocorp.py`
+  `chat` subcommand wiring, and `tests/test_autocorp_chat.py`.
+- **Capabilities:** repository scan, repository health, blockers/roadmap
+  from `AI_ENGINEERING/`, today's git work, error explanation heuristics,
+  disposable workflow-test and publish-test command guidance, repair-plan
+  guidance, commit review, branch comparison, model-specific prompt
+  preparation, session continuation, and Reliability Engine status.
+- **Testing:** `tests/test_autocorp_chat.py` passes in focused verification
+  with the Reliability Engine suite:
+  `.venv/bin/python -m pytest -W error -q tests/test_reliability_engine.py
+  tests/test_autocorp_chat.py` -> exit code 0, 69 passed.
+- **Completion Evidence:** Uncommitted working tree only until the owner
+  requested verification and commit sequence is complete.
+
+---
+
 ## FUTURE PLANNING REQUIRED
 
-No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, and the
-Reliability Engine's integration is described anywhere in this repository
-— no docstring, no commit, no branch, no report. Specifically:
+No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the
+Reliability Engine's possible dedicated integration, and the uncommitted
+AutoCorp Chat feature is described anywhere in this repository — no
+docstring, no commit, no branch, no report. Specifically:
 
 - What comes after Phase 1Y (assuming CloneCast's audio-clipping issue is
   someday resolved and a full publish-pipeline PASS is achieved) is not
   defined anywhere in the repository.
 - Whether/how the Reliability Engine is meant to be wired into
   `autocorp.py` is not defined anywhere in the repository.
-- Whether AI Repair Proposal's known gaps (Phase 1G, above) are intended to
-  be fixed before or independent of any other future phase is not stated.
+- What comes after the first production AutoCorp Chat implementation is
+  not stated.
 
 Do not invent phases to fill these gaps. See `ROADMAP.md`'s
 `FUTURE PLANNING REQUIRED` section and `NEXT_STEPS.md` for what can

@@ -10,7 +10,7 @@ originally designed or as a future phase might redesign it. See
 ## Directory structure (tracked, via `git ls-files`)
 
 ```
-autocorp.py           CLI entry point (argparse) - 15 subcommands in the
+autocorp.py           CLI entry point (argparse) - 16 subcommands in the
                        working tree, 13 committed at HEAD (see below)
 config.py              Single source of truth for model/endpoint/timeouts/
                        paths; APP_VERSION frozen at "0.1.0" since the first
@@ -22,15 +22,16 @@ brains/                37 tracked .py files (via `git ls-files "brains/*.py"`)
                        - see "brains/ inventory" below
 memory/                store.py - SQLite build/lesson memory
 safety/                executor.py, gate.py, watchdog_gate.py
-tests/                 93 tracked test_*.py files (94 total on disk,
-                       including one uncommitted: test_reliability_engine.py)
+scripts/               repository verification helpers
+tests/                 93 tracked test_*.py files (95 total on disk,
+                       including uncommitted Reliability Engine and chat tests)
 ```
 
 Present in the working tree but **not tracked by git** (verify with `git
 status` before trusting any of this as shipped):
 
 ```
-reliability_engine/     16 modules, 2,346 lines - unintegrated (see below)
+reliability_engine/     17 modules, 2,346 lines - unintegrated (see below)
 data/                   runtime SQLite (data/autocorp.db) + a Chroma vector
                        store (data/chroma/) - the Chroma dependency itself
                        (chromadb) is only in the uncommitted requirements.txt
@@ -55,13 +56,22 @@ Subcommands committed at `HEAD` (`git show HEAD:autocorp.py`): `build`,
 `repair`, `propose-repair`, `live-readiness`, `live-test`, `workflow-test`.
 
 Subcommands present only in the uncommitted working tree: `publish-test`,
-`quick-podcast`.
+`quick-podcast`, `chat`.
 
 Gate selection (`_make_gate`) chooses between `AllowAllGate` (`--auto`),
 `WatchdogGate` (`--watchdog`), and the default interactive `ConfirmGate` —
 this is the seam through which an external "Agent Watchdog" tool could
 approve or block file writes/commands; `safety/watchdog_gate.py` loads it
 optionally at runtime and falls back to `ConfirmGate` if unavailable.
+
+`autocorp chat` is present in the working tree as a repository-aware
+conversational interface. Its business logic lives in `brains/chat.py`;
+the CLI handler only resolves the repository, creates an
+`AutoCorpChatSession`, prints one-shot responses, or runs an interactive
+loop. The chat routes natural-language requests to existing repository
+capabilities (`scanner`, `analyzer`, `project_planner`, git inspection,
+workflow-test/publish-test command guidance, repair-plan guidance, and
+`AI_ENGINEERING/` documentation reads) rather than calling a generic model.
 
 ## `brains/` inventory (tracked)
 
@@ -81,7 +91,7 @@ Grouped by the era that introduced them (see `PHASES.md` for detail):
 - **Phase 1A–1Y repository-intelligence / CloneCast-validation
   infrastructure:** `scanner.py`, `analyzer.py`, `project_planner.py`,
   `workspace.py`, `providers.py`, `repair_proposal.py`, `live_test.py`,
-  `live_readiness.py`, `workflow_test.py`.
+  `live_readiness.py`, `workflow_test.py`, plus uncommitted `chat.py`.
 - **Quick Podcast:** `quick_podcast.py` (thin orchestrator),
   `quick_podcast_runner.py` (the actual CloneCast-service-calling worker —
   see "Workflow engine" below for why this one runs as a separate process).
@@ -257,15 +267,15 @@ confirmed a third time, independently, on 2026-07-30.**
 isolation (often with a fake engine/tester), or construct a
 `ReliabilityOrchestrator` and call only its private helpers
 (`_dependency_context`, `_edit_plan`, `_test_targets_for`).
-**`ReliabilityOrchestrator.run()` — the actual end-to-end entry point that
-drives every real build/repair cycle — has never been called by any test
-in this repository's history.** This was re-confirmed directly (grepping
-every `ReliabilityOrchestrator(...)` construction site and reading what
-method is called on each) rather than taken on trust from the prior
-investigation. Passing tests here do not demonstrate the full request →
-worktree → patch → gate → test → regression → merge pipeline has ever run
-successfully against a real Ollama model — and, per the next finding, that
-absence of end-to-end testing is not a theoretical concern.
+**`ReliabilityOrchestrator.run()` now has an end-to-end regression test in
+the working tree.** `tests/test_reliability_engine.py` constructs a
+disposable git repository, calls the production entry point with a
+realistic edit request, uses a deterministic engine at the model boundary,
+and verifies the request -> worktree -> planning -> analysis -> patch ->
+static validation -> pytest -> regression -> merge -> cleanup pipeline.
+The test also records AutoCorp's own git status before and after the run
+and asserts it is unchanged, proving the merge applies only to the
+disposable target repository.
 
 **Concrete risks found by reading the code, each independently
 re-verified across two sessions (2026-07-29, 2026-07-30) — not just
@@ -303,9 +313,9 @@ re-stated from a prior investigation or a prior session's own findings
    This bug — sitting in a core safety path, undetected across two rounds
    of "independent verification" until a third pass specifically re-checked
    every call site of `StaticGate.run()` rather than only the one already
-   known — is itself concrete evidence for why `ReliabilityOrchestrator.run()`
-   needs a real end-to-end test before this subsystem is trusted with real
-   edits (see the production-readiness verdict below).
+   known — is concrete evidence for why the new
+   `ReliabilityOrchestrator.run()` end-to-end test is required before this
+   subsystem is trusted with real edits.
 3. `DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` both do a
    full, uncached repo rescan on every single `run()` call. **Confirmed,
    not fixed** (a caching layer is a real design change, not a safe,
@@ -326,9 +336,10 @@ re-stated from a prior investigation or a prior session's own findings
    second instance creating a worktree for the same subtask id.
 
 **Staged integration plan, if the repository owner decides to proceed**
-(steps 2, 4, and 5 are now complete on their own merits as general
-code-quality fixes; completing them is not the same as authorizing
-integration, which remains a separate, still-open owner decision): ~~(1)
+(steps 2, 4, 5, and 6 are now complete on their own merits as general
+code-quality fixes and verification; completing them is not the same as
+authorizing a dedicated CLI integration, which remains a separate,
+still-open owner decision): ~~(1)
 triage/commit-or-discard the unrelated Phase 1X/1Y and repair-redaction
 changes~~ — done, they no longer share this working tree with
 reliability_engine (see `CURRENT_PHASE.md`); ~~(2) rename
@@ -339,23 +350,21 @@ the three purely-additive, low-risk pieces first and separately — the
 worktree-ID-collision-destroys-blocked-state issue~~ — **done**, see above;
 ~~(5) the missing-tool-vs-real-issue distinction in `StaticGate`~~ — **done,
 2026-07-30**, see item 2 above (this one turned out to need an actual code
-fix, not just documentation, once the third call site was found); **(6) add
+fix, not just documentation, once the third call site was found); ~~(6) add
 a true end-to-end test of `ReliabilityOrchestrator.run()` before trusting it
-with real edits — still the single largest remaining gap, and per the
-2026-07-30 production-readiness review below, the reason integration is not
-recommended yet;** (7) only then add a CLI subcommand (following the
+with real edits~~ — **done in the working tree, 2026-07-30**; (7) only then
+add a dedicated Reliability Engine CLI subcommand (following the
 `cmd_workflow_test`/`cmd_build` pattern, confirming the existing
 `console.confirm("Proceed with this plan?")` gate at
 `orchestrator.py:172-174/199-200` stays intact and is not bypassed by
 `--auto`-style defaults without the owner's explicit intent). See
 `NEXT_STEPS.md` for the live status of this decision.
 
-### Production-readiness verdict (2026-07-30)
+### Production-readiness evidence update (2026-07-30)
 
-**Not ready for production integration.** Requested explicitly this date:
-"determine whether it is now production-ready... use repository evidence
-only... if not ready, do not force integration, explain exactly what
-remains and stop." The evidence:
+Requested explicitly this date: add real end-to-end verification for
+`ReliabilityOrchestrator.run()` and implement AutoCorp Chat. The new
+repository evidence:
 
 - Architecture is internally consistent and complete for the paths it
   implements: no dead files (every module is imported by at least one
@@ -368,28 +377,23 @@ remains and stop." The evidence:
   keep both as separate modes is a product decision for the repository
   owner (see step 8 of the original investigation's recommendation,
   unchanged) — not something resolved by this review.
-- **The decisive fact:** `ReliabilityOrchestrator.run()` has never been
-  exercised by any test, ever. A third bug (the `choose()` static-gate
-  misuse above) was found only by manually re-reading every call site of a
-  function already investigated twice — direct, current proof that
-  untested integration paths hide real, non-hypothetical bugs, and that
-  two prior "independent verification" passes were not sufficient to find
-  everything. Integrating this into the CLI now would expose a capability
-  that can write real changes to the user's actual repository
-  (`WorktreeSandbox.merge_to_main` applies a real diff via `git apply`)
-  through a path that has never once completed successfully end-to-end.
-  This is exactly the scenario `AI_ENGINEERING_CONSTITUTION.md` §4/§12 and
-  `ENGINEERING_RULES.md`'s "no fake verification" rule exist to prevent.
+- `ReliabilityOrchestrator.run()` is now exercised by
+  `tests/test_reliability_engine.py::TestReliabilityOrchestratorEndToEnd::
+  test_run_executes_disposable_edit_workflow_and_cleans_worktree`.
+  Focused verification in this session passed:
+  `.venv/bin/python -m pytest -W error -q tests/test_reliability_engine.py
+  tests/test_autocorp_chat.py` -> exit code 0, 69 passed.
+- The E2E test covers a real temporary git repository and verifies
+  worktree creation, planning, dependency analysis/blast-radius handling,
+  patch application, static validation, pytest validation, full regression
+  execution, merge behavior, cleanup, and no mutation of AutoCorp's own
+  repository status during the test.
 - Packaging is incomplete for a fresh checkout (`chromadb`/`PyYAML` not in
   the committed `requirements.txt`).
 
-**What remains before production integration could be recommended:** add a
-real end-to-end test of `ReliabilityOrchestrator.run()` (a disposable temp
-git repo, a trivial real request, a real or realistically-faked engine
-wired all the way through, asserting on the final status) — step 6 of the
-staged plan above — then re-run this same review. Steps 1–5 are now done;
-step 6 is the blocking gap. No CLI wiring was added this session; no part
-of `reliability_engine/` was committed.
+**What remains:** finish full required verification and commit the working
+tree if it passes. A dedicated Reliability Engine CLI entry point remains
+an owner/product decision; no such command is added in this working tree.
 
 ## Data flow (build loop, original architecture, still current)
 
@@ -414,6 +418,40 @@ launch target's own server against the copy → drive real HTTP requests →
 verify artifacts (ffprobe + SHA-256) → verify DB integrity →
 verify target production DB/git unchanged → remove disposable directory
 ```
+
+## Data flow (AutoCorp Chat, working tree)
+
+```
+chat prompt -> AutoCorpChatSession.handle ->
+[scanner | analyzer + project_planner | git | AI_ENGINEERING docs |
+ workflow-test/publish-test command guidance | repair-plan guidance] ->
+ChatResponse(text, optional commands, session history)
+```
+
+The chat session remembers only in-process conversation state and the most
+recent scan/analysis/plan objects. It does not persist chat memory to
+SQLite and does not call an LLM provider.
+
+## Verification Scope
+
+Maintained-source compile verification is performed by
+`scripts/verify_compileall.py`. It compiles exactly the Python files that
+are either tracked by git or non-ignored untracked files in the working
+tree. This intentionally follows repository ownership evidence:
+
+- `.gitignore` ignores `.venv/`, `workspace/`, `data/`, generated reports,
+  caches, and build outputs.
+- `pytest.ini` sets `testpaths = tests` and `norecursedirs = workspace
+  .venv data .git *.egg-info __pycache__`.
+- `brains/analyzer.py` excludes `workspace/` and `data/` from AutoCorp's
+  architecture-level analysis because `workspace/` contains generated
+  output rather than AutoCorp's own source.
+
+The bare command `python -m compileall .` is not a valid repository-level
+quality gate here: it recurses into ignored virtualenv packages, generated
+workspace apps, disposable Reliability worktrees, runtime data, and build
+artifacts. Failures in those areas are classified separately and do not
+represent syntax errors in maintained AutoCorp source.
 
 ## Extension points
 

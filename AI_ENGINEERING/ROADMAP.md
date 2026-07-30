@@ -61,15 +61,11 @@ an owner decision, not one this document makes.
 
 ## Current phase
 
-See `CURRENT_PHASE.md` for the live snapshot. As of 2026-07-29, the
-repository owner reviewed the three uncommitted efforts previously
-described here and gave explicit direction on each: keep Phase 1X/1Y
-iterating uncommitted; the Quick Podcast CLI wiring is now committed
-(`53f0d7d`); the Reliability Engine has been fully investigated with a
-staged integration plan delivered, but integration itself remains
-unauthorized. **The current phase is still not complete and should not be
-described as such** — Phase 1X/1Y and the Reliability Engine integration
-decision are both still open.
+See `CURRENT_PHASE.md` for the live snapshot. As of the 2026-07-30 working
+tree, the Reliability Engine now has an end-to-end
+`ReliabilityOrchestrator.run()` test against a disposable git repository,
+and AutoCorp Chat is implemented as an uncommitted CLI subcommand. Official
+phase completion remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
 
 ## Remaining phases (repository evidence only)
 
@@ -80,10 +76,10 @@ The only "remaining" work with direct repository evidence:
    `publish-test` wiring.
 2. ~~Commit or discard the `quick-podcast` CLI wiring~~ — **done**,
    committed as `53f0d7d`.
-3. **Reliability Engine integration** — a concrete, evidence-based
-   proposal exists (`ARCHITECTURE.md`'s "Reliability Engine" section,
-   `NEXT_STEPS.md` item 3), but awaits owner review/approval before any of
-   its 7 staged steps are acted on.
+3. **Reliability Engine integration** — staged steps through E2E
+   verification are now present in the working tree. A dedicated
+   Reliability Engine CLI command remains an owner/product decision; no
+   such command exists yet.
 4. ~~Address the five documented Phase 1G gaps~~ — **corrected 2026-07-29:
    four of five were already fixed** by a commit predating the audit
    report being trusted at face value; the fifth (inline-redaction) was
