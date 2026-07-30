@@ -98,7 +98,7 @@ python autocorp.py --auto build "..."   # skip confirmations (allow-all gate)
 ### Current commands
 
 The build→plan→test→explain→memory loop above is the original core. The CLI
-has since grown to fifteen subcommands in total (run `python autocorp.py
+has since grown to sixteen subcommands in total (run `python autocorp.py
 --help` for the authoritative, current list — this table can drift, that
 command cannot). Not all of them are committed to `main` yet — see
 `AI_ENGINEERING/CURRENT_PHASE.md` for exactly which:
@@ -120,13 +120,15 @@ command cannot). Not all of them are committed to `main` yet — see
 | `workflow-test` | disposable end-to-end episode workflow test against a target repo (requires `--disposable`) |
 | `publish-test` | disposable publishing-pipeline validation, up to but never past a real external upload (requires `--disposable`) |
 | `quick-podcast` | generate a real, disposable, locally-listenable podcast episode against a target repo |
+| `chat` | repository-aware conversational interface over existing AutoCorp capabilities |
 
 `scan`/`analyze`/`plan-project`/`repair`/`propose-repair`/`live-readiness`/
-`live-test`/`workflow-test` all accept `--repo <path>` to safely target an
-external repository (never AutoCorp's own, and never without confirming the
-path is a real Git working tree first) — see `AI_ENGINEERING/ARCHITECTURE.md`
-for how that safety boundary works. See `AI_ENGINEERING/PHASES.md` for the
-full history of when and why each of these was added.
+`live-test`/`workflow-test`/`publish-test`/`chat` all accept `--repo <path>`
+to safely target an external repository (never AutoCorp's own, and never
+without confirming the path is a real Git working tree first) — see
+`AI_ENGINEERING/ARCHITECTURE.md` for how that safety boundary works. See
+`AI_ENGINEERING/PHASES.md` for the full history of when and why each of
+these was added.
 
 By default the assistant **confirms before every file write and command**
 (answer `y`, `n`, or `a` for "yes to all"). Generated projects land in

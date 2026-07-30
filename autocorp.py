@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, engine_registry, live_readiness, live_test, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, engine_registry, live_readiness, live_test, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -907,6 +907,44 @@ def cmd_quick_podcast(args) -> int:
     return 0 if report.overall == "PASS" else 1
 
 
+def _print_chat_response(response: chat.ChatResponse) -> None:
+    print(response.text)
+    if response.commands:
+        print()
+        print("Suggested Commands")
+        print("------------------")
+        for command in response.commands:
+            print(f"  {command}")
+
+
+def cmd_chat(args) -> int:
+    """Repository-aware conversational interface over AutoCorp capabilities."""
+    repo_root = _resolve_repo(args)
+    session = chat.AutoCorpChatSession(repo_root)
+    initial = " ".join(getattr(args, "prompt", []) or []).strip()
+    if initial:
+        _print_chat_response(session.handle(initial))
+        return 0
+
+    print("AutoCorp Chat")
+    print("=============")
+    print()
+    print("Ask about scans, health, blockers, workflow tests, repair plans, commits, branches, or prompts.")
+    print("Type 'exit' to quit.")
+    while True:
+        try:
+            request = input("autocorp chat> ").strip()
+        except EOFError:
+            print()
+            return 0
+        if request.casefold() in {"exit", "quit", "q"}:
+            return 0
+        if not request:
+            continue
+        _print_chat_response(session.handle(request))
+        print()
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -1062,6 +1100,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--disposable", action="store_true",
                     help="REQUIRED: enable disposable isolation (refuses without it)")
     sp.set_defaults(func=cmd_publish_test)
+
+    sp = sub.add_parser("chat",
+                        help="repository-aware AutoCorp Chat")
+    sp.add_argument("prompt", nargs="*",
+                    help="optional one-shot chat request")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.set_defaults(func=cmd_chat)
 
     sp = sub.add_parser("quick-podcast",
                         help="generate a real disposable CloneCast podcast for listening")
