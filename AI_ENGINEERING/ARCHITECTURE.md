@@ -10,22 +10,24 @@ originally designed or as a future phase might redesign it. See
 ## Directory structure (tracked, via `git ls-files`)
 
 ```
-autocorp.py           CLI entry point (argparse) - 18 subcommands after
-                       the discovery change
+autocorp.py           CLI entry point (argparse) - 19 subcommands after
+                       the Live Application Inspector change
 config.py              Single source of truth for model/endpoint/timeouts/
                        paths; APP_VERSION frozen at "0.1.0" since the first
                        commit (see PROJECT_MEMORY.md)
 pytest.ini             testpaths=tests; explicitly excludes workspace/,
                        .venv, data, .git, egg-info, __pycache__
 core/                  console.py, llm.py (Ollama client), orchestrator.py
-brains/                40 tracked .py files after the discovery change
+brains/                41 tracked .py files after the Live Application
+                       Inspector change
                        - see "brains/ inventory" below
 memory/                store.py - SQLite build/lesson memory
 safety/                executor.py, gate.py, watchdog_gate.py
 scripts/               repository verification helpers
 reliability_engine/     17 tracked modules - surgical edit/repair
                        orchestration with worktree isolation
-tests/                 98 tracked test_*.py files after the discovery change
+tests/                 99 tracked test_*.py files after the Live
+                       Application Inspector change
 ```
 
 Present in the working tree but **not tracked by git** (verify with `git
@@ -53,9 +55,11 @@ Subcommands committed before the discovery change (`git show ff31c1a:autocorp.py
 `plan-project`, `repair`, `propose-repair`, `live-readiness`, `live-test`,
 `workflow-test`, `publish-test`, `quick-podcast`, `chat`, `manage`.
 
-The discovery change adds `discover`, with `--json` and `--full` output
-modes. `autocorp.py` remains a thin CLI layer: all discovery logic lives
-in `brains/discovery.py`.
+The discovery change added `discover`, with `--json` and `--full` output
+modes. The Live Application Inspector change adds `inspect`, with
+`--json`, `--full`, `--port`, and `--timeout`. `autocorp.py` remains a
+thin CLI layer: discovery logic lives in `brains/discovery.py`, and live
+runtime inspection logic lives in `brains/live_inspector.py`.
 
 Gate selection (`_make_gate`) chooses between `AllowAllGate` (`--auto`),
 `WatchdogGate` (`--watchdog`), and the default interactive `ConfirmGate` —
@@ -83,6 +87,10 @@ Discovery-backed Chat routes (`show repository profile`, `show
 architecture`, `show frameworks`, `show languages`, `show build system`,
 `show testing`, `show deployment`, and `show engineering maturity`)
 delegate to `brains/discovery.py`.
+
+Live-inspection Chat routes (`what actually works`, `show live
+inspection`, and `show running application`) delegate to
+`brains/live_inspector.py`.
 
 ## `brains/` inventory (tracked)
 
@@ -114,6 +122,10 @@ Grouped by the era that introduced them (see `PHASES.md` for detail):
   CI/CD, operating-system signals, structure, documentation, license,
   architecture, application type, maturity, risks, unknown areas, and
   reusable command preferences.
+- **Live Application Inspector:** `live_inspector.py` composes Discovery
+  and Live Readiness with disposable runtime startup, safe HTTP GET
+  diagnostics, OpenAPI route inventory, read-only SQLite integrity checks,
+  feature-state reporting, and cleanup verification.
 - **Quick Podcast:** `quick_podcast.py` (thin orchestrator),
   `quick_podcast_runner.py` (the actual CloneCast-service-calling worker —
   see "Workflow engine" below for why this one runs as a separate process).
@@ -292,6 +304,51 @@ Every profile conclusion carries evidence and confidence. Missing evidence
 is rendered as `Unknown`, `Not enough evidence`, or `Additional inspection
 required`; discovery does not guess. `--json` emits machine-readable JSON
 without the workspace header so downstream tools can parse it directly.
+
+## Live Application Inspector
+
+`brains/live_inspector.py` answers "what actually works?" by inspecting a
+running application, not only repository files. It remains target-safe:
+startup execution happens from a temporary disposable copy of the target
+repository, while dependency imports may use the target repository's
+existing virtualenv if present. The target repository itself is not edited.
+
+The inspector composes existing evidence first:
+
+1. `discovery.discover_repository(repo_path)` for repository profile,
+   dependencies, frameworks, and preferred command metadata.
+2. `live_readiness.run_live_readiness(repo_path)` for static readiness
+   and production-source checks.
+3. `scanner.run_scan(repo_path)` for developer workspace state.
+
+It then detects entry points from AST/config evidence: module-level
+FastAPI apps, FastAPI factories returning app instances, Flask apps,
+Django `manage.py`, CLI `__main__` blocks, `[project.scripts]` /
+`console_scripts`, and uvicorn/gunicorn targets found in manifests.
+
+Runtime inspection is deliberately non-mutating. For web applications it
+launches the selected target on localhost with a timeout, captures
+stdout/stderr, queries `/`, `/health`, `/docs`, `/openapi.json`, parses
+OpenAPI routes, and only exercises additional safe GET routes that do not
+require path parameters and do not contain mutating keywords. It records
+404/500/import/dependency/startup failures instead of rounding them up to
+success. For CLI applications it runs the detected entry point with
+`--help`.
+
+Database inspection is read-only. SQLite files in maintained-source scope
+are opened with `mode=ro`, checked with `PRAGMA integrity_check`,
+`PRAGMA foreign_key_check`, and `PRAGMA user_version`, and compared
+against migrations/alembic evidence. Runtime/model/audio/output
+directories are excluded from the disposable source copy and from
+Discovery's maintained-source inference boundary, avoiding the CloneCast
+model-cache copy failure found during the first real smoke run.
+
+The manager now incorporates the Live Inspector. Runtime startup failures,
+failing safe endpoints, and broken feature checks become manager tasks
+before static readiness/planner work at the same priority. Manager scoring
+is split into Repository Quality, Running Application, Production
+Readiness, and Developer Workspace; a dirty working tree affects Developer
+Workspace, not repository quality by itself.
 
 ## Reliability Engine (committed, not exposed by a dedicated CLI command)
 

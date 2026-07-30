@@ -574,3 +574,63 @@ verification passed: `git diff --check` -> exit code 0;
 maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
 -> exit code 0, 985 tests collected with the existing xfail visible in
 progress output.
+
+### 2026-07-30 — Live Application Inspector
+
+Explicitly requested: add a Live Application Inspector so AutoCorp can
+answer what actually works in a running application, not only what files
+exist in a repository.
+
+**Live inspector added.** `brains/live_inspector.py` composes
+`discovery.discover_repository()` and `live_readiness.run_live_readiness()`
+with disposable runtime startup. It detects FastAPI apps/factories, Flask
+apps, Django/CLI entry points, console scripts, and uvicorn/gunicorn
+targets; launches from a temporary source copy with timeout-protected
+subprocess handling; captures stdout/stderr; queries safe HTTP endpoints;
+parses OpenAPI routes; tests safe GET routes; inspects SQLite databases
+read-only; reports feature states as PASS/FAIL/NOT CONFIGURED/UNKNOWN;
+and verifies disposable cleanup.
+
+**CLI, manager, and Chat integrated.** `autocorp inspect` supports text,
+`--full`, and `--json` output. The Engineering Manager now incorporates
+Live Inspector evidence so actual startup, endpoint, database, and feature
+failures can outrank static repository heuristics. Manager scoring is
+split into Repository Quality, Running Application, Production Readiness,
+and Developer Workspace so a dirty working tree no longer directly
+reduces repository quality. AutoCorp Chat routes "what actually works" and
+live-inspection prompts through the inspector.
+
+**Discovery improved.** Discovery now reads Python tooling and entrypoint
+evidence from `setup.cfg`, `setup.py`, `pytest.ini`, `ruff.toml`, and
+`mypy.ini`, recognizes pytest evidence in manifests/config, prefers
+console-script and FastAPI entrypoint evidence when analyzer root files do
+not provide an entry point, and excludes runtime/output artifacts from
+maintained-source inference.
+
+**Real CloneCast smoke verification.** A first CloneCast `inspect --json`
+attempt found a copy-boundary bug: `runtime/` model/audio artifacts were
+copied into `/tmp`, causing `Errno 28 No space left on device` and a
+traceback. The implementation now excludes runtime/output/artifact
+directories and converts copy failures into structured reports. The
+follow-up CloneCast run exited 0, produced parseable JSON, launched
+`clonecast.web_app:create_app` with uvicorn `--factory`, discovered 126
+routes, reported `running_application=PASS`, and reported
+`production_readiness=NEEDS_ATTENTION` because read-only SQLite inspection
+found 9 foreign-key violations in `db/cloneshow.db`. CloneCast's
+pre-existing dirty git status was unchanged before/after the run.
+
+**Tests added.** `tests/test_live_inspector.py` covers FastAPI startup,
+FastAPI factory startup, Flask-style startup, CLI startup, broken startup,
+missing dependency, disposable copy failure, database open failure,
+missing migrations, SQLite foreign-key failure, 404/500 endpoint
+reporting, CloneCast UNKNOWN/NOT CONFIGURED feature states, console-script
+entrypoint detection, CLI JSON output, manager runtime prioritization, and
+Chat live-inspection routing. Focused verification passed:
+`.venv/bin/python -m pytest -W error -q tests/test_live_inspector.py
+tests/test_manager.py tests/test_discovery.py tests/test_autocorp_chat.py`
+-> exit code 0, 56 passed. Full required verification passed:
+`git diff --check` -> exit code 0;
+`.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
+maintained Python files compiled; `.venv/bin/python -m pytest -W error
+-q` -> exit code 0, 1002 tests collected with the existing xfail visible
+in progress output.

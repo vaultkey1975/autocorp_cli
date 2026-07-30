@@ -87,7 +87,9 @@ def test_manager_production_readiness_scores_explain_deductions(tmp_path):
     text = manager.render_production(report)
 
     assert "Production Readiness" in text
-    assert "Repository Health:" in text
+    assert "Repository Quality:" in text
+    assert "Running Application:" in text
+    assert "Developer Workspace:" in text
     assert "Testing:" in text
     assert "Safety:" in text
     assert "Documentation:" in text
@@ -110,7 +112,7 @@ def test_manager_handles_readiness_failure_without_fake_success(monkeypatch, tmp
     assert report.readiness is None
     assert report.readiness_error == "readiness exploded"
     assert "readiness exploded" in text
-    assert "Production: 35/100" in text
+    assert "live readiness scanner failed" in text
 
 
 def test_manager_parser_registers_manage_command():

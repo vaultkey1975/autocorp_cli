@@ -7,38 +7,30 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Owner review of the Universal Repository Discovery Engine.**
+1. **Owner review of the Live Application Inspector.**
 
-   Required verification has passed:
-
-   ```
-   git diff --check
-   ```
-
-   Result: exit code 0.
+   Focused verification has passed:
 
    ```
-   .venv/bin/python scripts/verify_compileall.py
+   .venv/bin/python -m pytest -W error -q tests/test_live_inspector.py tests/test_manager.py tests/test_discovery.py tests/test_autocorp_chat.py
    ```
 
-   Result: exit code 0, 169 maintained Python files compiled.
+   Result: exit code 0, 56 passed.
 
-   ```
-   .venv/bin/python -m pytest -W error -q tests/test_discovery.py tests/test_manager.py tests/test_autocorp_chat.py
-   ```
+   Manual `inspect --json` smoke checks against `/home/larry/autocorp_cli`
+   and `/home/larry/clonecast` each produced parseable JSON. The CloneCast
+   smoke launched `clonecast.web_app:create_app --factory`, discovered 126
+   routes, and preserved CloneCast's pre-existing dirty git status
+   unchanged. It reported CloneCast production readiness as
+   `NEEDS_ATTENTION` due to 9 read-only SQLite foreign-key violations in
+   `db/cloneshow.db`.
 
-   Result: exit code 0, 39 passed.
-
-   Manual `discover` smoke checks for text, `--full`, and `--json` modes
-   against `/home/larry/autocorp_cli` each exited 0. The JSON output was
-   parsed successfully with `.venv/bin/python -m json.tool`.
-
-   ```
-   .venv/bin/python -m pytest -W error -q
-   ```
-
-   Result: exit code 0, 985 tests collected, strict run completed
-   successfully with the existing xfail visible in progress output.
+   Required final verification has passed:
+   `git diff --check` -> exit code 0;
+   `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
+   maintained Python files compiled; `.venv/bin/python -m pytest -W error
+   -q` -> exit code 0, 1002 tests collected with the existing xfail
+   visible in progress output.
 
 2. **Do not push without owner instruction.**
    The owner requested commits if verification passes and explicitly said
@@ -72,6 +64,10 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 - Discovery currently uses deterministic manifest/config/source evidence.
   It does not execute package managers or CI commands; real build/test
   execution remains a separate workflow stage.
+- Live Application Inspector safely launches detected apps from a
+  disposable source copy, but it only performs non-mutating HTTP GET
+  diagnostics. Mutating workflow assertions still require existing
+  workflow-test/publish-test disposable infrastructure.
 
 ## Known Bugs
 
@@ -83,8 +79,9 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   workflow/publishing validation from reaching a full successful PASS, but
   it is not an AutoCorp implementation defect.
 - No current AutoCorp implementation bug is documented here after the
-  production-hardening commit `99db951`, manager commit `ff31c1a`, and the
-  discovery focused tests run in this session.
+  production-hardening commit `99db951`, manager commit `ff31c1a`,
+  discovery commit `cc89467`, and the Live Inspector focused tests run in
+  this session.
 
 ## Future Improvements
 
@@ -100,6 +97,9 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   in the repository.
 - Expand discovery confidence with real command execution only when a safe,
   explicit verification mode is designed.
+- Extend project-specific feature inspectors beyond CloneCast when
+  repository evidence identifies stable, safe diagnostic routes for other
+  application domains.
 
 ## Blocked Work
 

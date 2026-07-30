@@ -32,6 +32,9 @@ The repository's evidenced trajectory since that original vision has been:
 6. Discover unknown repositories before management/planning by building an
    evidence-backed repository profile even when no `AI_ENGINEERING/`
    documents exist.
+7. Inspect running applications safely, from disposable source copies, so
+   AutoCorp can answer what actually launches, responds, and fails at
+   runtime.
 
 ## Architecture (summary)
 
@@ -40,14 +43,14 @@ See `ARCHITECTURE.md` for full detail. In brief:
 ```
 autocorp.py (CLI / argparse)
   ├── core/            orchestrator, console, Ollama client
-  ├── brains/          40 tracked .py files after the discovery change:
+  ├── brains/          41 tracked .py files after the Live Inspector change:
   │                    original
   │                    brains, the engine
   │                    abstraction + repair/self-healing pipeline, and the
   │                    Phase 1A–1Y repository-intelligence /
   │                    CloneCast-validation infrastructure, Chat, the
-  │                    Autonomous Engineering Manager, and Universal
-  │                    Repository Discovery
+  │                    Autonomous Engineering Manager, Universal
+  │                    Repository Discovery, and Live Application Inspector
   ├── memory/          SQLite-backed build/lesson memory (store.py)
   ├── safety/          Executor + CommandGate + WatchdogGate seam
   └── reliability_engine/   committed source/tests; dedicated CLI
@@ -75,8 +78,9 @@ See `CURRENT_PHASE.md` for the live snapshot. Repository evidence now
 includes a committed Reliability Engine end-to-end
 `ReliabilityOrchestrator.run()` test, a committed AutoCorp Chat CLI
 subcommand, the production-hardening commit `99db951`, and committed
-Autonomous Engineering Manager `ff31c1a`. The current work adds Universal
-Repository Discovery (`autocorp discover` / `brains/discovery.py`).
+Autonomous Engineering Manager `ff31c1a`, and Universal Repository
+Discovery `cc89467`. The current work adds Live Application Inspector
+(`autocorp inspect` / `brains/live_inspector.py`).
 Official phase completion remains owner-gated by
 `PHASE_COMPLETION_POLICY.md`.
 
@@ -116,10 +120,18 @@ The only "remaining" work with direct repository evidence:
    repositories, and Chat profile routes. Focused verification passed;
    full local verification passed. Official phase completion remains
    owner-gated by `PHASE_COMPLETION_POLICY.md`.
+8. **Live Application Inspector** — implemented by `autocorp inspect`,
+   `brains/live_inspector.py`, runtime startup from
+   disposable source copies, safe HTTP/OpenAPI diagnostics, read-only
+   SQLite integrity checks, CloneCast feature-state reporting, manager
+   runtime prioritization, and Chat live-inspection routes. Focused
+   verification, full local verification, and real CloneCast smoke
+   verification have passed. Official phase completion remains owner-gated
+   by `PHASE_COMPLETION_POLICY.md`.
 
 ## FUTURE PLANNING REQUIRED
 
-Beyond the seven items above, this repository contains **no evidence** —
+Beyond the eight items above, this repository contains **no evidence** —
 no docstring, no commit, no branch, no report — describing what comes
 next. Specifically unknown from repository evidence:
 

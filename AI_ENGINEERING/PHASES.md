@@ -563,12 +563,62 @@ docstring header.
 
 ---
 
+## ERA 9 — Live Application Inspector
+
+- **Purpose:** Extend AutoCorp from static repository understanding to
+  runtime application inspection: determine whether an application can
+  actually launch, respond, expose routes, and pass read-only database
+  checks.
+- **Deliverables:** `brains/live_inspector.py`, `autocorp.py` `inspect`
+  subcommand wiring, Discovery improvements for Python tooling and entry
+  point evidence, manager integration for runtime-prioritized next tasks,
+  Chat live-inspection routes, and `tests/test_live_inspector.py`.
+- **Capabilities:** FastAPI app/factory detection, Flask app detection,
+  Django/CLI/console-script/server-target detection, disposable source-copy
+  startup, timeout-protected subprocess handling, stdout/stderr capture,
+  safe HTTP checks for `/`, `/health`, `/docs`, `/openapi.json`, OpenAPI
+  route inventory, safe GET endpoint diagnostics, read-only SQLite
+  integrity/foreign-key/schema/migration inspection, CloneCast-style
+  feature states (PASS/FAIL/NOT CONFIGURED/UNKNOWN), cleanup
+  verification, and separate Repository Quality / Running Application /
+  Production Readiness / Developer Workspace signals.
+- **Safety Evidence:** The real CloneCast smoke run used a disposable
+  source copy and target venv interpreter, launched
+  `clonecast.web_app:create_app` via uvicorn with `--factory`, discovered
+  126 routes, and left CloneCast's pre-existing dirty git status unchanged
+  before/after the run. The first attempted CloneCast smoke exposed a
+  copy-boundary bug: `runtime/` model/audio artifacts were too large for
+  `/tmp`. The implementation was corrected to exclude runtime/output/model
+  artifacts and to report copy failures structurally instead of emitting a
+  traceback.
+- **Testing:** Focused verification passed:
+  `.venv/bin/python -m pytest -W error -q tests/test_live_inspector.py
+  tests/test_manager.py tests/test_discovery.py tests/test_autocorp_chat.py`
+  -> exit code 0, 56 passed.
+- **Verification:** Manual CLI smoke checks for `inspect --json` against
+  `/home/larry/autocorp_cli` and `/home/larry/clonecast` each exited 0 and
+  produced JSON parseable by `.venv/bin/python -m json.tool`. The
+  CloneCast smoke reported `running_application=PASS` and
+  `production_readiness=NEEDS_ATTENTION` due to 9 read-only SQLite
+  foreign-key violations in `db/cloneshow.db`. Full verification passed:
+  `git diff --check` -> exit code 0;
+  `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
+  maintained Python files compiled; `.venv/bin/python -m pytest -W error
+  -q` -> exit code 0, 1002 tests collected with the existing xfail visible
+  in progress output.
+- **Completion Evidence:** Implemented and locally verified. Per
+  `PHASE_COMPLETION_POLICY.md`, do not describe it as owner-approved phase
+  completion unless the owner accepts that state.
+
+---
+
 ## FUTURE PLANNING REQUIRED
 
 No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the
 Reliability Engine's possible dedicated integration, committed AutoCorp
 Chat, the Autonomous Engineering Manager, and the Universal Repository
-Discovery Engine is described anywhere in this repository —
+Discovery Engine, and the Live Application Inspector is described
+anywhere in this repository —
 no docstring, no commit, no branch, no report. Specifically:
 
 - What comes after Phase 1Y (assuming CloneCast's audio-clipping issue is

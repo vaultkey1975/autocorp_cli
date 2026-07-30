@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import ast
 from dataclasses import dataclass, field
 
 from brains import analyzer, scanner
@@ -37,7 +38,10 @@ _LANG_EXTS = {
 
 _TEXT_EXTS = set(_LANG_EXTS) | {".txt", ".md", ".toml", ".json", ".yaml", ".yml", ".xml", ".gradle", ".ini", ".cfg", ".csproj"}
 _MAX_READ = 2 * 1024 * 1024
-_DISCOVERY_IGNORE_DIRS = set(scanner.IGNORE_DIRS) | {"workspace", "data", ".coverage", "htmlcov"}
+_DISCOVERY_IGNORE_DIRS = set(scanner.IGNORE_DIRS) | {
+    "workspace", "data", "runtime", "output", "outputs", "artifacts",
+    ".coverage", "htmlcov",
+}
 
 
 @dataclass(frozen=True)
@@ -205,7 +209,7 @@ def discover_repository(repo_path: str, store_profile: bool = True) -> Repositor
         preferred_build_command=_preferred_build(build_process, manifests),
         preferred_lint_command=_preferred_lint(lint_tools, type_checkers, manifests),
         preferred_package_manager=package_managers[0].value if package_managers else "Unknown",
-        preferred_entry_point=analysis.entry_points[0] if analysis.entry_points else "Unknown",
+        preferred_entry_point=_preferred_entry_point(repo_path, analysis, files, manifests),
         preferred_documentation=_preferred_docs(docs),
     )
     if store_profile:
@@ -302,7 +306,9 @@ def _inventory(repo_path: str) -> list[str]:
 
 def _manifest_text(repo_path: str) -> dict[str, str]:
     names = {
-        "requirements.txt", "requirements-dev.txt", "pyproject.toml", "package.json",
+        "requirements.txt", "requirements-dev.txt", "pyproject.toml",
+        "setup.cfg", "setup.py", "pytest.ini", "ruff.toml", "mypy.ini",
+        "package.json",
         "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "build.gradle.kts",
         "Dockerfile", "docker-compose.yml", "compose.yml", "Makefile", "Taskfile.yml",
         ".gitlab-ci.yml", "azure-pipelines.yml", "README.md", "README.rst",
@@ -429,7 +435,7 @@ def _test_frameworks(files: list[str], texts: dict[str, str], analysis) -> list[
     test_files = [rel for rel in files if "/test" in f"/{rel}".lower() or rel.lower().startswith("test")]
     if test_files and not findings:
         findings.append(DiscoveryFinding("Unknown test framework", tuple(test_files[:4]), 50))
-    checks = [("Jest", "jest"), ("Vitest", "vitest"), ("JUnit", "junit"), ("xUnit", "xunit"), ("NUnit", "nunit"), ("Go test", "_test.go")]
+    checks = [("pytest", "pytest"), ("Jest", "jest"), ("Vitest", "vitest"), ("JUnit", "junit"), ("xUnit", "xunit"), ("NUnit", "nunit"), ("Go test", "_test.go")]
     for label, needle in checks:
         ev = [rel for rel, text in texts.items() if needle.lower() in text.lower()]
         if ev or any(needle in rel for rel in files):
@@ -699,6 +705,31 @@ def _preferred_docs(docs) -> str:
             return item.evidence[0]
         if item.value == "docs/ present":
             return "docs/"
+    return "Unknown"
+
+
+def _preferred_entry_point(repo_path: str, analysis, files: list[str], texts: dict[str, str]) -> str:
+    if analysis.entry_points:
+        return analysis.entry_points[0]
+    for rel, text in texts.items():
+        name = os.path.basename(rel)
+        if name == "pyproject.toml" and "[project.scripts]" in text:
+            return "pyproject.toml [project.scripts]"
+        if name in {"setup.cfg", "setup.py"} and "console_scripts" in text:
+            return f"{rel} console_scripts"
+    for rel in files:
+        if not rel.endswith(".py"):
+            continue
+        content = _read_file(os.path.join(repo_path, rel))
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                func = node.value.func
+                if isinstance(func, ast.Name) and func.id == "FastAPI":
+                    return f"{rel}:FastAPI"
     return "Unknown"
 
 

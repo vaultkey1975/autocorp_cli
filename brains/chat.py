@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from brains import analyzer, discovery, manager, project_planner, scanner
+from brains import analyzer, discovery, live_inspector, manager, project_planner, scanner
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,9 @@ class AutoCorpChatSession:
             return response
         lower = message.casefold()
 
-        if _matches(lower, "show repository profile", "repository profile"):
+        if _matches(lower, "what actually works", "show live inspection", "live inspection", "show running application", "running application"):
+            response = self._live_inspection()
+        elif _matches(lower, "show repository profile", "repository profile"):
             response = self._discovery_profile()
         elif _matches(lower, "show architecture", "architecture"):
             response = self._discovery_section("architecture")
@@ -300,6 +302,10 @@ class AutoCorpChatSession:
         report = self._manager_report()
         return ChatResponse("manager_production", manager.render_production(report), commands=report.production_commands)
 
+    def _live_inspection(self) -> ChatResponse:
+        report = live_inspector.inspect_application(self.repo_root, timeout=5)
+        return ChatResponse("live_inspection", live_inspector.render_inspection(report, full=False))
+
     def _profile(self):
         return discovery.discover_repository(self.repo_root, store_profile=True)
 
@@ -339,6 +345,7 @@ class AutoCorpChatSession:
             "- show engineering summary / show next task",
             "- show repository profile / architecture / frameworks / languages",
             "- show build system / testing / deployment / engineering maturity",
+            "- what actually works / show live inspection / show running application",
             "- summarize today's work",
             "- explain this error: <text>",
             "- run a disposable workflow",

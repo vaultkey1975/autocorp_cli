@@ -16,11 +16,12 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from brains import analyzer, discovery, engine_registry, live_readiness, project_planner, scanner
+from brains import analyzer, discovery, engine_registry, live_inspector, live_readiness, project_planner, scanner
 from memory import store
 
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+_CATEGORY_ORDER = {"runtime": 0, "readiness:production_blockers": 1, "readiness:workflow": 2}
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,8 @@ class ManagerReport:
     reliability_engine_status: str = "Unable to determine from repository evidence."
     discovery_profile: discovery.RepositoryProfile | None = None
     discovery_source: str = "Unable to determine from repository evidence."
+    live_inspection: live_inspector.LiveInspectionReport | None = None
+    live_inspection_error: str = ""
 
 
 def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerReport:
@@ -102,17 +105,18 @@ def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerRepo
         discovery_source = "Auto-discovered during manager run"
     plan = project_planner.run_project_plan(repo_path)
     readiness, readiness_error = _readiness(repo_path)
+    inspection, inspection_error = _inspection(repo_path)
     git_recent = tuple(_git_lines(repo_path, ["log", "--oneline", "--max-count=5"]))
     git_status = "\n".join(_git_lines(repo_path, ["status", "--short", "--branch"]))
     current_phase = _current_phase(repo_path)
-    healthy = _healthy(scan, analysis, plan, readiness)
-    broken = _broken(plan, readiness, readiness_error)
+    healthy = _healthy(scan, analysis, plan, readiness, inspection)
+    broken = _broken(plan, readiness, readiness_error, inspection, inspection_error)
     highest_risk = _highest_risk_code(analysis)
     reliability_status = _reliability_status(autocorp_root)
 
-    tasks = _tasks(repo_path, plan, readiness, reliability_status)
+    tasks = _tasks(repo_path, plan, readiness, reliability_status, inspection, inspection_error)
     roadmap = _roadmap(tasks, plan, readiness, current_phase, reliability_status)
-    scores = _scores(scan, analysis, plan, readiness, readiness_error, current_phase)
+    scores = _scores(scan, analysis, plan, readiness, readiness_error, current_phase, inspection, inspection_error)
     next_task = _next_task(tasks)
 
     repo_q = shlex.quote(repo_path)
@@ -145,6 +149,8 @@ def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerRepo
         reliability_engine_status=reliability_status,
         discovery_profile=profile,
         discovery_source=discovery_source,
+        live_inspection=inspection,
+        live_inspection_error=inspection_error,
     )
 
 
@@ -237,6 +243,13 @@ def _readiness(repo_path: str):
         return None, str(exc) or exc.__class__.__name__
 
 
+def _inspection(repo_path: str):
+    try:
+        return live_inspector.inspect_application(repo_path, timeout=5), ""
+    except Exception as exc:
+        return None, str(exc) or exc.__class__.__name__
+
+
 def _profile_from_dict(data: dict) -> discovery.RepositoryProfile:
     # Re-run discovery if a historical profile is malformed. This keeps the
     # manager useful while still preferring stored metadata for known repos.
@@ -321,7 +334,7 @@ def _read_limited(path: str, limit: int) -> str:
         return ""
 
 
-def _healthy(scan_result, analysis_result, plan_result, readiness_report) -> tuple[str, ...]:
+def _healthy(scan_result, analysis_result, plan_result, readiness_report, inspection_report) -> tuple[str, ...]:
     items = []
     if scan_result.working_tree == "clean":
         items.append("Git working tree is clean.")
@@ -335,10 +348,12 @@ def _healthy(scan_result, analysis_result, plan_result, readiness_report) -> tup
         items.append("Project planner found no critical or high-priority actions.")
     if readiness_report and readiness_report.overall_status in {"pass", "ready"}:
         items.append(f"Live readiness scanner status: {readiness_report.overall_status}.")
+    if inspection_report and inspection_report.application_launches:
+        items.append(f"Live application inspector launch status: {inspection_report.launch_status}.")
     return tuple(items or ("Unable to determine healthy areas from repository evidence.",))
 
 
-def _broken(plan_result, readiness_report, readiness_error: str) -> tuple[str, ...]:
+def _broken(plan_result, readiness_report, readiness_error: str, inspection_report, inspection_error: str) -> tuple[str, ...]:
     items = list(plan_result.blockers)
     items.extend(f"[{a.priority}] {a.title}: {a.reason}" for a in plan_result.actions if a.priority in {"critical", "high"})
     if readiness_report:
@@ -346,6 +361,13 @@ def _broken(plan_result, readiness_report, readiness_error: str) -> tuple[str, .
         items.extend(readiness_report.blockers)
     if readiness_error:
         items.append(f"Live readiness scanner failed: {readiness_error}")
+    if inspection_report:
+        if not inspection_report.application_launches:
+            items.append(f"[runtime] Application does not launch: {inspection_report.launch_status}")
+        items.extend(f"[runtime] GET {r.path}: {r.status_code or r.error}" for r in inspection_report.routes_failing)
+        items.extend(f"[runtime] {f.name}: {f.reason}" for f in inspection_report.broken_features)
+    if inspection_error:
+        items.append(f"Live application inspector failed: {inspection_error}")
     return tuple(items or ("No critical/high blockers found by scanner, analyzer, planner, or live readiness.",))
 
 
@@ -374,8 +396,25 @@ def _reliability_status(autocorp_root: str) -> str:
     return "Unable to determine from repository evidence."
 
 
-def _tasks(repo_path: str, plan_result, readiness_report, reliability_status: str) -> tuple[ManagerTask, ...]:
+def _tasks(repo_path: str, plan_result, readiness_report, reliability_status: str, inspection_report, inspection_error: str) -> tuple[ManagerTask, ...]:
     tasks: list[ManagerTask] = []
+    if inspection_report:
+        tasks.extend(_tasks_from_inspection(repo_path, inspection_report))
+    elif inspection_error:
+        tasks.append(ManagerTask(
+            priority="critical",
+            category="runtime",
+            title="Live Application Inspector failed",
+            reason=inspection_error,
+            evidence=(inspection_error,),
+            next_step="Fix the inspector failure or the target precondition that prevented runtime inspection.",
+            recommended_ai="Codex",
+            ai_reason="Runtime inspection failures require local reproduction and code-level debugging.",
+            local_model_safe=False,
+            use_disposable_mode=True,
+            review_before_merge=True,
+            commands=(f"{shlex.quote(sys.executable)} autocorp.py inspect --repo {shlex.quote(repo_path)} --full",),
+        ))
     for action in plan_result.actions:
         tasks.append(_task_from_action(repo_path, action, reliability_status))
     if readiness_report:
@@ -396,7 +435,59 @@ def _tasks(repo_path: str, plan_result, readiness_report, reliability_status: st
                     review_before_merge=True,
                     commands=(f"{shlex.quote(sys.executable)} autocorp.py live-readiness --repo {shlex.quote(repo_path)}",),
                 ))
-    return tuple(sorted(tasks, key=lambda t: (_PRIORITY_ORDER.get(t.priority, 99), t.category, t.title)))
+    return tuple(sorted(tasks, key=lambda t: (_PRIORITY_ORDER.get(t.priority, 99), _CATEGORY_ORDER.get(t.category, 50), t.category, t.title)))
+
+
+def _tasks_from_inspection(repo_path: str, inspection_report) -> list[ManagerTask]:
+    tasks = []
+    command = f"{shlex.quote(sys.executable)} autocorp.py inspect --repo {shlex.quote(repo_path)} --full"
+    if not inspection_report.application_launches:
+        tasks.append(ManagerTask(
+            priority="critical",
+            category="runtime",
+            title="Application startup fails",
+            reason=inspection_report.launch_status,
+            evidence=(inspection_report.startup_exception or inspection_report.launch_status,),
+            next_step="Fix the detected launch target or startup exception, then rerun live inspection.",
+            recommended_ai="Codex",
+            ai_reason="Startup failures need repository edits and local runtime verification.",
+            local_model_safe=False,
+            use_disposable_mode=True,
+            review_before_merge=True,
+            commands=(command,),
+        ))
+    for result in inspection_report.routes_failing:
+        priority = "critical" if result.status_code >= 500 or result.status == "ERROR" else "high"
+        tasks.append(ManagerTask(
+            priority=priority,
+            category="runtime",
+            title=f"Live endpoint failing: {result.method} {result.path}",
+            reason=result.error or f"HTTP {result.status_code}",
+            evidence=(f"{result.method} {result.path}: {result.status_code or result.error}",),
+            next_step="Fix the failing live endpoint and rerun live inspection.",
+            recommended_ai="Codex",
+            ai_reason="Endpoint failures require code changes plus runtime verification.",
+            local_model_safe=False,
+            use_disposable_mode=True,
+            review_before_merge=True,
+            commands=(command,),
+        ))
+    for feature in inspection_report.broken_features:
+        tasks.append(ManagerTask(
+            priority="critical",
+            category="runtime",
+            title=f"Broken live feature: {feature.name}",
+            reason=feature.reason,
+            evidence=feature.evidence,
+            next_step="Fix the feature path that failed during live inspection.",
+            recommended_ai="Codex",
+            ai_reason="Feature failures need application-specific debugging and verification.",
+            local_model_safe=False,
+            use_disposable_mode=True,
+            review_before_merge=True,
+            commands=(command,),
+        ))
+    return tasks
 
 
 def _task_from_action(repo_path: str, action, reliability_status: str) -> ManagerTask:
@@ -488,14 +579,16 @@ def _next_task(tasks: tuple[ManagerTask, ...]) -> ManagerTask | None:
     return tasks[0] if tasks else None
 
 
-def _scores(scan_result, analysis_result, plan_result, readiness_report, readiness_error: str, current_phase: str):
+def _scores(scan_result, analysis_result, plan_result, readiness_report, readiness_error: str, current_phase: str, inspection_report, inspection_error: str):
     return (
-        _repository_score(scan_result, plan_result),
+        _repository_quality_score(plan_result),
+        _running_application_score(inspection_report, inspection_error),
+        _production_score(readiness_report, readiness_error, inspection_report),
+        _developer_workspace_score(scan_result),
         _testing_score(analysis_result),
         _safety_score(scan_result, plan_result, readiness_report),
         _documentation_score(current_phase),
         _architecture_score(analysis_result),
-        _production_score(readiness_report, readiness_error),
     )
 
 
@@ -508,10 +601,8 @@ def _deduct(base: int, deductions: list[tuple[int, str]]) -> tuple[int, str]:
     return score, reason
 
 
-def _repository_score(scan_result, plan_result) -> ManagerScore:
+def _repository_quality_score(plan_result) -> ManagerScore:
     deductions = []
-    if scan_result.working_tree == "dirty":
-        deductions.append((30, "working tree is dirty"))
     high = sum(1 for a in plan_result.actions if a.priority == "high")
     critical = sum(1 for a in plan_result.actions if a.priority == "critical")
     if critical:
@@ -519,7 +610,31 @@ def _repository_score(scan_result, plan_result) -> ManagerScore:
     if high:
         deductions.append((20, f"{high} high-priority planner action(s)"))
     score, reason = _deduct(100, deductions)
-    return ManagerScore("Repository Health", score, reason, (f"Working tree: {scan_result.working_tree}", plan_result.summary))
+    return ManagerScore("Repository Quality", score, reason, (plan_result.summary,))
+
+
+def _running_application_score(inspection_report, inspection_error: str) -> ManagerScore:
+    if inspection_error:
+        return ManagerScore("Running Application", 25, f"-75 live inspector failed: {inspection_error}", (inspection_error,))
+    if not inspection_report:
+        return ManagerScore("Running Application", 25, "-75 live inspector did not produce evidence", ())
+    deductions = []
+    if not inspection_report.application_launches:
+        deductions.append((70, f"application does not launch: {inspection_report.launch_status}"))
+    if inspection_report.routes_failing:
+        deductions.append((25, f"{len(inspection_report.routes_failing)} failing live endpoint(s)"))
+    if inspection_report.broken_features:
+        deductions.append((25, f"{len(inspection_report.broken_features)} broken feature(s)"))
+    score, reason = _deduct(100, deductions)
+    return ManagerScore("Running Application", score, reason, (f"Launch status: {inspection_report.launch_status}",))
+
+
+def _developer_workspace_score(scan_result) -> ManagerScore:
+    deductions = []
+    if scan_result.working_tree == "dirty":
+        deductions.append((40, "working tree is dirty"))
+    score, reason = _deduct(100, deductions)
+    return ManagerScore("Developer Workspace", score, reason, (f"Working tree: {scan_result.working_tree}",))
 
 
 def _testing_score(analysis_result) -> ManagerScore:
@@ -565,7 +680,7 @@ def _architecture_score(analysis_result) -> ManagerScore:
     return ManagerScore("Architecture", score, reason, (f"Project type: {analysis_result.project_type}",))
 
 
-def _production_score(readiness_report, readiness_error: str) -> ManagerScore:
+def _production_score(readiness_report, readiness_error: str, inspection_report=None) -> ManagerScore:
     if readiness_error:
         return ManagerScore("Production", 35, f"-65 live readiness scanner failed: {readiness_error}", (readiness_error,))
     if not readiness_report:
@@ -580,8 +695,12 @@ def _production_score(readiness_report, readiness_error: str) -> ManagerScore:
         deductions.append((30, f"{blocked} blocked readiness check(s)"))
     if warning:
         deductions.append((10, f"{warning} warning readiness check(s)"))
+    if inspection_report and not inspection_report.application_launches:
+        deductions.append((30, "application does not launch"))
+    elif inspection_report and inspection_report.routes_failing:
+        deductions.append((20, f"{len(inspection_report.routes_failing)} failing live endpoint(s)"))
     score, reason = _deduct(100, deductions)
-    return ManagerScore("Production", score, reason, (f"Live readiness status: {readiness_report.overall_status}",))
+    return ManagerScore("Production Readiness", score, reason, (f"Live readiness status: {readiness_report.overall_status}",))
 
 
 def _release_estimate(scores: tuple[ManagerScore, ...]) -> str:

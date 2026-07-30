@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, chat, discovery, engine_registry, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, discovery, engine_registry, live_inspector, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -985,6 +985,22 @@ def cmd_discover(args) -> int:
     return 0
 
 
+def cmd_inspect(args) -> int:
+    """Live Application Inspector: launch detected applications from a
+    disposable copy and report runtime evidence."""
+    repo_root = _resolve_repo(args, quiet=getattr(args, "json", False))
+    report = live_inspector.inspect_application(
+        repo_root,
+        timeout=getattr(args, "timeout", 10),
+        preferred_port=getattr(args, "port", 0),
+    )
+    if getattr(args, "json", False):
+        print(live_inspector.inspection_to_json(report))
+    else:
+        print(live_inspector.render_inspection(report, full=getattr(args, "full", False)))
+    return 0 if report.running_application in {"PASS", "STARTED", "PARTIAL"} else 1
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -1173,6 +1189,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--full", action="store_true",
                     help="include evidence lines for each finding")
     sp.set_defaults(func=cmd_discover)
+
+    sp = sub.add_parser("inspect",
+                        help="live application inspector")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--json", action="store_true",
+                    help="emit machine-readable JSON inspection report")
+    sp.add_argument("--full", action="store_true",
+                    help="include captured stdout/stderr")
+    sp.add_argument("--port", default=0, type=int, metavar="PORT",
+                    help="preferred local port, or 0 for an ephemeral port")
+    sp.add_argument("--timeout", default=10, type=int, metavar="SEC",
+                    help="startup timeout in seconds (default: 10)")
+    sp.set_defaults(func=cmd_inspect)
 
     sp = sub.add_parser("quick-podcast",
                         help="generate a real disposable CloneCast podcast for listening")

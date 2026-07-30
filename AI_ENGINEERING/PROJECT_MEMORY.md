@@ -188,6 +188,25 @@ analysis and compile verification: `workspace/`, `data/`, virtual
 environments, caches, and build outputs are excluded from technology-stack
 inference so generated artifacts cannot masquerade as target architecture.
 
+**Runtime inspection must distinguish "the app starts" from "the product
+is production-ready."** The 2026-07-30 Live Application Inspector smoke
+against CloneCast launched `clonecast.web_app:create_app` from a
+disposable source copy, discovered 126 routes, and still reported
+Production Readiness as `NEEDS_ATTENTION` because the read-only SQLite
+foreign-key check found 9 violations in `db/cloneshow.db`. This is the
+right shape: running HTTP evidence is not rounded up into release
+readiness, and database integrity findings are not hidden just because the
+server responds.
+
+**Disposable source copies must exclude runtime/model/output artifacts.**
+The first CloneCast `autocorp inspect --json` smoke attempted to copy
+`runtime/models/` and generated audio artifacts into `/tmp`, hit
+`Errno 28 No space left on device`, and produced a traceback instead of a
+structured report. The fix was to exclude `runtime/`, `output(s)/`, and
+`artifacts/` from disposable source copies and maintained-source discovery
+inference, and to convert copy failures into a `DISPOSABLE_COPY_FAILED`
+inspection report with cleanup verification.
+
 **Exclude `workspace/` (and `data/`) from architecture-level analysis, but
 not from raw scan totals.** `brains/analyzer.py` deliberately uses a wider
 ignore set than `brains/scanner.py` for anything that forms a judgment
