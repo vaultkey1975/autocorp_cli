@@ -50,6 +50,16 @@ def test_clonecast_env_includes_repo_src_and_autocorp_root_on_pythonpath(tmp_pat
     assert str(quick_podcast._AUTOCORP_ROOT) in pythonpath_entries
 
 
+def test_default_output_dir_is_outside_target_repository(tmp_path):
+    repo = tmp_path / "clonecast"
+    repo.mkdir()
+
+    output = quick_podcast._default_output_dir(repo)
+
+    assert not output.is_relative_to(repo)
+    assert str(output).startswith(str(quick_podcast.DEFAULT_OUTPUT_ROOT))
+
+
 def test_tee_log_writes_to_both_stdout_and_file(tmp_path, capsys):
     log_path = tmp_path / "quick_podcast.log"
     log = quick_podcast._TeeLog(str(log_path), "w")

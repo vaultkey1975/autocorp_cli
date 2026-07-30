@@ -117,6 +117,23 @@ class ReliabilityOrchestrator:
         )
         return proc.returncode == 0
 
+    def _ensure_clean_repository(self) -> None:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.repo_root,
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "unable to inspect repository status")
+        if proc.stdout.strip():
+            raise RuntimeError(
+                "Reliability Engine requires a clean target repository before running. "
+                "Commit, stash, or discard existing changes first."
+            )
+
     def _test_targets_for(self, files: list[str]) -> list[str]:
         tests = []
         for path in files:
@@ -137,6 +154,7 @@ class ReliabilityOrchestrator:
         return tests
 
     def run(self, request: str) -> dict:
+        self._ensure_clean_repository()
         lessons = store.format_lessons_for_prompt(store.recall_lessons(request))
         router_cfg = self.config["model_router"]
         decision = ReliabilityModelRouter(
@@ -325,6 +343,12 @@ class ReliabilityOrchestrator:
                 if self.config["worktree_sandbox"].get("cleanup_on_success", True):
                     self.sandbox.rollback(worktree, keep=False)
                 results.append({"id": subtask_id, "status": "done"})
+            except Exception as exc:
+                reason = str(exc) or exc.__class__.__name__
+                state_store.update_subtask(subtask_id, status="blocked")
+                state_store.record_known_issue(subtask_id, "subtask exception", reason)
+                self.sandbox.rollback(worktree, keep=True)
+                results.append({"id": subtask_id, "status": "blocked", "reason": reason})
             finally:
                 state_store.write_project_state(state_workspace)
 

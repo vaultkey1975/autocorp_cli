@@ -378,7 +378,7 @@ docstring header.
 
 ---
 
-## ERA 4 — Quick Podcast (committed module, uncommitted integration)
+## ERA 4 — Quick Podcast (committed)
 
 ### Quick Podcast — real disposable episode generation for local listening
 - **Purpose:** A `quick-podcast` command that produces a complete,
@@ -433,70 +433,33 @@ docstring header.
 
 ---
 
-## ERA 5 — Reliability Engine (entirely uncommitted)
+## ERA 5 — Reliability Engine (committed, dedicated CLI integration undecided)
 
 ### Reliability Engine
-- **Purpose:** No commit references this subsystem (still true as of
-  2026-07-29). A full read-only investigation of its actual source was
-  performed this date, at the repository owner's request, to produce an
-  integration proposal. Confirmed purpose (from reading the code, not
-  inferring from filenames): a second, parallel build-and-repair
-  orchestration pipeline, structurally analogous to
-  `core/orchestrator.py::Session` but not composed with it — see
-  `ARCHITECTURE.md`'s "Reliability Engine" section for the full
-  architecture, risk findings, and staged integration plan. It reimplements
-  (rather than reuses) the existing pipeline's self-heal/retry/repair-budget
-  logic. **Update, 2026-07-29:** every finding
-  above was independently re-verified against the source (not re-stated at
-  face value) and two were fixed in the working tree — a worktree-ID
-  collision that could destroy a preserved blocked-subtask's diagnostic
-  state, and the `model_router.py`/`brains/model_router.py` filename
-  collision (renamed to `model_availability.py`). A third finding, that a
-  missing lint/type-check tool blocks every edit, was re-verified and
-  found incorrect for the one code path checked that day.
-  **Update, 2026-07-30 — production-readiness review, VERDICT: NOT READY:**
-  re-checking every call site of the "missing lint tool" question (not just
-  the one checked the day before) found the prior day's "incorrect, not a
-  bug" conclusion was itself incomplete: `SelfConsistencyRunner.choose()`
-  (the greenfield high-blast-radius voting path) called the unsafe
-  `StaticGate.run()` directly and would genuinely block every candidate in
-  an environment missing `ruff`/`mypy` — a real bug, missed by two prior
-  independent-verification passes, found only by a third that specifically
-  re-checked every caller rather than the one already known. Fixed the same
-  way its sibling `choose_edit()` already handled it correctly. This
-  three-strikes history (two "independent" reviews, then a third finding
-  what the first two missed) was the strongest evidence for the verdict at
-  that time: `ReliabilityOrchestrator.run()`, the actual production entry
-  point, had not yet been tested end-to-end, and untested paths in this
-  subsystem had been shown twice to hide real bugs. See
-  `ARCHITECTURE.md`'s "Production-readiness verdict" and
-  `PROJECT_MEMORY.md` for full detail. At that point the subsystem
-  remained entirely uncommitted; integration was unauthorized, and was not
-  recommended until a real end-to-end test of `run()` existed.
-  **Update, later 2026-07-30:** the working tree now adds that real
-  end-to-end test. It calls `ReliabilityOrchestrator.run()` against a
-  disposable git repository and verifies worktree creation, planning,
-  analysis, validation, regression testing, merge behavior, cleanup, and
-  no mutation of AutoCorp's own repository status. The remaining
-  Reliability Engine decision is dedicated CLI/product integration, not
-  absence of E2E evidence.
-- **Deliverables (working tree only):** `reliability_engine/` (17 modules,
-  2,346 lines), `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
-  `tests/test_reliability_engine.py`, plus supporting,
-  uncommitted changes to `brains/builder.py` (an `EDIT_DIFF_SYSTEM_PROMPT`
-  and `generate_edit_diff`/`edit_diff_prompt` methods), `memory/store.py`
-  (new `subtasks`, `attempts`, and `known_issues` tables), and
-  `requirements.txt`/`requirements-dev.txt` (adding `chromadb`, `PyYAML`,
-  `mypy`, `ruff`).
+- **Purpose:** A second, parallel build-and-repair orchestration pipeline,
+  structurally analogous to `core/orchestrator.py::Session` but not
+  composed with it. See `ARCHITECTURE.md`'s "Reliability Engine" section
+  for the current architecture, risk findings, and staged integration
+  plan.
+- **Deliverables:** `reliability_engine/` (17 modules),
+  `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
+  `tests/test_reliability_engine.py`, supporting edit-diff generation in
+  `brains/builder.py`, durable state tables in `memory/store.py`, and
+  tracked dependency additions in `requirements.txt`.
 - **Testing:** `tests/test_reliability_engine.py` passes as part of the
-  current full test suite run (it is collected automatically by
-  `pytest.ini`'s `testpaths = tests`).
-- **Completion Evidence:** **Entirely uncommitted.** `grep` for
-  `reliability_engine` across every tracked and untracked `.py` file in
-  this repository finds exactly one reference outside the package itself:
-  its own test file. It is not imported by `autocorp.py`, not imported by
-  any `brains/*.py` module, and has no CLI entry point. It has passing
-  tests but is not integrated into the production application in any way.
+  full test suite and includes an end-to-end test of
+  `ReliabilityOrchestrator.run()` against a disposable git repository.
+- **Completion Evidence:** Committed evidence includes
+  `f8b6400 test: verify Reliability Engine end-to-end workflow` and
+  preceding Reliability Engine production-readiness commits. The E2E test
+  verifies worktree creation, planning, analysis, validation, regression
+  testing, merge behavior, cleanup, and no mutation of AutoCorp's own
+  repository status. This audit adds further pending safety coverage for
+  dirty-target refusal and merge-failure diagnostic preservation.
+- **Current integration status:** No dedicated `autocorp reliability`
+  command exists. AutoCorp Chat can report Reliability Engine status, but
+  it does not run `ReliabilityOrchestrator.run()` directly. Dedicated
+  product integration remains an owner decision, not a missing test.
 - **Notes:** Two branches, `reliability/subtask-1` and
   `reliability/subtask-2`, exist and share the name, both pointing at the
   same old commit (`1615cf8`, dated 2026-07-24) with zero commits of their
@@ -512,33 +475,33 @@ docstring header.
 
 ---
 
-## Current Working Tree Feature — AutoCorp Chat
+## ERA 6 — AutoCorp Chat (committed)
 
 - **Purpose:** Add a repository-aware conversational interface for common
   AutoCorp engineering questions without turning it into a generic LLM
   wrapper.
-- **Deliverables (working tree only):** `brains/chat.py`, `autocorp.py`
-  `chat` subcommand wiring, and `tests/test_autocorp_chat.py`.
+- **Deliverables:** `brains/chat.py`, `autocorp.py` `chat` subcommand
+  wiring, and `tests/test_autocorp_chat.py`.
 - **Capabilities:** repository scan, repository health, blockers/roadmap
   from `AI_ENGINEERING/`, today's git work, error explanation heuristics,
   disposable workflow-test and publish-test command guidance, repair-plan
   guidance, commit review, branch comparison, model-specific prompt
   preparation, session continuation, and Reliability Engine status.
-- **Testing:** `tests/test_autocorp_chat.py` passes in focused verification
-  with the Reliability Engine suite:
-  `.venv/bin/python -m pytest -W error -q tests/test_reliability_engine.py
-  tests/test_autocorp_chat.py` -> exit code 0, 69 passed.
-- **Completion Evidence:** Uncommitted working tree only until the owner
-  requested verification and commit sequence is complete.
+- **Testing:** `tests/test_autocorp_chat.py` passes in focused
+  verification and as part of the full strict test suite.
+- **Completion Evidence:** Committed as
+  `27ddbd0 feat: add AutoCorp Chat`. This production-hardening audit adds
+  pending interrupt-handling coverage so interactive chat exits with code
+  130 on Ctrl+C.
 
 ---
 
 ## FUTURE PLANNING REQUIRED
 
 No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the
-Reliability Engine's possible dedicated integration, and the uncommitted
-AutoCorp Chat feature is described anywhere in this repository — no
-docstring, no commit, no branch, no report. Specifically:
+Reliability Engine's possible dedicated integration, and committed
+AutoCorp Chat is described anywhere in this repository — no docstring, no
+commit, no branch, no report. Specifically:
 
 - What comes after Phase 1Y (assuming CloneCast's audio-clipping issue is
   someday resolved and a full publish-pipeline PASS is achieved) is not

@@ -71,6 +71,18 @@ model boundary, verifies planning/analysis/validation/regression/merge/
 cleanup, and asserts AutoCorp's own git status is unchanged. This pattern
 should be reused for any future tool that can write to a target repository.
 
+**Disposable tooling must keep both merge state and generated artifacts
+outside the user's ambiguous working tree.** The 2026-07-30 production
+hardening audit found two separate repository-safety gaps: the Reliability
+Engine did not refuse dirty target repositories before creating
+merge-capable worktrees, and `quick-podcast` defaulted its generated output
+to `<target-repo>/output/test_episode` despite being described as
+disposable. The fixes are now explicit patterns to reuse:
+`ReliabilityOrchestrator.run()` checks `git status --porcelain` before
+worktree creation, and default generated podcast output goes under
+`/tmp/autocorp_quick_podcast_output/<repo>/test_episode` unless the owner
+provides an explicit `--output`.
+
 **Verification scope must match repository ownership, or it becomes noise
 instead of rigor.** The bare `python -m compileall .` command failed in
 this repository for reasons outside maintained AutoCorp source: the current

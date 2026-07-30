@@ -163,3 +163,30 @@ def test_cmd_chat_interactive_mode_exits(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert rc == 0
     assert "AutoCorp Chat" in out
+
+
+def test_cmd_chat_interactive_keyboard_interrupt_returns_130(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(autocorp, "_resolve_repo", lambda args: str(tmp_path))
+
+    def interrupt(prompt):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(builtins, "input", interrupt)
+
+    rc = autocorp.cmd_chat(argparse.Namespace(repo=None, prompt=[]))
+
+    captured = capsys.readouterr()
+    assert rc == 130
+    assert "Interrupted." in captured.err
+
+
+def test_main_keyboard_interrupt_returns_130(monkeypatch, capsys):
+    parser = autocorp.build_parser()
+    monkeypatch.setattr(autocorp, "build_parser", lambda: parser)
+    monkeypatch.setattr(parser, "parse_args", lambda: argparse.Namespace(command="scan", func=lambda args: (_ for _ in ()).throw(KeyboardInterrupt)))
+
+    rc = autocorp.main()
+
+    captured = capsys.readouterr()
+    assert rc == 130
+    assert "Interrupted." in captured.err

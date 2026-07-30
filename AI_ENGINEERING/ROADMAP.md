@@ -61,30 +61,31 @@ an owner decision, not one this document makes.
 
 ## Current phase
 
-See `CURRENT_PHASE.md` for the live snapshot. As of the 2026-07-30 working
-tree, the Reliability Engine now has an end-to-end
-`ReliabilityOrchestrator.run()` test against a disposable git repository,
-and AutoCorp Chat is implemented as an uncommitted CLI subcommand. Official
-phase completion remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
+See `CURRENT_PHASE.md` for the live snapshot. Repository evidence now
+includes a committed Reliability Engine end-to-end
+`ReliabilityOrchestrator.run()` test against a disposable git repository
+and a committed AutoCorp Chat CLI subcommand. The current working tree is a
+production-hardening audit over those systems. Official phase completion
+remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
 
 ## Remaining phases (repository evidence only)
 
 The only "remaining" work with direct repository evidence:
 
-1. **Phase 1X/1Y**: continue iterating uncommitted (owner decision,
-   2026-07-29) — `brains/workflow_test.py`'s extensions and `autocorp.py`'s
-   `publish-test` wiring.
+1. ~~**Phase 1X/1Y**: continue iterating uncommitted~~ — **committed** as
+   `ecf6a11 feat: complete Phase 1X/1Y CloneCast production/publishing
+   validation`.
 2. ~~Commit or discard the `quick-podcast` CLI wiring~~ — **done**,
    committed as `53f0d7d`.
 3. **Reliability Engine integration** — staged steps through E2E
-   verification are now present in the working tree. A dedicated
-   Reliability Engine CLI command remains an owner/product decision; no
-   such command exists yet.
+   verification are committed. This production-hardening audit adds
+   pending dirty-target and merge-failure coverage. A dedicated Reliability
+   Engine CLI command remains an owner/product decision; no such command
+   exists yet.
 4. ~~Address the five documented Phase 1G gaps~~ — **corrected 2026-07-29:
    four of five were already fixed** by a commit predating the audit
    report being trusted at face value; the fifth (inline-redaction) was
-   fixed this session (uncommitted, pending owner review of this session's
-   changes as a whole). See `NEXT_STEPS.md` "Known bugs" for the full,
+   fixed in `fad85a8`. See `PROJECT_MEMORY.md` for the full,
    re-verified account.
 5. **Investigate the CloneCast audio-clipping finding** — reproduced four
    times across two phases and four real runs

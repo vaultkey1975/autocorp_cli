@@ -32,6 +32,7 @@ from brains import scanner, workflow_test
 # also written here, line-buffered and flushed immediately, so it stays
 # usable with `tail -f` even while a run is in progress.
 LOG_PATH = "/tmp/autocorp_quick_podcast.log"
+DEFAULT_OUTPUT_ROOT = Path(tempfile.gettempdir()) / "autocorp_quick_podcast_output"
 
 # The directory containing this file's own package root (autocorp_cli/) -
 # needed on PYTHONPATH so `-m brains.quick_podcast_runner` resolves inside
@@ -164,6 +165,10 @@ def _clonecast_env(repo: Path, disp: Path, disp_db: Path) -> dict[str, str]:
     return env
 
 
+def _default_output_dir(repo: Path) -> Path:
+    return DEFAULT_OUTPUT_ROOT / repo.name / "test_episode"
+
+
 class _TeeLog:
     """Writes every line to stdout (flushed) AND to the shared persistent
     log file (line-buffered, flushed immediately) - usable with `tail -f`
@@ -246,7 +251,7 @@ def run(args: argparse.Namespace) -> QuickPodcastReport:
     t0 = time.time()
     repo = Path(args.repo).expanduser().resolve()
     duration = parse_duration(args.duration)
-    output = Path(args.output).expanduser().resolve() if args.output else repo / "output" / "test_episode"
+    output = Path(args.output).expanduser().resolve() if args.output else _default_output_dir(repo)
     phases = _phase_map()
     report = QuickPodcastReport(repo=str(repo), output_dir=str(output), phases=list(phases.values()))
     disp: Path | None = None

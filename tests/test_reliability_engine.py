@@ -803,6 +803,24 @@ class TestWorktreeSandbox(unittest.TestCase):
 
 
 class TestReliabilityOrchestratorEndToEnd(TempDBTest):
+    def test_run_refuses_dirty_repository_before_creating_worktree(self):
+        from reliability_engine.orchestrator import ReliabilityOrchestrator
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init", "-b", "main"], cwd=tmp, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp, check=True)
+            write_text(os.path.join(tmp, "app.py"), "def answer():\n    return 1\n")
+            subprocess.run(["git", "add", "app.py"], cwd=tmp, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True, capture_output=True)
+            write_text(os.path.join(tmp, "dirty.py"), "x = 1\n")
+
+            orchestrator = ReliabilityOrchestrator(AllowAllGate(), repo_root=tmp, assume_yes=True)
+            with self.assertRaisesRegex(RuntimeError, "requires a clean target repository"):
+                orchestrator.run("Update app.py answer so answer returns 42")
+
+            self.assertFalse(os.path.exists(os.path.join(tmp, "workspace", ".reliability_worktrees")))
+
     def test_run_executes_disposable_edit_workflow_and_cleans_worktree(self):
         """End-to-end proof for the production entry point:
         ReliabilityOrchestrator.run() creates a real git worktree, plans an
@@ -943,6 +961,102 @@ class TestReliabilityOrchestratorEndToEnd(TempDBTest):
             check=True,
         ).stdout
         self.assertEqual(autocorp_before, autocorp_after)
+
+    def test_run_preserves_worktree_and_blocks_on_merge_failure(self):
+        import reliability_engine.orchestrator as orchestrator_module
+
+        class DeterministicDecision:
+            model = "deterministic-builder"
+            fallback_used = False
+            reason = "test"
+
+        class DeterministicRouter:
+            def __init__(self, builder_model, fallback_model):
+                self.builder_model = builder_model
+                self.fallback_model = fallback_model
+
+            def route(self):
+                return DeterministicDecision()
+
+        class DeterministicEngine:
+            model = "deterministic-builder"
+            name = "deterministic-builder"
+
+            def __init__(self, model=None):
+                self.model = model or self.model
+
+            def generate(self, prompt, system=""):
+                return (
+                    "<<<<<<< FILE app.py\n"
+                    "<<<<<<< FIND\n"
+                    "def answer():\n"
+                    "    return 1\n"
+                    "=======\n"
+                    "def answer():\n"
+                    "    return 42\n"
+                    ">>>>>>> REPLACE\n"
+                    "<<<<<<< FILE tests/test_app.py\n"
+                    "<<<<<<< FIND\n"
+                    "from app import answer\n"
+                    "\n"
+                    "\n"
+                    "def test_answer():\n"
+                    "    assert answer() == 1\n"
+                    "=======\n"
+                    "from app import answer\n"
+                    "\n"
+                    "\n"
+                    "def test_answer():\n"
+                    "    assert answer() == 42\n"
+                    ">>>>>>> REPLACE\n"
+                )
+
+        old_router = orchestrator_module.ReliabilityModelRouter
+        old_engine = orchestrator_module.LocalEngine
+        orchestrator_module.ReliabilityModelRouter = DeterministicRouter
+        orchestrator_module.LocalEngine = DeterministicEngine
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                subprocess.run(["git", "init", "-b", "main"], cwd=tmp, check=True, capture_output=True)
+                subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp, check=True)
+                subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp, check=True)
+                os.makedirs(os.path.join(tmp, "tests"))
+                write_text(os.path.join(tmp, "app.py"), "def answer():\n    return 1\n")
+                write_text(
+                    os.path.join(tmp, "tests", "test_app.py"),
+                    "from app import answer\n\n\n"
+                    "def test_answer():\n"
+                    "    assert answer() == 1\n",
+                )
+                subprocess.run(["git", "add", "app.py", "tests/test_app.py"], cwd=tmp, check=True, capture_output=True)
+                subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True, capture_output=True)
+
+                orchestrator = orchestrator_module.ReliabilityOrchestrator(
+                    AllowAllGate(), repo_root=tmp, assume_yes=True
+                )
+
+                def fail_merge(worktree):
+                    raise RuntimeError("simulated merge failure")
+
+                orchestrator.sandbox.merge_to_main = fail_merge
+                result = orchestrator.run("Update app.py answer and tests/test_app.py so answer returns 42 with tests")
+
+                self.assertEqual(result["status"], "partial")
+                self.assertEqual(result["subtasks"][0]["status"], "blocked")
+                self.assertIn("simulated merge failure", result["subtasks"][0]["reason"])
+                self.assertEqual(read_text(os.path.join(tmp, "app.py")), "def answer():\n    return 1\n")
+                worktrees = subprocess.run(
+                    ["git", "worktree", "list", "--porcelain"],
+                    cwd=tmp,
+                    text=True,
+                    capture_output=True,
+                    check=True,
+                ).stdout
+                self.assertIn(".reliability_worktrees/subtask-", worktrees)
+                self.assertEqual(state_store.list_subtasks()[0]["status"], "blocked")
+        finally:
+            orchestrator_module.ReliabilityModelRouter = old_router
+            orchestrator_module.LocalEngine = old_engine
 
 
 class SimpleEngine:

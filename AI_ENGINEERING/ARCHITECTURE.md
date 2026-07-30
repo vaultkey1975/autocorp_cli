@@ -11,32 +11,29 @@ originally designed or as a future phase might redesign it. See
 
 ```
 autocorp.py           CLI entry point (argparse) - 16 subcommands in the
-                       working tree, 13 committed at HEAD (see below)
+                       working tree, 16 committed before this audit
 config.py              Single source of truth for model/endpoint/timeouts/
                        paths; APP_VERSION frozen at "0.1.0" since the first
                        commit (see PROJECT_MEMORY.md)
 pytest.ini             testpaths=tests; explicitly excludes workspace/,
                        .venv, data, .git, egg-info, __pycache__
 core/                  console.py, llm.py (Ollama client), orchestrator.py
-brains/                37 tracked .py files (via `git ls-files "brains/*.py"`)
+brains/                38 tracked .py files (via `git ls-files "brains/*.py"`)
                        - see "brains/ inventory" below
 memory/                store.py - SQLite build/lesson memory
 safety/                executor.py, gate.py, watchdog_gate.py
 scripts/               repository verification helpers
-tests/                 93 tracked test_*.py files (95 total on disk,
-                       including uncommitted Reliability Engine and chat tests)
+reliability_engine/     17 tracked modules - surgical edit/repair
+                       orchestration with worktree isolation
+tests/                 96 tracked test_*.py files before this audit
 ```
 
 Present in the working tree but **not tracked by git** (verify with `git
 status` before trusting any of this as shipped):
 
 ```
-reliability_engine/     17 modules, 2,346 lines - unintegrated (see below)
 data/                   runtime SQLite (data/autocorp.db) + a Chroma vector
-                       store (data/chroma/) - the Chroma dependency itself
-                       (chromadb) is only in the uncommitted requirements.txt
-mypy.ini, ruff.toml,
-reliability_config.yaml  tooling config for the Reliability Engine
+                       store (data/chroma/)
 ```
 
 ## CLI architecture
@@ -51,12 +48,10 @@ business logic. This pattern is stated explicitly in multiple modules'
 docstrings ("keep the CLI thin") and held consistently across the Phase
 1A–1Y command set.
 
-Subcommands committed at `HEAD` (`git show HEAD:autocorp.py`): `build`,
-`plan`, `test`, `explain`, `memory`, `scan`, `analyze`, `plan-project`,
-`repair`, `propose-repair`, `live-readiness`, `live-test`, `workflow-test`.
-
-Subcommands present only in the uncommitted working tree: `publish-test`,
-`quick-podcast`, `chat`.
+Subcommands committed before this audit (`git show 27b138d:autocorp.py`):
+`build`, `plan`, `test`, `explain`, `memory`, `scan`, `analyze`,
+`plan-project`, `repair`, `propose-repair`, `live-readiness`, `live-test`,
+`workflow-test`, `publish-test`, `quick-podcast`, `chat`.
 
 Gate selection (`_make_gate`) chooses between `AllowAllGate` (`--auto`),
 `WatchdogGate` (`--watchdog`), and the default interactive `ConfirmGate` —
@@ -64,14 +59,16 @@ this is the seam through which an external "Agent Watchdog" tool could
 approve or block file writes/commands; `safety/watchdog_gate.py` loads it
 optionally at runtime and falls back to `ConfirmGate` if unavailable.
 
-`autocorp chat` is present in the working tree as a repository-aware
-conversational interface. Its business logic lives in `brains/chat.py`;
-the CLI handler only resolves the repository, creates an
-`AutoCorpChatSession`, prints one-shot responses, or runs an interactive
-loop. The chat routes natural-language requests to existing repository
-capabilities (`scanner`, `analyzer`, `project_planner`, git inspection,
-workflow-test/publish-test command guidance, repair-plan guidance, and
-`AI_ENGINEERING/` documentation reads) rather than calling a generic model.
+`autocorp chat` is a committed repository-aware conversational interface.
+Its business logic lives in `brains/chat.py`; the CLI handler only resolves
+the repository, creates an `AutoCorpChatSession`, prints one-shot
+responses, or runs an interactive loop. The chat routes natural-language
+requests to existing repository capabilities (`scanner`, `analyzer`,
+`project_planner`, git inspection, workflow-test/publish-test command
+guidance, repair-plan guidance, and `AI_ENGINEERING/` documentation reads)
+rather than calling a generic model. The production-hardening working tree
+normalizes Ctrl+C handling to exit code 130 in both interactive chat and
+top-level command dispatch.
 
 ## `brains/` inventory (tracked)
 
@@ -91,7 +88,7 @@ Grouped by the era that introduced them (see `PHASES.md` for detail):
 - **Phase 1A–1Y repository-intelligence / CloneCast-validation
   infrastructure:** `scanner.py`, `analyzer.py`, `project_planner.py`,
   `workspace.py`, `providers.py`, `repair_proposal.py`, `live_test.py`,
-  `live_readiness.py`, `workflow_test.py`, plus uncommitted `chat.py`.
+  `live_readiness.py`, `workflow_test.py`, `publish_test.py`, `chat.py`.
 - **Quick Podcast:** `quick_podcast.py` (thin orchestrator),
   `quick_podcast_runner.py` (the actual CloneCast-service-calling worker —
   see "Workflow engine" below for why this one runs as a separate process).
@@ -109,17 +106,16 @@ successes/mistakes/fixes), `reviews` (Reviewer Brain reports), `routes`
 no embeddings, explicitly by design (module docstring: "fully local, no
 embeddings, no extra dependencies").
 
-**Uncommitted addition:** three further tables — `subtasks`, `attempts`,
-`known_issues` — added by the (also uncommitted) Reliability Engine work.
-These are real, working SQLite `CREATE TABLE IF NOT EXISTS` statements
-already in `memory/store.py`'s `init_db()`, but nothing in committed code
-writes to or reads from them, since the code that would (Reliability
-Engine) is itself uncommitted and unintegrated.
+**Reliability Engine addition:** three further tables — `subtasks`,
+`attempts`, `known_issues` — support durable Reliability Engine state.
+They are real SQLite `CREATE TABLE IF NOT EXISTS` statements in
+`memory/store.py`'s `init_db()` and are used by
+`reliability_engine/state_store.py`.
 
 Chroma (`data/chroma/`) appears in the working tree as a second, vector-
-based store, but `chromadb` is only a dependency in the uncommitted
-`requirements.txt` — its presence on disk is real, its integration status
-is not evidenced in any committed code.
+based runtime store for Reliability Engine RAG. `chromadb` is a tracked
+dependency in `requirements.txt`; `data/chroma/` itself remains runtime
+data and is ignored.
 
 ## Repair engine
 
@@ -143,8 +139,8 @@ repository at all — only to an explicit `--output` path.
 
 ## Workflow engine
 
-`brains/workflow_test.py` (Phase 1M–1S, extended uncommitted by Phase
-1X/1Y) drives a real, disposable, end-to-end validation of an external
+`brains/workflow_test.py` (Phase 1M–1S, extended by Phase 1X/1Y) drives a
+real, disposable, end-to-end validation of an external
 target application (CloneCast): it copies the target's production database
 into a temporary directory, points a battery of `CLONECAST_*` environment
 variables at that disposable copy, launches the target's own `uvicorn`
@@ -195,38 +191,42 @@ Two unrelated planners exist:
 Do not conflate "planning a build" with "planning repository actions" —
 they solve different problems and share no code.
 
-## Reliability Engine (uncommitted, unintegrated)
+## Reliability Engine (committed, not exposed by a dedicated CLI command)
 
-Investigated in full (read-only, no code changed) on 2026-07-29 at the
-repository owner's request, for an integration proposal — not integrated.
-`reliability_engine/` (16 modules, 2,346 lines) is a **second, parallel
-build-and-repair orchestration pipeline**, structurally analogous to
-`core/orchestrator.py::Session` but not composed with it: its entry point,
-`ReliabilityOrchestrator.run()` (`reliability_engine/orchestrator.py`),
-independently recalls lessons from `memory.store`, picks a builder model,
-classifies a request as "edit" (touches an existing tracked file, found via
-a filepath-token regex or, absent an explicit path, an optional
-Chroma-backed RAG lookup over the repo) or "greenfield" (delegates to the
-existing `PlannerBrain`/`BuilderBrain.build()` unmodified), and for edit-mode
-work:
+Investigated in full on 2026-07-29 at the repository owner's request, then
+committed in later production-readiness work. `reliability_engine/` is a
+**second, parallel build-and-repair orchestration pipeline**, structurally
+analogous to `core/orchestrator.py::Session` but not composed with it. Its
+entry point, `ReliabilityOrchestrator.run()`
+(`reliability_engine/orchestrator.py`), independently recalls lessons from
+`memory.store`, picks a builder model, classifies a request as "edit"
+(touches an existing tracked file, found via a filepath-token regex or,
+absent an explicit path, an optional Chroma-backed RAG lookup over the repo)
+or "greenfield" (delegates to the existing
+`PlannerBrain`/`BuilderBrain.build()` unmodified), and for edit-mode work:
 
 1. Builds a whole-repo `DependencyGraph` (AST import/call-edge walk) to
    compute blast radius and whether "core" paths (`core/`, `memory/`,
    `safety/`, `brains/`, `reliability_engine/` itself) are touched.
-2. Runs each subtask inside a real, isolated `git worktree` (`git worktree
+2. Refuses to start if the target repository has a dirty `git status`.
+   This production-hardening preflight prevents merge-capable worktrees
+   from being created against ambiguous target state.
+3. Runs each subtask inside a real, isolated `git worktree` (`git worktree
    add -B reliability/subtask-<id> ...`), using the new
-   `BuilderBrain.generate_edit_diff` (added by the uncommitted
-   `brains/builder.py` diff) to get FIND/REPLACE blocks instead of a raw
-   diff, verified and applied by `patch_apply.py` before anything touches
-   the file.
-3. Gates every change through a static gate (`py_compile` + `ruff`/`mypy`,
+   `BuilderBrain.generate_edit_diff` to get FIND/REPLACE blocks instead of
+   a raw diff, verified and applied by `patch_apply.py` before anything
+   touches the file.
+4. Gates every change through a static gate (`py_compile` + `ruff`/`mypy`,
    absolute or delta-only), a bounded test-fix loop with several distinct
    repair strategies (format/grounding/relevance/test-coverage), and — for
    core-touching or high-blast-radius subtasks — N-sample self-consistency
    voting instead of iterative repair.
-4. Runs a full regression suite in the worktree before merging back, and
-   persists subtask/attempt/known-issue history to the three new SQLite
-   tables in `memory/store.py`'s uncommitted diff.
+5. Runs a full regression suite in the worktree before merging back, and
+   persists subtask/attempt/known-issue history to SQLite.
+6. Normalizes unexpected subtask exceptions, including merge failures, into
+   blocked subtask results, records a known issue, and preserves the
+   diagnostic worktree instead of letting the exception escape without
+   durable state.
 
 **It does not import or use** `brains/acceptance.py`, `brains/fixer_executor.py`,
 `brains/retry_controller.py`, `brains/gated_repair_fixer.py`, or the
@@ -238,8 +238,10 @@ strategy switching, durable attempt history, real worktree isolation) that
 currently **duplicates rather than composes with** `Session`'s plan/build/
 test/fix/record loop.
 
-**Confirmed not imported anywhere**: not by `autocorp.py`, not by any
-`brains/*.py` file — only by its own test file. No CLI subcommand exists.
+**Confirmed not imported by the CLI**: no dedicated `autocorp reliability`
+subcommand exists. The subsystem is imported by its tests and support
+modules, and AutoCorp Chat can report Reliability Engine status, but it
+does not execute `ReliabilityOrchestrator.run()` directly.
 The two stale branches `reliability/subtask-1`/`reliability/subtask-2`
 (pointing at old commit `1615cf8`) are themselves worktree-sandbox branches
 this subsystem's own naming convention (`worktree_sandbox.py`'s
@@ -267,8 +269,8 @@ confirmed a third time, independently, on 2026-07-30.**
 isolation (often with a fake engine/tester), or construct a
 `ReliabilityOrchestrator` and call only its private helpers
 (`_dependency_context`, `_edit_plan`, `_test_targets_for`).
-**`ReliabilityOrchestrator.run()` now has an end-to-end regression test in
-the working tree.** `tests/test_reliability_engine.py` constructs a
+**`ReliabilityOrchestrator.run()` now has end-to-end regression coverage.**
+`tests/test_reliability_engine.py` constructs a
 disposable git repository, calls the production entry point with a
 realistic edit request, uses a deterministic engine at the model boundary,
 and verifies the request -> worktree -> planning -> analysis -> patch ->
@@ -282,13 +284,10 @@ re-verified across two sessions (2026-07-29, 2026-07-30) — not just
 re-stated from a prior investigation or a prior session's own findings
 (see `PROJECT_MEMORY.md` on why that distinction matters, twice over now):**
 
-1. `chromadb`/`PyYAML` are only in the uncommitted requirements files —
-   `config_loader.py` silently degrades to a hand-rolled, two-level-only
-   YAML parser without PyYAML, and `rag_index.py` hard-fails without
-   chromadb. **Confirmed, not fixed** (fixing this means committing the
-   requirements changes, which is a packaging decision bundled with the
-   larger "decide the fate of the Reliability Engine" question, not a safe
-   isolated patch).
+1. ~~`chromadb`/`PyYAML` are only in uncommitted requirements files~~ —
+   **resolved before this audit.** `requirements.txt` now contains
+   `chromadb>=0.5.0` and `PyYAML>=6.0`; `mypy.ini`, `ruff.toml`, and
+   `reliability_config.yaml` are tracked.
 2. **A missing `ruff`/`flake8`/`mypy` binary blocking a static-gate check —
    more nuanced than either prior pass concluded, and a genuine bug was
    found and fixed 2026-07-30.** `StaticGate.run()` (the absolute mode) does
@@ -336,23 +335,24 @@ re-stated from a prior investigation or a prior session's own findings
    second instance creating a worktree for the same subtask id.
 
 **Staged integration plan, if the repository owner decides to proceed**
-(steps 2, 4, 5, and 6 are now complete on their own merits as general
+(steps 2, 3, 4, 5, and 6 are now complete on their own merits as general
 code-quality fixes and verification; completing them is not the same as
 authorizing a dedicated CLI integration, which remains a separate,
 still-open owner decision): ~~(1)
 triage/commit-or-discard the unrelated Phase 1X/1Y and repair-redaction
 changes~~ — done, they no longer share this working tree with
 reliability_engine (see `CURRENT_PHASE.md`); ~~(2) rename
-`reliability_engine/model_router.py`~~ — **done**, see above; (3) commit
+`reliability_engine/model_router.py`~~ — **done**, see above; ~~(3) commit
 the three purely-additive, low-risk pieces first and separately — the
 `brains/builder.py` diff, the `memory/store.py` diff, and the
-`chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions; ~~(4) fix the
+`chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions~~ — **done before
+this audit**; ~~(4) fix the
 worktree-ID-collision-destroys-blocked-state issue~~ — **done**, see above;
 ~~(5) the missing-tool-vs-real-issue distinction in `StaticGate`~~ — **done,
 2026-07-30**, see item 2 above (this one turned out to need an actual code
 fix, not just documentation, once the third call site was found); ~~(6) add
 a true end-to-end test of `ReliabilityOrchestrator.run()` before trusting it
-with real edits~~ — **done in the working tree, 2026-07-30**; (7) only then
+with real edits~~ — **done, 2026-07-30**; (7) only then
 add a dedicated Reliability Engine CLI subcommand (following the
 `cmd_workflow_test`/`cmd_build` pattern, confirming the existing
 `console.confirm("Proceed with this plan?")` gate at
@@ -388,12 +388,16 @@ repository evidence:
   patch application, static validation, pytest validation, full regression
   execution, merge behavior, cleanup, and no mutation of AutoCorp's own
   repository status during the test.
-- Packaging is incomplete for a fresh checkout (`chromadb`/`PyYAML` not in
-  the committed `requirements.txt`).
+- The production-hardening audit adds focused tests for dirty target repo
+  refusal before worktree creation and merge-failure diagnostic
+  preservation.
+- Packaging dependencies are now tracked: `requirements.txt` includes
+  `chromadb>=0.5.0` and `PyYAML>=6.0`.
 
-**What remains:** finish full required verification and commit the working
-tree if it passes. A dedicated Reliability Engine CLI entry point remains
-an owner/product decision; no such command is added in this working tree.
+**What remains:** finish full required verification for the
+production-hardening working tree and commit it if it passes. A dedicated
+Reliability Engine CLI entry point remains an owner/product decision; no
+such command is added in this working tree.
 
 ## Data flow (build loop, original architecture, still current)
 
@@ -419,7 +423,12 @@ verify artifacts (ffprobe + SHA-256) → verify DB integrity →
 verify target production DB/git unchanged → remove disposable directory
 ```
 
-## Data flow (AutoCorp Chat, working tree)
+`quick-podcast` writes its default generated episode output outside the
+target repository under
+`/tmp/autocorp_quick_podcast_output/<repo>/test_episode`; an explicit
+`--output` path is still honored.
+
+## Data flow (AutoCorp Chat)
 
 ```
 chat prompt -> AutoCorpChatSession.handle ->

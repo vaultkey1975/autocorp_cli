@@ -442,3 +442,44 @@ error does fail it.
 entry, not copied from an old report): exit code 0; 947 tests collected;
 the strict run completed successfully with the existing xfail visible in
 progress output.
+
+### 2026-07-30 — Production hardening audit fixes
+
+Explicitly requested: treat AutoCorp as if an external user release were
+tomorrow, audit CLI commands, repository-safety paths, AutoCorp Chat, and
+the Reliability Engine, then fix reliability/safety issues without adding
+new features.
+
+**Reliability Engine target-repo safety hardened.**
+`ReliabilityOrchestrator.run()` now refuses to start unless the target
+repository has a clean `git status --porcelain`, before any worktree is
+created. A new regression test proves a dirty disposable target repository
+raises before `workspace/.reliability_worktrees` exists.
+
+**Reliability Engine exception recovery hardened.** Unexpected subtask
+exceptions, including merge failures, are now converted into blocked
+subtask results, recorded as known issues, and preserved with diagnostic
+worktrees instead of escaping without durable state. A new regression test
+simulates a merge failure and verifies the target repository stays
+unchanged, the subtask is blocked in state, and the diagnostic worktree is
+still registered.
+
+**CLI interrupt behavior normalized.** Interactive `autocorp chat` and
+top-level command dispatch now return exit code 130 on Ctrl+C and print a
+concise interruption message. New tests cover both paths.
+
+**Quick Podcast default output moved outside target repositories.** The
+default output directory is now
+`/tmp/autocorp_quick_podcast_output/<repo>/test_episode` instead of
+`<target-repo>/output/test_episode`; explicit `--output` remains honored.
+A new regression test proves the default path is outside the target
+repository.
+
+Verification during the audit: `git diff --check` -> exit code 0;
+`.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 165
+maintained Python files compiled; focused hardening suite
+`.venv/bin/python -m pytest -W error -q tests/test_quick_podcast.py
+tests/test_autocorp_chat.py tests/test_reliability_engine.py` -> exit code
+0, 93 passed; full strict suite `.venv/bin/python -m pytest -W error -q`
+-> exit code 0, 959 tests collected with the existing xfail visible in
+progress output.

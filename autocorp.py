@@ -937,6 +937,10 @@ def cmd_chat(args) -> int:
         except EOFError:
             print()
             return 0
+        except KeyboardInterrupt:
+            print()
+            print("Interrupted.", file=sys.stderr)
+            return 130
         if request.casefold() in {"exit", "quit", "q"}:
             return 0
         if not request:
@@ -1122,7 +1126,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--voice", default="",
                     help="approved CloneCast voice_profile_id to use")
     sp.add_argument("--output", default="",
-                    help="output directory (default: <repo>/output/test_episode)")
+                    help="output directory (default: /tmp/autocorp_quick_podcast_output/<repo>/test_episode)")
     sp.add_argument("--test", action="store_true",
                     help="required safety mode: never publish externally")
     sp.set_defaults(func=cmd_quick_podcast)
@@ -1134,9 +1138,14 @@ def main() -> int:
     config.ensure_dirs()
     parser = build_parser()
     args = parser.parse_args()
-    if not args.command:
-        return repl(args.auto, args.watchdog)
-    return args.func(args)
+    try:
+        if not args.command:
+            return repl(args.auto, args.watchdog)
+        return args.func(args)
+    except KeyboardInterrupt:
+        print()
+        print("Interrupted.", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
