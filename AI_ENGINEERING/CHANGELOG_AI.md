@@ -362,7 +362,7 @@ Verification performed: `git diff --check` (exit 0, no whitespace errors);
 `tests/` — exit 0; `workspace/`'s gitignored, pre-existing AI-generated demo
 fixtures contain expected, unrelated syntax errors and were excluded);
 `.venv/bin/python -m pytest -W error` (full suite, strict-warnings mode):
-**938 passed, 1 xfailed, 0 failed**, exit 0; `tests/test_reliability_engine.py`
+**939 passed, 1 xfailed, 0 failed**, exit 0; `tests/test_reliability_engine.py`
 alone: 61/61 passed.
 
 ### 2026-07-30 — Reliability Engine E2E verification and AutoCorp Chat added
@@ -520,4 +520,57 @@ exited 0. Full verification passed: `git diff --check` -> exit code 0;
 `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 167
 maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
 -> exit code 0, 967 tests collected with the existing xfail visible in
+progress output.
+
+### 2026-07-30 — Universal Repository Discovery Engine
+
+Explicitly requested: add a Universal Repository Discovery Engine so
+AutoCorp can intelligently profile repositories that have never been seen
+before and do not contain AutoCorp engineering documents.
+
+**Discovery engine added.** `brains/discovery.py` creates a read-only
+repository profile from existing `scanner.run_scan()` and
+`analyzer.run_analysis()` evidence plus manifest/config inspection. It
+detects languages, frameworks, package managers, build system, test
+framework, lint/format/type tools, database technology, containerization,
+CI/CD, operating-system signals, repository size, project structure,
+documentation, license, architecture, application type, production
+readiness, engineering maturity, known risks, unknown areas, confidence,
+and preferred command metadata. Missing evidence is reported as `Unknown`
+or `Not enough evidence`.
+
+Discovery follows the repository's maintained-source boundary for
+technology evidence: generated/runtime `workspace/` and `data/` artifacts
+are excluded so disposable outputs cannot masquerade as target-repository
+architecture.
+
+**CLI and JSON output added.** `autocorp discover` supports text output,
+`--full` evidence output, and `--json`. The JSON mode uses quiet workspace
+resolution so stdout is machine-readable JSON without the workspace header.
+
+**Self-learning metadata added.** `memory/store.py` now has a
+`repository_profiles` table plus save/latest/recent helpers. Discovery
+stores only AutoCorp metadata in `data/autocorp.db`; it never writes to the
+target repository.
+
+**Manager and Chat integrated.** `autocorp manage` automatically runs
+discovery when no stored profile exists for the target repository. AutoCorp
+Chat can answer repository-profile, architecture, frameworks, languages,
+build-system, testing, deployment, and engineering-maturity prompts through
+the discovery engine.
+
+**Tests added.** `tests/test_discovery.py` covers Python, Node, Rust, Go,
+mixed-language, minimal, no-README, no-tests, conflicting-evidence, and
+AI_ENGINEERING-doc repositories, plus CLI JSON output, manager
+auto-discovery, Chat discovery routes, and Java/.NET/C++ ecosystem
+fixtures. Focused verification passed:
+`.venv/bin/python -m pytest -W error -q tests/test_discovery.py
+tests/test_manager.py tests/test_autocorp_chat.py` -> exit code 0,
+39 passed. Manual CLI smoke checks for `discover`, `discover --full`, and
+`discover --json` against `/home/larry/autocorp_cli` each exited 0, and
+JSON output parsed with `.venv/bin/python -m json.tool`. Full required
+verification passed: `git diff --check` -> exit code 0;
+`.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 169
+maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
+-> exit code 0, 985 tests collected with the existing xfail visible in
 progress output.

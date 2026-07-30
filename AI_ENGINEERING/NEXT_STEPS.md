@@ -7,7 +7,7 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Owner review of the Autonomous Engineering Manager.**
+1. **Owner review of the Universal Repository Discovery Engine.**
 
    Required verification has passed:
 
@@ -21,36 +21,37 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
    .venv/bin/python scripts/verify_compileall.py
    ```
 
-   Result: exit code 0, 167 maintained Python files compiled.
+   Result: exit code 0, 169 maintained Python files compiled.
 
    ```
-   .venv/bin/python -m pytest -W error -q tests/test_manager.py tests/test_autocorp_chat.py
+   .venv/bin/python -m pytest -W error -q tests/test_discovery.py tests/test_manager.py tests/test_autocorp_chat.py
    ```
 
-   Result: exit code 0, 21 passed.
+   Result: exit code 0, 39 passed.
 
-   Manual manager CLI smoke checks for `--summary`, `--roadmap`,
-   `--next-task`, and `--production` against `/home/larry/autocorp_cli`
-   each exited 0.
+   Manual `discover` smoke checks for text, `--full`, and `--json` modes
+   against `/home/larry/autocorp_cli` each exited 0. The JSON output was
+   parsed successfully with `.venv/bin/python -m json.tool`.
 
    ```
    .venv/bin/python -m pytest -W error -q
    ```
 
-   Result: exit code 0, 967 tests collected, strict run completed
+   Result: exit code 0, 985 tests collected, strict run completed
    successfully with the existing xfail visible in progress output.
 
-2. **Do not push automatically.** The owner requested commits if
-   verification passes and explicitly said not to push. Unrelated untracked
-   artifacts remain outside the manager change (`claude_phase_1g_audit.txt`,
-   `clonecast_live_readiness_report.txt`, `data/`,
-   `phase_1q_runtime_output.txt`).
+2. **Do not push without owner instruction.**
+   The owner requested commits if verification passes and explicitly said
+   not to push. Do not include unrelated untracked artifacts
+   (`claude_phase_1g_audit.txt`, `clonecast_live_readiness_report.txt`,
+   `data/`, `phase_1q_runtime_output.txt`).
 
 3. **Reliability Engine integration decision.** Repository evidence now
    includes an end-to-end test for `ReliabilityOrchestrator.run()` against
    a disposable git repository, plus production-hardening coverage for
-   dirty-target refusal and merge-failure diagnostics. The manager reports
-   this status but does not add a dedicated Reliability Engine CLI command.
+   dirty-target refusal and merge-failure diagnostics. Discovery and the
+   manager report this status but do not add a dedicated Reliability Engine
+   CLI command.
 
 ## Technical Debt
 
@@ -68,6 +69,9 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   verification runs. The CLI uses `pathlib` broadly, but production
   release claims about Windows support require dedicated Windows
   verification.
+- Discovery currently uses deterministic manifest/config/source evidence.
+  It does not execute package managers or CI commands; real build/test
+  execution remains a separate workflow stage.
 
 ## Known Bugs
 
@@ -79,8 +83,8 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   workflow/publishing validation from reaching a full successful PASS, but
   it is not an AutoCorp implementation defect.
 - No current AutoCorp implementation bug is documented here after the
-  production-hardening commit `99db951` and the manager focused tests run
-  in this session.
+  production-hardening commit `99db951`, manager commit `ff31c1a`, and the
+  discovery focused tests run in this session.
 
 ## Future Improvements
 
@@ -94,9 +98,8 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 - Add CI coverage for the repository-approved compile verifier if this
   repository is connected to a CI system. No CI configuration is evidenced
   in the repository.
-- Consider adding cached manager inputs if repeated `autocorp manage`
-  calls become slow on very large repositories. No performance issue has
-  been observed in this repository; this is a future scaling item only.
+- Expand discovery confidence with real command execution only when a safe,
+  explicit verification mode is designed.
 
 ## Blocked Work
 

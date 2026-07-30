@@ -174,6 +174,20 @@ instead of reimplementing those decisions in conversational code. Reuse
 this pattern for future "chief engineer" behavior: facts stay in the
 modules that already own them; the manager ranks, explains, and routes.
 
+**Discovery is the first-stage profile for unknown repositories, but it is
+still evidence-bound.** The Universal Repository Discovery Engine adds
+`brains/discovery.py` and stores reusable profile metadata in AutoCorp's
+own SQLite database (`repository_profiles`), not in the target repository.
+It reuses `scanner` and `analyzer` before inspecting manifests/configs and
+reports missing evidence as `Unknown` / `Not enough evidence` instead of
+guessing. The manager uses stored discovery profiles when present and runs
+discovery automatically for unseen repositories, so future orchestration
+has a profile without requiring the user to remember a separate command.
+Discovery follows the same maintained-source boundary as architecture
+analysis and compile verification: `workspace/`, `data/`, virtual
+environments, caches, and build outputs are excluded from technology-stack
+inference so generated artifacts cannot masquerade as target architecture.
+
 **Exclude `workspace/` (and `data/`) from architecture-level analysis, but
 not from raw scan totals.** `brains/analyzer.py` deliberately uses a wider
 ignore set than `brains/scanner.py` for anything that forms a judgment

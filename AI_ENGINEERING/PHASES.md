@@ -490,8 +490,8 @@ docstring header.
 - **Testing:** `tests/test_autocorp_chat.py` passes in focused
   verification and as part of the full strict test suite.
 - **Completion Evidence:** Committed as
-  `27ddbd0 feat: add AutoCorp Chat`. This production-hardening audit adds
-  pending interrupt-handling coverage so interactive chat exits with code
+  `27ddbd0 feat: add AutoCorp Chat`. Production-hardening commit `99db951`
+  added interrupt-handling coverage so interactive chat exits with code
   130 on Ctrl+C.
 
 ---
@@ -526,12 +526,50 @@ docstring header.
 
 ---
 
+## ERA 8 — Universal Repository Discovery Engine
+
+- **Purpose:** Add `autocorp discover`, a read-only discovery stage for
+  repositories that have never been seen by AutoCorp and may not contain
+  `AI_ENGINEERING/` documents. Discovery generates an evidence-backed
+  repository profile and stores only AutoCorp metadata.
+- **Deliverables:** `brains/discovery.py`, `autocorp.py` `discover`
+  subcommand wiring, `memory/store.py` `repository_profiles` metadata
+  table/helpers, `brains/manager.py`
+  automatic discovery for unseen repositories, `brains/chat.py`
+  discovery-backed profile routes, and `tests/test_discovery.py`.
+- **Capabilities:** primary language(s), frameworks, package managers,
+  build system, test framework, lint tools, formatter, type checker,
+  database technology, containerization, CI/CD, supported OS signals,
+  repository size, project structure, documentation quality, license,
+  architecture style, application type, production readiness, engineering
+  maturity, known risks, unknown areas, confidence, and reusable preferred
+  command metadata.
+- **Testing:** Focused verification passed:
+  `.venv/bin/python -m pytest -W error -q tests/test_discovery.py
+  tests/test_manager.py tests/test_autocorp_chat.py` -> exit code 0,
+  39 passed.
+- **Verification:** Manual CLI smoke checks for `discover`, `discover
+  --full`, and `discover --json` against `/home/larry/autocorp_cli` each
+  exited 0. The JSON output was parsed successfully with
+  `.venv/bin/python -m json.tool`. Full verification passed:
+  `git diff --check` -> exit code 0;
+  `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 169
+  maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
+  -> exit code 0, 985 tests collected with the existing xfail visible in
+  progress output.
+- **Completion Evidence:** Implemented and locally verified. Per
+  `PHASE_COMPLETION_POLICY.md`, do not describe it as owner-approved phase
+  completion unless the owner accepts that state.
+
+---
+
 ## FUTURE PLANNING REQUIRED
 
 No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the
 Reliability Engine's possible dedicated integration, committed AutoCorp
-Chat, and the Autonomous Engineering Manager is described anywhere in this
-repository — no docstring, no commit, no branch, no report. Specifically:
+Chat, the Autonomous Engineering Manager, and the Universal Repository
+Discovery Engine is described anywhere in this repository —
+no docstring, no commit, no branch, no report. Specifically:
 
 - What comes after Phase 1Y (assuming CloneCast's audio-clipping issue is
   someday resolved and a full publish-pipeline PASS is achieved) is not

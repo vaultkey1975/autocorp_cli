@@ -182,6 +182,17 @@ def init_db() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repository_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    repo_path TEXT NOT NULL,
+                    repo_name TEXT,
+                    profile_json TEXT NOT NULL
+                )
+                """
+            )
     except sqlite3.Error:
         pass
 
@@ -385,6 +396,65 @@ def recent_routes(limit: int = 10) -> list:
 
 
 # --------------------------------------------------------------------------- #
+# Repository profiles (Universal Repository Discovery)
+# --------------------------------------------------------------------------- #
+def save_repository_profile(profile: dict) -> int:
+    """Persist a discovery profile as AutoCorp metadata. Never writes to the
+    target repository and never raises."""
+    if not isinstance(profile, dict):
+        return -1
+    init_db()
+    try:
+        with _connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO repository_profiles (ts, repo_path, repo_name, profile_json) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    datetime.datetime.now().isoformat(),
+                    profile.get("repo_path", ""),
+                    profile.get("repo_name", ""),
+                    json.dumps(profile, sort_keys=True),
+                ),
+            )
+            return cur.lastrowid
+    except (sqlite3.Error, TypeError, ValueError):
+        return -1
+
+
+def latest_repository_profile(repo_path: str) -> dict | None:
+    """Return the most recent discovery profile for a repository path."""
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT profile_json FROM repository_profiles WHERE repo_path = ? "
+                "ORDER BY ts DESC, id DESC LIMIT 1",
+                (repo_path,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    try:
+        return json.loads(row["profile_json"])
+    except (TypeError, ValueError):
+        return None
+
+
+def recent_repository_profiles(limit: int = 10) -> list:
+    """Recent discovery profile rows, newest first."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                "SELECT id, ts, repo_path, repo_name FROM repository_profiles "
+                "ORDER BY ts DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.Error:
+        return []
+
+
+# --------------------------------------------------------------------------- #
 # Reading / recall
 # --------------------------------------------------------------------------- #
 def _keywords(text: str) -> list:
@@ -453,7 +523,7 @@ def recent_lessons(limit: int = 20) -> list:
 
 
 def stats() -> dict:
-    out = {"builds": 0, "lessons": 0, "successes": 0, "fixes": 0, "plans": 0}
+    out = {"builds": 0, "lessons": 0, "successes": 0, "fixes": 0, "plans": 0, "repository_profiles": 0}
     try:
         with _connect() as conn:
             out["builds"] = conn.execute("SELECT COUNT(*) FROM builds").fetchone()[0]
@@ -466,6 +536,10 @@ def stats() -> dict:
                 out["plans"] = conn.execute("SELECT COUNT(*) FROM plans").fetchone()[0]
             except sqlite3.Error:
                 out["plans"] = 0
+            try:
+                out["repository_profiles"] = conn.execute("SELECT COUNT(*) FROM repository_profiles").fetchone()[0]
+            except sqlite3.Error:
+                out["repository_profiles"] = 0
     except sqlite3.Error:
         pass
     return out

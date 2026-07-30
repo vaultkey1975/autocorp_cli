@@ -29,6 +29,9 @@ The repository's evidenced trajectory since that original vision has been:
   past) a real external upload boundary.
 5. Coordinate all of the above through a read-only Autonomous Engineering
    Manager that tells an engineer what to do next from repository evidence.
+6. Discover unknown repositories before management/planning by building an
+   evidence-backed repository profile even when no `AI_ENGINEERING/`
+   documents exist.
 
 ## Architecture (summary)
 
@@ -37,13 +40,14 @@ See `ARCHITECTURE.md` for full detail. In brief:
 ```
 autocorp.py (CLI / argparse)
   ├── core/            orchestrator, console, Ollama client
-  ├── brains/          39 tracked .py files after the manager change:
+  ├── brains/          40 tracked .py files after the discovery change:
   │                    original
   │                    brains, the engine
   │                    abstraction + repair/self-healing pipeline, and the
   │                    Phase 1A–1Y repository-intelligence /
-  │                    CloneCast-validation infrastructure, Chat, and the
-  │                    Autonomous Engineering Manager
+  │                    CloneCast-validation infrastructure, Chat, the
+  │                    Autonomous Engineering Manager, and Universal
+  │                    Repository Discovery
   ├── memory/          SQLite-backed build/lesson memory (store.py)
   ├── safety/          Executor + CommandGate + WatchdogGate seam
   └── reliability_engine/   committed source/tests; dedicated CLI
@@ -70,9 +74,10 @@ an owner decision, not one this document makes.
 See `CURRENT_PHASE.md` for the live snapshot. Repository evidence now
 includes a committed Reliability Engine end-to-end
 `ReliabilityOrchestrator.run()` test, a committed AutoCorp Chat CLI
-subcommand, and the production-hardening commit `99db951`. The current
-working tree adds the Autonomous Engineering Manager (`autocorp manage` /
-`brains/manager.py`). Official phase completion remains owner-gated by
+subcommand, the production-hardening commit `99db951`, and committed
+Autonomous Engineering Manager `ff31c1a`. The current work adds Universal
+Repository Discovery (`autocorp discover` / `brains/discovery.py`).
+Official phase completion remains owner-gated by
 `PHASE_COMPLETION_POLICY.md`.
 
 ## Remaining phases (repository evidence only)
@@ -105,10 +110,16 @@ The only "remaining" work with direct repository evidence:
    and `brains/manager.py`, with tests for summary, roadmap, next-task,
    production readiness, AI recommendation, failure handling, CLI wiring,
    and Chat routing. Full local verification passed.
+7. **Universal Repository Discovery Engine** — implemented by `autocorp
+   discover`, `brains/discovery.py`, AutoCorp metadata storage for
+   repository profiles, automatic manager discovery for unseen
+   repositories, and Chat profile routes. Focused verification passed;
+   full local verification passed. Official phase completion remains
+   owner-gated by `PHASE_COMPLETION_POLICY.md`.
 
 ## FUTURE PLANNING REQUIRED
 
-Beyond the six items above, this repository contains **no evidence** —
+Beyond the seven items above, this repository contains **no evidence** —
 no docstring, no commit, no branch, no report — describing what comes
 next. Specifically unknown from repository evidence:
 

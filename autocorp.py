@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, chat, engine_registry, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, discovery, engine_registry, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -153,7 +153,7 @@ def cmd_memory(args) -> int:
     return 0
 
 
-def _resolve_repo(args) -> str:
+def _resolve_repo(args, quiet: bool = False) -> str:
     """Resolve the --repo argument and print a workspace header when an
     external target is requested. Returns the resolved repository root."""
     default_path = os.path.dirname(os.path.abspath(__file__))
@@ -162,19 +162,26 @@ def _resolve_repo(args) -> str:
     resolution = workspace.resolve_workspace(repo_arg, default_path)
 
     if not resolution.is_git_repository:
-        print("Workspace Error")
-        print("===============")
-        print()
-        if resolution.requested_path:
-            print(f"Requested Path:  {resolution.requested_path}")
-        print(f"Resolved Path:   {resolution.resolved_path}")
-        print()
-        print("Reason:")
-        for b in resolution.blockers:
-            print(f"  - {b}")
-        print()
-        print("No Changes Made: Yes")
+        if quiet:
+            reason = "; ".join(resolution.blockers) or "Not a Git repository"
+            raise SystemExit(f"Workspace Error: {reason}")
+        else:
+            print("Workspace Error")
+            print("===============")
+            print()
+            if resolution.requested_path:
+                print(f"Requested Path:  {resolution.requested_path}")
+            print(f"Resolved Path:   {resolution.resolved_path}")
+            print()
+            print("Reason:")
+            for b in resolution.blockers:
+                print(f"  - {b}")
+            print()
+            print("No Changes Made: Yes")
         raise SystemExit(1)
+
+    if quiet:
+        return resolution.repo_root
 
     if not resolution.is_default_repository:
         print("Workspace")
@@ -966,6 +973,18 @@ def cmd_manage(args) -> int:
     return 0
 
 
+def cmd_discover(args) -> int:
+    """Universal Repository Discovery: read-only repository profiling with
+    AutoCorp metadata storage."""
+    repo_root = _resolve_repo(args, quiet=getattr(args, "json", False))
+    profile = discovery.discover_repository(repo_root, store_profile=True)
+    if getattr(args, "json", False):
+        print(discovery.profile_to_json(profile))
+    else:
+        print(discovery.render_profile(profile, full=getattr(args, "full", False)))
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -1144,6 +1163,16 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--production", action="store_true",
                       help="show production/release readiness scoring")
     sp.set_defaults(func=cmd_manage)
+
+    sp = sub.add_parser("discover",
+                        help="universal repository discovery profile")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--json", action="store_true",
+                    help="emit machine-readable JSON profile")
+    sp.add_argument("--full", action="store_true",
+                    help="include evidence lines for each finding")
+    sp.set_defaults(func=cmd_discover)
 
     sp = sub.add_parser("quick-podcast",
                         help="generate a real disposable CloneCast podcast for listening")

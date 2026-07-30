@@ -16,7 +16,8 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from brains import analyzer, engine_registry, live_readiness, project_planner, scanner
+from brains import analyzer, discovery, engine_registry, live_readiness, project_planner, scanner
+from memory import store
 
 
 _PRIORITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
@@ -81,6 +82,8 @@ class ManagerReport:
     production_commands: tuple[str, ...] = ()
     available_engines: tuple[str, ...] = ()
     reliability_engine_status: str = "Unable to determine from repository evidence."
+    discovery_profile: discovery.RepositoryProfile | None = None
+    discovery_source: str = "Unable to determine from repository evidence."
 
 
 def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerReport:
@@ -90,6 +93,13 @@ def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerRepo
 
     scan = scanner.run_scan(repo_path)
     analysis = analyzer.run_analysis(repo_path)
+    stored_profile = store.latest_repository_profile(repo_path)
+    if stored_profile:
+        profile = _profile_from_dict(stored_profile)
+        discovery_source = "Stored AutoCorp discovery profile"
+    else:
+        profile = discovery.discover_repository(repo_path, store_profile=True)
+        discovery_source = "Auto-discovered during manager run"
     plan = project_planner.run_project_plan(repo_path)
     readiness, readiness_error = _readiness(repo_path)
     git_recent = tuple(_git_lines(repo_path, ["log", "--oneline", "--max-count=5"]))
@@ -133,6 +143,8 @@ def run_manager(repo_path: str, autocorp_root: str | None = None) -> ManagerRepo
         production_commands=production_commands,
         available_engines=tuple(engine_registry.available_engines()),
         reliability_engine_status=reliability_status,
+        discovery_profile=profile,
+        discovery_source=discovery_source,
     )
 
 
@@ -146,6 +158,7 @@ def render_summary(report: ManagerReport) -> str:
         f"Branch: {report.scan.branch}",
         f"Working Tree: {report.scan.working_tree}",
         f"Project Type: {report.analysis.project_type}",
+        f"Discovery Profile: {report.discovery_source}",
         f"Overall Health: {report.analysis.overall_health}",
         "",
         "Current Repository Phase",
@@ -222,6 +235,59 @@ def _readiness(repo_path: str):
         return live_readiness.run_live_readiness(repo_path), ""
     except Exception as exc:
         return None, str(exc) or exc.__class__.__name__
+
+
+def _profile_from_dict(data: dict) -> discovery.RepositoryProfile:
+    # Re-run discovery if a historical profile is malformed. This keeps the
+    # manager useful while still preferring stored metadata for known repos.
+    try:
+        return discovery.RepositoryProfile(
+            repo_path=data["repo_path"],
+            repo_name=data.get("repo_name", ""),
+            repository_type=_finding_from_dict(data.get("repository_type", {})),
+            languages=tuple(_finding_from_dict(item) for item in data.get("languages", ())),
+            frameworks=tuple(_finding_from_dict(item) for item in data.get("frameworks", ())),
+            package_managers=tuple(_finding_from_dict(item) for item in data.get("package_managers", ())),
+            build_system=tuple(_finding_from_dict(item) for item in data.get("build_system", ())),
+            test_frameworks=tuple(_finding_from_dict(item) for item in data.get("test_frameworks", ())),
+            lint_tools=tuple(_finding_from_dict(item) for item in data.get("lint_tools", ())),
+            formatters=tuple(_finding_from_dict(item) for item in data.get("formatters", ())),
+            type_checkers=tuple(_finding_from_dict(item) for item in data.get("type_checkers", ())),
+            database_technology=tuple(_finding_from_dict(item) for item in data.get("database_technology", ())),
+            containerization=tuple(_finding_from_dict(item) for item in data.get("containerization", ())),
+            cicd_platforms=tuple(_finding_from_dict(item) for item in data.get("cicd_platforms", ())),
+            operating_systems=tuple(_finding_from_dict(item) for item in data.get("operating_systems", ())),
+            repository_size=dict(data.get("repository_size", {})),
+            project_structure=tuple(_finding_from_dict(item) for item in data.get("project_structure", ())),
+            documentation=tuple(_finding_from_dict(item) for item in data.get("documentation", ())),
+            license=_finding_from_dict(data.get("license", {})),
+            architecture=_finding_from_dict(data.get("architecture", {})),
+            application_type=_finding_from_dict(data.get("application_type", {})),
+            dependencies=tuple(_finding_from_dict(item) for item in data.get("dependencies", ())),
+            build_process=tuple(_finding_from_dict(item) for item in data.get("build_process", ())),
+            deployment=tuple(_finding_from_dict(item) for item in data.get("deployment", ())),
+            production_readiness=_finding_from_dict(data.get("production_readiness", {})),
+            engineering_maturity=_finding_from_dict(data.get("engineering_maturity", {})),
+            known_risks=tuple(data.get("known_risks", ())),
+            unknown_areas=tuple(data.get("unknown_areas", ())),
+            confidence=int(data.get("confidence", 0) or 0),
+            preferred_test_command=data.get("preferred_test_command", "Unknown"),
+            preferred_build_command=data.get("preferred_build_command", "Unknown"),
+            preferred_lint_command=data.get("preferred_lint_command", "Unknown"),
+            preferred_package_manager=data.get("preferred_package_manager", "Unknown"),
+            preferred_entry_point=data.get("preferred_entry_point", "Unknown"),
+            preferred_documentation=data.get("preferred_documentation", "Unknown"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return discovery.discover_repository(data.get("repo_path", ""), store_profile=True)
+
+
+def _finding_from_dict(data: dict) -> discovery.DiscoveryFinding:
+    return discovery.DiscoveryFinding(
+        value=data.get("value", "Unknown") if isinstance(data, dict) else "Unknown",
+        evidence=tuple(data.get("evidence", ())) if isinstance(data, dict) else ("Not enough evidence",),
+        confidence=int(data.get("confidence", 0) or 0) if isinstance(data, dict) else 0,
+    )
 
 
 def _git_lines(repo_path: str, args: list[str]) -> list[str]:

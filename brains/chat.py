@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from brains import analyzer, manager, project_planner, scanner
+from brains import analyzer, discovery, manager, project_planner, scanner
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,23 @@ class AutoCorpChatSession:
             return response
         lower = message.casefold()
 
-        if _matches(lower, "show production readiness", "production readiness", "show release status", "release status"):
+        if _matches(lower, "show repository profile", "repository profile"):
+            response = self._discovery_profile()
+        elif _matches(lower, "show architecture", "architecture"):
+            response = self._discovery_section("architecture")
+        elif _matches(lower, "show frameworks", "frameworks"):
+            response = self._discovery_section("frameworks")
+        elif _matches(lower, "show languages", "languages"):
+            response = self._discovery_section("languages")
+        elif _matches(lower, "show build system", "build system"):
+            response = self._discovery_section("build")
+        elif _matches(lower, "show testing", "testing"):
+            response = self._discovery_section("testing")
+        elif _matches(lower, "show deployment", "deployment"):
+            response = self._discovery_section("deployment")
+        elif _matches(lower, "show engineering maturity", "engineering maturity"):
+            response = self._discovery_section("maturity")
+        elif _matches(lower, "show production readiness", "production readiness", "show release status", "release status"):
             response = self._manager_production()
         elif _matches(lower, "show roadmap", "roadmap"):
             response = self._manager_roadmap()
@@ -284,6 +300,32 @@ class AutoCorpChatSession:
         report = self._manager_report()
         return ChatResponse("manager_production", manager.render_production(report), commands=report.production_commands)
 
+    def _profile(self):
+        return discovery.discover_repository(self.repo_root, store_profile=True)
+
+    def _discovery_profile(self) -> ChatResponse:
+        return ChatResponse("repository_profile", discovery.render_profile(self._profile(), full=False))
+
+    def _discovery_section(self, section: str) -> ChatResponse:
+        profile = self._profile()
+        if section == "architecture":
+            text = _profile_single("Architecture", profile.architecture)
+        elif section == "frameworks":
+            text = _profile_findings("Frameworks", profile.frameworks)
+        elif section == "languages":
+            text = _profile_findings("Languages", profile.languages)
+        elif section == "build":
+            text = _profile_findings("Build System", profile.build_system)
+        elif section == "testing":
+            text = _profile_findings("Testing", profile.test_frameworks)
+        elif section == "deployment":
+            text = _profile_findings("Deployment", profile.deployment)
+        elif section == "maturity":
+            text = _profile_single("Engineering Maturity", profile.engineering_maturity)
+        else:
+            text = "Unable to determine from repository evidence."
+        return ChatResponse(f"repository_{section}", text)
+
     def _help(self, prefix: str = "") -> ChatResponse:
         lines = []
         if prefix:
@@ -295,6 +337,8 @@ class AutoCorpChatSession:
             "- what should I work on next / show blockers / show roadmap",
             "- show production readiness / show release status",
             "- show engineering summary / show next task",
+            "- show repository profile / architecture / frameworks / languages",
+            "- show build system / testing / deployment / engineering maturity",
             "- summarize today's work",
             "- explain this error: <text>",
             "- run a disposable workflow",
@@ -319,6 +363,27 @@ def _run_git(repo_root: str, args: list[str]) -> subprocess.CompletedProcess:
 def _read_limited(path: str, limit: int) -> str:
     with open(path, encoding="utf-8") as fh:
         return fh.read()[:limit].rstrip()
+
+
+def _profile_single(title: str, finding) -> str:
+    lines = [title, "=" * len(title), finding.value]
+    if finding.evidence:
+        lines.extend(["", "Evidence:"])
+        lines.extend(f"- {ev}" for ev in finding.evidence)
+    lines.append(f"Confidence: {finding.confidence}%")
+    return "\n".join(lines)
+
+
+def _profile_findings(title: str, findings) -> str:
+    lines = [title, "=" * len(title)]
+    if not findings:
+        lines.append("Unknown - not enough evidence")
+        return "\n".join(lines)
+    for finding in findings:
+        lines.append(f"- {finding.value} ({finding.confidence}%)")
+        for ev in finding.evidence:
+            lines.append(f"  Evidence: {ev}")
+    return "\n".join(lines)
 
 
 def _first_ref(message: str) -> str:
