@@ -17,7 +17,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-from brains import analyzer, project_planner, scanner
+from brains import analyzer, manager, project_planner, scanner
 
 
 @dataclass(frozen=True)
@@ -50,11 +50,21 @@ class AutoCorpChatSession:
             return response
         lower = message.casefold()
 
-        if _matches(lower, "scan", "repository scan", "scan my repository"):
+        if _matches(lower, "show production readiness", "production readiness", "show release status", "release status"):
+            response = self._manager_production()
+        elif _matches(lower, "show roadmap", "roadmap"):
+            response = self._manager_roadmap()
+        elif _matches(lower, "show next task", "next task", "what should i work on next"):
+            response = self._manager_next_task()
+        elif _matches(lower, "show engineering summary", "engineering summary", "manager summary"):
+            response = self._manager_summary()
+        elif _matches(lower, "show blockers", "blockers"):
+            response = self._manager_roadmap()
+        elif _matches(lower, "scan", "repository scan", "scan my repository"):
             response = self._scan()
         elif _matches(lower, "health", "repository health", "show repository health", "what is broken", "broken"):
             response = self._health()
-        elif _matches(lower, "what should i work on next", "next", "blockers", "show blockers", "what phases remain", "roadmap"):
+        elif _matches(lower, "next", "what phases remain"):
             response = self._next_steps(lower)
         elif _matches(lower, "summarize today's work", "summarize todays work", "today's work", "todays work"):
             response = self._todays_work()
@@ -258,6 +268,22 @@ class AutoCorpChatSession:
             ]),
         )
 
+    def _manager_report(self):
+        return manager.run_manager(self.repo_root, autocorp_root=self.autocorp_root)
+
+    def _manager_summary(self) -> ChatResponse:
+        return ChatResponse("manager_summary", manager.render_summary(self._manager_report()))
+
+    def _manager_roadmap(self) -> ChatResponse:
+        return ChatResponse("manager_roadmap", manager.render_roadmap(self._manager_report()))
+
+    def _manager_next_task(self) -> ChatResponse:
+        return ChatResponse("manager_next_task", manager.render_next_task(self._manager_report()))
+
+    def _manager_production(self) -> ChatResponse:
+        report = self._manager_report()
+        return ChatResponse("manager_production", manager.render_production(report), commands=report.production_commands)
+
     def _help(self, prefix: str = "") -> ChatResponse:
         lines = []
         if prefix:
@@ -267,6 +293,8 @@ class AutoCorpChatSession:
             "- scan my repository",
             "- show repository health / what is broken",
             "- what should I work on next / show blockers / show roadmap",
+            "- show production readiness / show release status",
+            "- show engineering summary / show next task",
             "- summarize today's work",
             "- explain this error: <text>",
             "- run a disposable workflow",

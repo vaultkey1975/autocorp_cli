@@ -115,7 +115,7 @@ def test_chat_reads_engineering_docs_for_next_steps(tmp_path):
     (docs / "CURRENT_PHASE.md").write_text("# Current\nReliability Engine\n", encoding="utf-8")
     (docs / "NEXT_STEPS.md").write_text("# Next\nRun verification\n", encoding="utf-8")
 
-    response = chat.AutoCorpChatSession(str(tmp_path), autocorp_root=str(tmp_path)).handle("show blockers")
+    response = chat.AutoCorpChatSession(str(tmp_path), autocorp_root=str(tmp_path)).handle("next")
 
     assert response.intent == "next_steps"
     assert "AI_ENGINEERING/CURRENT_PHASE.md" in response.text

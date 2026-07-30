@@ -10,22 +10,22 @@ originally designed or as a future phase might redesign it. See
 ## Directory structure (tracked, via `git ls-files`)
 
 ```
-autocorp.py           CLI entry point (argparse) - 16 subcommands in the
-                       working tree, 16 committed before this audit
+autocorp.py           CLI entry point (argparse) - 17 subcommands in the
+                       working tree, 16 committed before this manager work
 config.py              Single source of truth for model/endpoint/timeouts/
                        paths; APP_VERSION frozen at "0.1.0" since the first
                        commit (see PROJECT_MEMORY.md)
 pytest.ini             testpaths=tests; explicitly excludes workspace/,
                        .venv, data, .git, egg-info, __pycache__
 core/                  console.py, llm.py (Ollama client), orchestrator.py
-brains/                38 tracked .py files (via `git ls-files "brains/*.py"`)
+brains/                39 tracked .py files after the manager change
                        - see "brains/ inventory" below
 memory/                store.py - SQLite build/lesson memory
 safety/                executor.py, gate.py, watchdog_gate.py
 scripts/               repository verification helpers
 reliability_engine/     17 tracked modules - surgical edit/repair
                        orchestration with worktree isolation
-tests/                 96 tracked test_*.py files before this audit
+tests/                 97 tracked test_*.py files after the manager change
 ```
 
 Present in the working tree but **not tracked by git** (verify with `git
@@ -53,6 +53,10 @@ Subcommands committed before this audit (`git show 27b138d:autocorp.py`):
 `plan-project`, `repair`, `propose-repair`, `live-readiness`, `live-test`,
 `workflow-test`, `publish-test`, `quick-podcast`, `chat`.
 
+The manager change adds `manage`, with mutually exclusive report modes
+`--summary`, `--roadmap`, `--next-task`, and `--production`. `autocorp.py`
+remains a thin CLI layer: all manager logic lives in `brains/manager.py`.
+
 Gate selection (`_make_gate`) chooses between `AllowAllGate` (`--auto`),
 `WatchdogGate` (`--watchdog`), and the default interactive `ConfirmGate` —
 this is the seam through which an external "Agent Watchdog" tool could
@@ -67,8 +71,13 @@ requests to existing repository capabilities (`scanner`, `analyzer`,
 `project_planner`, git inspection, workflow-test/publish-test command
 guidance, repair-plan guidance, and `AI_ENGINEERING/` documentation reads)
 rather than calling a generic model. The production-hardening working tree
-normalizes Ctrl+C handling to exit code 130 in both interactive chat and
-top-level command dispatch.
+was committed as `99db951`; interactive chat and top-level command
+dispatch now normalize Ctrl+C to exit code 130.
+
+The manager-backed Chat routes (`show roadmap`, `show production
+readiness`, `show next task`, `show blockers`, `show release status`, and
+`show engineering summary`) delegate to `brains/manager.py` instead of
+duplicating roadmap or readiness logic inside Chat.
 
 ## `brains/` inventory (tracked)
 
@@ -88,7 +97,12 @@ Grouped by the era that introduced them (see `PHASES.md` for detail):
 - **Phase 1A–1Y repository-intelligence / CloneCast-validation
   infrastructure:** `scanner.py`, `analyzer.py`, `project_planner.py`,
   `workspace.py`, `providers.py`, `repair_proposal.py`, `live_test.py`,
-  `live_readiness.py`, `workflow_test.py`, `publish_test.py`, `chat.py`.
+  `live_readiness.py`, `workflow_test.py`, `chat.py`.
+- **Autonomous Engineering Manager:** `manager.py` coordinates the
+  scanner, analyzer, project planner, live-readiness scanner, git
+  inspection, engineering docs, repair command guidance, workflow/publish
+  command guidance, Chat routing, and Reliability Engine availability into
+  summary, roadmap, next-task, and production-readiness reports.
 - **Quick Podcast:** `quick_podcast.py` (thin orchestrator),
   `quick_podcast_runner.py` (the actual CloneCast-service-calling worker —
   see "Workflow engine" below for why this one runs as a separate process).
@@ -190,6 +204,44 @@ Two unrelated planners exist:
 
 Do not conflate "planning a build" with "planning repository actions" —
 they solve different problems and share no code.
+
+## Autonomous Engineering Manager
+
+`brains/manager.py` is a read-only coordinator, not a new scanner or
+planner. Its public entry point, `run_manager(repo_path)`, calls existing
+modules that already own repository evidence:
+
+1. `scanner.run_scan(repo_path)` for git status and raw file/code-health
+   markers.
+2. `analyzer.run_analysis(repo_path)` for architecture, entry point,
+   dependency, and test-framework evidence.
+3. `project_planner.run_project_plan(repo_path)` for prioritized
+   repository actions and blockers.
+4. `live_readiness.run_live_readiness(repo_path)` for static production
+   readiness checks. If this raises, the manager reports the scanner error
+   as a production-readiness deduction; it does not fabricate a pass.
+5. Read-only git commands (`git log`, `git status`) for recent-change
+   evidence.
+6. `AI_ENGINEERING/CURRENT_PHASE.md` from the target repository, if
+   present, for current-phase evidence; otherwise it reports "Unable to
+   determine from repository evidence."
+7. Existing command surfaces for workflow-test, publish-test, repair, and
+   propose-repair. The manager recommends commands; it does not execute
+   workflow/publish/reliability write paths.
+
+The manager produces:
+
+- summary: healthy/broken/recent-change/current-phase/high-risk-code and
+  next-task evidence.
+- roadmap: Critical, High, Medium, Low, Completed, Blocked, Waiting on
+  Owner, Future Ideas.
+- next-task: the highest-priority evidence-backed task, with AI choice,
+  local-model safety, Reliability Engine suitability, disposable-mode
+  recommendation, review-before-merge, and command guidance.
+- production: deterministic score cards for Repository Health, Testing,
+  Safety, Documentation, Architecture, and Production. Scores are computed
+  from transparent deductions tied to repository evidence; the text
+  explains every deduction.
 
 ## Reliability Engine (committed, not exposed by a dedicated CLI command)
 
@@ -394,10 +446,8 @@ repository evidence:
 - Packaging dependencies are now tracked: `requirements.txt` includes
   `chromadb>=0.5.0` and `PyYAML>=6.0`.
 
-**What remains:** finish full required verification for the
-production-hardening working tree and commit it if it passes. A dedicated
-Reliability Engine CLI entry point remains an owner/product decision; no
-such command is added in this working tree.
+**What remains:** a dedicated Reliability Engine CLI entry point remains
+an owner/product decision; no such command is added in this working tree.
 
 ## Data flow (build loop, original architecture, still current)
 

@@ -1,51 +1,35 @@
 # Current Phase
 
-**Last verified against the repository:** 2026-07-30 production-hardening
-working tree on `main`. The base commit before this audit was
-`27b138d docs: record production readiness verification updates`.
+**Last verified against the repository:** 2026-07-30 Autonomous
+Engineering Manager implementation on `main`. The base commit before this
+work was `99db951 fix: harden production readiness paths`.
 
 ---
 
 ## Current Phase
 
 There is no single numbered phase currently defined as active. Repository
-evidence shows the current work is a production-hardening audit over the
-documented production-readiness systems:
+evidence shows the current work is an Autonomous Engineering Manager:
+`autocorp manage`, backed by a new `brains/manager.py` coordinator.
 
-1. **Reliability Engine end-to-end validation.** Committed evidence in
-   `f8b6400 test: verify Reliability Engine end-to-end workflow` added a
-   disposable-git-repository E2E regression in
-   `tests/test_reliability_engine.py` that calls
-   `ReliabilityOrchestrator.run()`, creates a real worktree, plans an edit,
-   applies generated FIND/REPLACE edits, runs validation and regression
-   tests, merges the result into the disposable repository only, removes
-   the successful worktree, and verifies AutoCorp's own repository status
-   is unchanged during the test.
-2. **AutoCorp Chat.** Committed evidence in
-   `27ddbd0 feat: add AutoCorp Chat` added `brains/chat.py` and the
-   `autocorp chat` subcommand. The chat is a repository-aware command
-   router over existing AutoCorp scanners, analyzer, project planner,
-   workflow-test, publish-test, repair-plan, git-summary,
-   prompt-generation, and documentation-reading capabilities. It is not a
-   generic LLM wrapper.
-3. **Production-hardening audit.** This session found additional local
-   engineering issues in production-readiness paths: Reliability Engine did
-   not refuse dirty target repositories before creating merge-capable
-   worktrees, unexpected subtask/merge exceptions were not normalized into
-   blocked results with diagnostic worktrees preserved, chat/CLI Ctrl+C
-   handling was inconsistent, and `quick-podcast` default output wrote
-   generated artifacts inside the target repository.
+This work is not another scanner, planner, or chat feature. It coordinates
+existing evidence sources:
+
+- `brains/scanner.py`
+- `brains/analyzer.py`
+- `brains/project_planner.py`
+- `brains/live_readiness.py`
+- existing workflow/publish-test CLI commands
+- git inspection
+- `AI_ENGINEERING/` documents in the target repository
+- existing repair/propose-repair command paths
+- AutoCorp Chat routing
+- Reliability Engine availability evidence
 
 ## Status
 
-**Production-hardening changes verified locally and pending commit.** The
-Reliability Engine E2E verification, AutoCorp Chat, maintained-source
-compile verifier, and related documentation are committed on `main` before
-this audit. The current working tree contains only the production-hardening
-fixes and documentation updates from this audit, plus unrelated untracked
-local artifacts reported by `git status`.
-
-Verification run in this audit:
+**Implemented and locally verified.** Verification run for this manager
+work:
 
 ```
 git diff --check
@@ -57,33 +41,41 @@ Result: exit code 0.
 .venv/bin/python scripts/verify_compileall.py
 ```
 
-Result: exit code 0, 165 maintained Python files compiled.
+Result: exit code 0, 167 maintained Python files compiled.
 
 ```
-.venv/bin/python -m pytest -W error -q tests/test_quick_podcast.py tests/test_autocorp_chat.py tests/test_reliability_engine.py
+.venv/bin/python -m pytest -W error -q tests/test_manager.py tests/test_autocorp_chat.py
 ```
 
-Result: exit code 0, 93 passed.
+Result: exit code 0, 21 passed.
 
 ```
 .venv/bin/python -m pytest -W error -q
 ```
 
-Result: exit code 0. Pytest collected 959 tests; the strict run completed
+Result: exit code 0. Pytest collected 967 tests; the strict run completed
 successfully with the existing xfail visible in progress output.
 
-The compile verification policy was corrected earlier on 2026-07-30.
-`python -m compileall .` is not the repository-approved gate because it
-traverses ignored `.venv/`, `workspace/`, `data/`, disposable worktrees,
-and build artifacts. Evidence: `.gitignore`, `pytest.ini`, and
-`brains/analyzer.py` all classify those paths outside maintained source.
-The approved maintained-source gate is:
+Manual CLI smoke checks against `/home/larry/autocorp_cli` passed for:
 
 ```
-.venv/bin/python scripts/verify_compileall.py
+.venv/bin/python autocorp.py manage --repo /home/larry/autocorp_cli --summary
+.venv/bin/python autocorp.py manage --repo /home/larry/autocorp_cli --roadmap
+.venv/bin/python autocorp.py manage --repo /home/larry/autocorp_cli --next-task
+.venv/bin/python autocorp.py manage --repo /home/larry/autocorp_cli --production
 ```
 
-Full verification required before any future commit remains:
+Each exited 0.
+
+Baseline before edits:
+
+```
+.venv/bin/python -m pytest -q
+```
+
+Result: exit code 0 with the existing xfail visible in progress output.
+
+Full verification required before commit remains:
 
 ```
 git diff --check
@@ -93,45 +85,28 @@ git diff --check
 
 ## Objective
 
-- Verify the Reliability Engine can complete its production entry point
-  through a disposable end-to-end workflow without mutating the user's real
-  repository.
-- Provide a production-ready AutoCorp Chat interface that reuses existing
-  repository-intelligence and validation modules.
-- Harden repository-safety and CLI failure behavior discovered by the
-  production-hardening audit.
-- Update engineering documentation to distinguish local engineering status
-  from owner-approved phase completion and production release decisions.
-- Commit only after the required verification passes.
+- Provide a read-only engineering manager that tells an engineer what is
+  broken, what is healthy, what changed recently, current phase evidence,
+  production readiness, highest-priority blockers, highest-risk code, next
+  task, AI recommendation, and safety posture.
+- Build a live roadmap with Critical, High, Medium, Low, Completed,
+  Blocked, Waiting on Owner, and Future Ideas sections.
+- Explain release-readiness scores through deterministic deductions from
+  repository evidence, not arbitrary unexplained numbers.
+- Teach AutoCorp Chat to answer manager-backed roadmap, production
+  readiness, next-task, blockers, release-status, and engineering-summary
+  requests.
 
 ## Known Blockers
 
-- ~~Compile verification gate~~ — **corrected 2026-07-30.** The former
-  bare `python -m compileall .` gate was a verification policy bug because
-  it checked ignored dependency/generated/runtime artifacts instead of
-  maintained source. `scripts/verify_compileall.py` is now the approved
-  maintained-source compile verifier.
-- ~~Reliability Engine dirty-target safety~~ — fixed in this
-  production-hardening working tree. `ReliabilityOrchestrator.run()` now
-  refuses a dirty target repository before creating worktrees.
-- ~~Reliability Engine merge/exception diagnostics~~ — fixed in this
-  production-hardening working tree. Unexpected subtask exceptions are
-  recorded as blocked results and diagnostic worktrees are preserved.
-- ~~CLI interrupt normalization~~ — fixed in this production-hardening
-  working tree. Top-level CLI dispatch and chat interactive mode return
-  exit code 130 on Ctrl+C.
-- ~~Quick Podcast default output location~~ — fixed in this
-  production-hardening working tree. The default output path is now outside
-  the target repository; explicit `--output` remains owner-controlled.
-- **CloneCast audio clipping remains external to AutoCorp:** previous
-  CloneCast validation work repeatedly found CloneCast-side audio QC
-  failures. That evidence is unrelated to this Reliability Engine,
-  AutoCorp Chat, and production-hardening work.
 - **Owner-only completion authority:** per `PHASE_COMPLETION_POLICY.md`, an
   AI engineer may update evidence and create requested commits, but may not
   declare a phase officially complete unless the owner accepts that state.
+- **CloneCast audio clipping remains external to AutoCorp:** previous
+  CloneCast validation work repeatedly found CloneCast-side audio QC
+  failures. That evidence is unrelated to the manager implementation.
 
 ## Next Phase
 
 Unable to determine from repository evidence. No document or commit defines
-a numbered phase after the current production-readiness work.
+a numbered phase after the current Autonomous Engineering Manager work.

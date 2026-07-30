@@ -7,47 +7,50 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Complete required verification for the production-hardening working tree.**
-   Commands required by the owner request:
+1. **Owner review of the Autonomous Engineering Manager.**
+
+   Required verification has passed:
 
    ```
    git diff --check
+   ```
+
+   Result: exit code 0.
+
+   ```
    .venv/bin/python scripts/verify_compileall.py
+   ```
+
+   Result: exit code 0, 167 maintained Python files compiled.
+
+   ```
+   .venv/bin/python -m pytest -W error -q tests/test_manager.py tests/test_autocorp_chat.py
+   ```
+
+   Result: exit code 0, 21 passed.
+
+   Manual manager CLI smoke checks for `--summary`, `--roadmap`,
+   `--next-task`, and `--production` against `/home/larry/autocorp_cli`
+   each exited 0.
+
+   ```
    .venv/bin/python -m pytest -W error -q
    ```
 
-   Verification completed in this audit:
-   `git diff --check` -> exit code 0.
+   Result: exit code 0, 967 tests collected, strict run completed
+   successfully with the existing xfail visible in progress output.
 
-   `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 165
-   maintained Python files compiled.
-
-   `.venv/bin/python -m pytest -W error -q tests/test_quick_podcast.py
-   tests/test_autocorp_chat.py tests/test_reliability_engine.py` -> exit
-   code 0, 93 passed.
-
-   `.venv/bin/python -m pytest -W error -q` -> exit code 0; 959 tests
-   collected, strict run completed successfully with the existing xfail.
-
-   The former `python -m compileall .` gate was investigated and classified
-   as a verification policy bug: it recurses into ignored `.venv/`,
-   `workspace/`, `data/`, temporary Reliability worktrees, and build
-   artifacts rather than maintained source. See `ENGINEERING_RULES.md` and
-   `ARCHITECTURE.md`.
-
-2. **Create a focused production-hardening commit only if required
-   verification passes.** The owner requested commits if verification
-   passes and explicitly said not to push. Do not include unrelated
-   untracked artifacts (`claude_phase_1g_audit.txt`,
+2. **Do not push automatically.** The owner requested commits if
+   verification passes and explicitly said not to push. Unrelated untracked
+   artifacts remain outside the manager change (`claude_phase_1g_audit.txt`,
    `clonecast_live_readiness_report.txt`, `data/`,
    `phase_1q_runtime_output.txt`).
 
 3. **Reliability Engine integration decision.** Repository evidence now
    includes an end-to-end test for `ReliabilityOrchestrator.run()` against
    a disposable git repository, plus production-hardening coverage for
-   dirty-target refusal and merge-failure diagnostics. The remaining
-   decision is whether/how the owner wants this subsystem exposed beyond
-   tests. No dedicated Reliability Engine CLI command exists.
+   dirty-target refusal and merge-failure diagnostics. The manager reports
+   this status but does not add a dedicated Reliability Engine CLI command.
 
 ## Technical Debt
 
@@ -56,7 +59,7 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   meaningful release indicator.
 - Two unrelated phase-numbering schemes exist in history: tagged SQLite
   Generation "Phase 1-7" work and untagged repository-intelligence
-  "Phase 1A-1Y" work. New documentation should avoid adding a third
+  "Phase 1A-1Y" work. New documentation should avoid adding another
   overloaded phase label.
 - The Reliability Engine performs full repository scans in
   `DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` during run
@@ -76,13 +79,14 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
   workflow/publishing validation from reaching a full successful PASS, but
   it is not an AutoCorp implementation defect.
 - No current AutoCorp implementation bug is documented here after the
-  production-hardening fixes in this working tree and the required local
-  verification run.
+  production-hardening commit `99db951` and the manager focused tests run
+  in this session.
 
 ## Future Improvements
 
 - Add a dedicated Reliability Engine CLI entry point only if the owner
-  approves production integration after reviewing the new E2E evidence.
+  approves production integration after reviewing the E2E and
+  production-hardening evidence.
 - Consider whether AutoCorp Chat should gain provider-backed natural
   language synthesis later. The first production version intentionally
   stays repository-backed and deterministic instead of acting as a generic
@@ -90,6 +94,9 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 - Add CI coverage for the repository-approved compile verifier if this
   repository is connected to a CI system. No CI configuration is evidenced
   in the repository.
+- Consider adding cached manager inputs if repeated `autocorp manage`
+  calls become slow on very large repositories. No performance issue has
+  been observed in this repository; this is a future scaling item only.
 
 ## Blocked Work
 

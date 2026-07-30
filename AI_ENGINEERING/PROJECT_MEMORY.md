@@ -164,6 +164,16 @@ LLM provider. This keeps answers grounded in repository evidence and gives
 future provider-backed chat a clean layer to add synthesis without moving
 the facts out of their existing modules.
 
+**The Autonomous Engineering Manager is the coordinating layer, not a new
+source of facts.** The `autocorp manage` implementation adds
+`brains/manager.py`, which calls the existing scanner, analyzer,
+project-planner, live-readiness, git, engineering-doc, repair-command,
+workflow/publish-command, Chat, and Reliability Engine evidence paths.
+Chat's roadmap/readiness/next-task/blocker routes delegate to this manager
+instead of reimplementing those decisions in conversational code. Reuse
+this pattern for future "chief engineer" behavior: facts stay in the
+modules that already own them; the manager ranks, explains, and routes.
+
 **Exclude `workspace/` (and `data/`) from architecture-level analysis, but
 not from raw scan totals.** `brains/analyzer.py` deliberately uses a wider
 ignore set than `brains/scanner.py` for anything that forms a judgment

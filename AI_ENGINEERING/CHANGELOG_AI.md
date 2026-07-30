@@ -483,3 +483,41 @@ tests/test_autocorp_chat.py tests/test_reliability_engine.py` -> exit code
 0, 93 passed; full strict suite `.venv/bin/python -m pytest -W error -q`
 -> exit code 0, 959 tests collected with the existing xfail visible in
 progress output.
+
+### 2026-07-30 — Autonomous Engineering Manager
+
+Explicitly requested: add AutoCorp's "Chief Engineer" layer as
+`autocorp manage`, without creating another scanner, planner, or chat
+feature and without duplicating existing logic.
+
+**Manager coordinator added.** `brains/manager.py` builds a read-only
+`ManagerReport` from existing modules: `scanner.run_scan`,
+`analyzer.run_analysis`, `project_planner.run_project_plan`,
+`live_readiness.run_live_readiness`, read-only git inspection,
+target-repository `AI_ENGINEERING/CURRENT_PHASE.md` when present,
+existing repair/propose-repair command guidance, existing workflow-test
+and publish-test command guidance, registered engine names, and
+Reliability Engine availability evidence. It renders summary, roadmap,
+next-task, and production-readiness views.
+
+**CLI wiring added.** `autocorp manage` supports `--summary`, `--roadmap`,
+`--next-task`, and `--production`, plus `--repo` for external target
+repositories. The command remains read-only and recommends disposable
+workflow/publish commands rather than running them.
+
+**Chat routing updated.** AutoCorp Chat now delegates `show roadmap`,
+`show production readiness`, `show next task`, `show blockers`,
+`show release status`, and `show engineering summary` to the manager.
+
+**Tests added.** `tests/test_manager.py` covers manager summary, roadmap,
+next-task output, production-readiness scoring, AI/safety recommendations,
+readiness failure handling, CLI parser/handler wiring, and Chat manager
+routing. Focused verification passed:
+`.venv/bin/python -m pytest -W error -q tests/test_manager.py
+tests/test_autocorp_chat.py` -> exit code 0, 21 passed. Manual CLI smoke
+checks for all four manager modes against `/home/larry/autocorp_cli` each
+exited 0. Full verification passed: `git diff --check` -> exit code 0;
+`.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 167
+maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
+-> exit code 0, 967 tests collected with the existing xfail visible in
+progress output.

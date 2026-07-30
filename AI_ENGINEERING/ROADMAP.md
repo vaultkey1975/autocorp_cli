@@ -24,9 +24,11 @@ The repository's evidenced trajectory since that original vision has been:
    inward on itself, then outward at a real external target repository
    (CloneCast) — always read-only or disposable-workspace-isolated.
 4. Prove, via real runs against that real external target, that AutoCorp
-   can safely drive a complete content-production pipeline (a podcast
-   episode) end-to-end, and validate its publishing pipeline up to (never
-   past) a real external upload boundary.
+  can safely drive a complete content-production pipeline (a podcast
+  episode) end-to-end, and validate its publishing pipeline up to (never
+  past) a real external upload boundary.
+5. Coordinate all of the above through a read-only Autonomous Engineering
+   Manager that tells an engineer what to do next from repository evidence.
 
 ## Architecture (summary)
 
@@ -35,13 +37,17 @@ See `ARCHITECTURE.md` for full detail. In brief:
 ```
 autocorp.py (CLI / argparse)
   ├── core/            orchestrator, console, Ollama client
-  ├── brains/          37 tracked .py files: original 4 brains, the engine
+  ├── brains/          39 tracked .py files after the manager change:
+  │                    original
+  │                    brains, the engine
   │                    abstraction + repair/self-healing pipeline, and the
   │                    Phase 1A–1Y repository-intelligence /
-  │                    CloneCast-validation infrastructure
+  │                    CloneCast-validation infrastructure, Chat, and the
+  │                    Autonomous Engineering Manager
   ├── memory/          SQLite-backed build/lesson memory (store.py)
   ├── safety/          Executor + CommandGate + WatchdogGate seam
-  └── reliability_engine/   UNCOMMITTED, unintegrated — see PHASES.md Era 5
+  └── reliability_engine/   committed source/tests; dedicated CLI
+                            integration remains owner-defined
 ```
 
 ## Completed phases
@@ -63,10 +69,11 @@ an owner decision, not one this document makes.
 
 See `CURRENT_PHASE.md` for the live snapshot. Repository evidence now
 includes a committed Reliability Engine end-to-end
-`ReliabilityOrchestrator.run()` test against a disposable git repository
-and a committed AutoCorp Chat CLI subcommand. The current working tree is a
-production-hardening audit over those systems. Official phase completion
-remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
+`ReliabilityOrchestrator.run()` test, a committed AutoCorp Chat CLI
+subcommand, and the production-hardening commit `99db951`. The current
+working tree adds the Autonomous Engineering Manager (`autocorp manage` /
+`brains/manager.py`). Official phase completion remains owner-gated by
+`PHASE_COMPLETION_POLICY.md`.
 
 ## Remaining phases (repository evidence only)
 
@@ -78,10 +85,9 @@ The only "remaining" work with direct repository evidence:
 2. ~~Commit or discard the `quick-podcast` CLI wiring~~ — **done**,
    committed as `53f0d7d`.
 3. **Reliability Engine integration** — staged steps through E2E
-   verification are committed. This production-hardening audit adds
-   pending dirty-target and merge-failure coverage. A dedicated Reliability
-   Engine CLI command remains an owner/product decision; no such command
-   exists yet.
+   verification and production hardening are committed. A dedicated
+   Reliability Engine CLI command remains an owner/product decision; no
+   such command exists yet.
 4. ~~Address the five documented Phase 1G gaps~~ — **corrected 2026-07-29:
    four of five were already fixed** by a commit predating the audit
    report being trusted at face value; the fifth (inline-redaction) was
@@ -95,10 +101,14 @@ The only "remaining" work with direct repository evidence:
    repository's own rules, this is CloneCast's issue to fix, not
    AutoCorp's — AutoCorp's job here is limited to detecting and reporting
    it accurately, which the evidence shows it already does correctly.
+6. **Autonomous Engineering Manager** — implemented by `autocorp manage`
+   and `brains/manager.py`, with tests for summary, roadmap, next-task,
+   production readiness, AI recommendation, failure handling, CLI wiring,
+   and Chat routing. Full local verification passed.
 
 ## FUTURE PLANNING REQUIRED
 
-Beyond the five items above, this repository contains **no evidence** —
+Beyond the six items above, this repository contains **no evidence** —
 no docstring, no commit, no branch, no report — describing what comes
 next. Specifically unknown from repository evidence:
 

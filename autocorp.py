@@ -34,7 +34,7 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, chat, engine_registry, live_readiness, live_test, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, engine_registry, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -949,6 +949,23 @@ def cmd_chat(args) -> int:
         print()
 
 
+def cmd_manage(args) -> int:
+    """Autonomous Engineering Manager: read-only coordination over existing
+    scanner, analyzer, planner, readiness, git, docs, repair, chat, and
+    Reliability Engine evidence."""
+    repo_root = _resolve_repo(args)
+    report = manager.run_manager(repo_root)
+    if getattr(args, "roadmap", False):
+        print(manager.render_roadmap(report))
+    elif getattr(args, "next_task", False):
+        print(manager.render_next_task(report))
+    elif getattr(args, "production", False):
+        print(manager.render_production(report))
+    else:
+        print(manager.render_summary(report))
+    return 0
+
+
 def repl(auto: bool, watchdog: bool = False) -> int:
     console.banner()
     if not _require_ollama():
@@ -1112,6 +1129,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", default=None, metavar="PATH",
                     help="absolute path to target repository")
     sp.set_defaults(func=cmd_chat)
+
+    sp = sub.add_parser("manage",
+                        help="Autonomous Engineering Manager")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    mode = sp.add_mutually_exclusive_group()
+    mode.add_argument("--summary", action="store_true",
+                      help="show engineering summary (default)")
+    mode.add_argument("--roadmap", action="store_true",
+                      help="show live evidence-backed roadmap")
+    mode.add_argument("--next-task", action="store_true",
+                      help="show the highest-priority recommended task")
+    mode.add_argument("--production", action="store_true",
+                      help="show production/release readiness scoring")
+    sp.set_defaults(func=cmd_manage)
 
     sp = sub.add_parser("quick-podcast",
                         help="generate a real disposable CloneCast podcast for listening")

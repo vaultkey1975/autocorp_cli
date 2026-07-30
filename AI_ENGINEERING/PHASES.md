@@ -496,12 +496,42 @@ docstring header.
 
 ---
 
+## ERA 7 — Autonomous Engineering Manager
+
+- **Purpose:** Add `autocorp manage`, a read-only coordinator over existing
+  AutoCorp capabilities. It is not a new scanner, planner, or chat feature;
+  it composes the repository scanner, analyzer, project planner,
+  live-readiness scanner, git inspection, target `AI_ENGINEERING`
+  documents, repair/propose-repair command guidance, workflow/publish-test
+  command guidance, AutoCorp Chat routing, and Reliability Engine
+  availability evidence.
+- **Deliverables:** `brains/manager.py`,
+  `autocorp.py` `manage` subcommand wiring, `brains/chat.py` manager-backed
+  routing for roadmap/readiness/next-task/blockers/release-status/summary
+  prompts, and `tests/test_manager.py`.
+- **Testing:** Focused verification passed:
+  `.venv/bin/python -m pytest -W error -q tests/test_manager.py
+  tests/test_autocorp_chat.py` -> exit code 0, 21 passed.
+- **Verification:** Manual CLI smoke checks for `manage --summary`,
+  `manage --roadmap`, `manage --next-task`, and `manage --production`
+  against `/home/larry/autocorp_cli` each exited 0. Full verification
+  passed: `git diff --check` -> exit code 0;
+  `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 167
+  maintained Python files compiled; `.venv/bin/python -m pytest -W error -q`
+  -> exit code 0, 967 tests collected with the existing xfail visible in
+  progress output.
+- **Completion Evidence:** Implemented and locally verified in this
+  change. Per `PHASE_COMPLETION_POLICY.md`, do not describe it as
+  owner-approved phase completion unless the owner accepts that state.
+
+---
+
 ## FUTURE PLANNING REQUIRED
 
 No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the
-Reliability Engine's possible dedicated integration, and committed
-AutoCorp Chat is described anywhere in this repository — no docstring, no
-commit, no branch, no report. Specifically:
+Reliability Engine's possible dedicated integration, committed AutoCorp
+Chat, and the Autonomous Engineering Manager is described anywhere in this
+repository — no docstring, no commit, no branch, no report. Specifically:
 
 - What comes after Phase 1Y (assuming CloneCast's audio-clipping issue is
   someday resolved and a full publish-pipeline PASS is achieved) is not
