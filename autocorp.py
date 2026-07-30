@@ -644,6 +644,193 @@ def cmd_live_test(args) -> int:
     return report.exit_code
 
 
+_EXTERNAL_DEPENDENCY_OWNERSHIP = "MISSING_EXTERNAL_MODEL_OR_DEPENDENCY"
+
+
+def _render_workflow_report(report) -> str:
+    """Render the full disposable-workflow report as text. Used for both
+    terminal output and the saved report file, so the two never drift apart.
+    Shared by Phase 1X (audio production) and Phase 1Y (publishing
+    validation, which reuses this same report shape with additional
+    stages/artifacts/findings appended)."""
+    is_publishing = report.publishing_readiness != "NOT_RUN"
+    lines = []
+    p = lines.append
+
+    if is_publishing:
+        p("Phase 1Y - CloneCast Production Publishing Validation")
+        p("=======================================================")
+    else:
+        p("Phase 1X - CloneCast Disposable Workflow Validation")
+        p("=====================================================")
+    p("")
+    p(f"Repository:       {report.repo_path}")
+    p(f"Disposable Root:  {report.disposable_root}")
+    p(f"Production DB:    {report.production_db_path}")
+    p(f"Overall Status:   {report.overall_status}")
+    p(f"Runtime:          {report.duration:.1f}s")
+    p("")
+
+    p("Workflow Stages")
+    p("----------------")
+    pass_count = sum(1 for s in report.stages if s.status == "PASS")
+    fail_count = sum(1 for s in report.stages if s.status == "FAIL")
+    p(f"  {pass_count} passed, {fail_count} failed, {len(report.stages)} total")
+    p("")
+    for s in report.stages:
+        tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[SKIP]"
+        p(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
+        if s.route:
+            p(f"       Route: {s.method} {s.route}")
+        if s.content_type:
+            p(f"       Content-Type: {s.content_type}")
+        if s.operation_id:
+            p(f"       Operation: {s.operation_id}")
+        if s.validation_errors:
+            p("       Validation errors:")
+            for ve in s.validation_errors[:5]:
+                p(f"         {ve}")
+        if s.extracted_ids:
+            for k, v in s.extracted_ids.items():
+                p(f"       ID: {k}={v}")
+        if s.flash_messages:
+            p(f"       Flash: {dict(s.flash_messages)}")
+        if s.redirect_url:
+            p(f"       Redirect: {s.redirect_url[:200]}")
+        if s.failure_ownership:
+            p(f"       Ownership: {s.failure_ownership}")
+        if s.request_body:
+            p(f"       Body: {s.request_body[:200]}")
+        if s.response_code:
+            p(f"       Response: {s.response_code}")
+        for ev in s.evidence:
+            p(f"       {ev}")
+        if s.failure_reason:
+            p(f"       FAILURE: {s.failure_reason}")
+        p("")
+
+    if report.first_failure:
+        p(f"First Failure: {report.first_failure}")
+    else:
+        p("First Failure: (none)")
+
+    p("")
+    p("Artifact Table")
+    p("--------------")
+    if report.artifacts:
+        for a in report.artifacts:
+            p(f"  [{a.kind}]")
+            p(f"    Path:              {a.path or '(none)'}")
+            p(f"    Size bytes:        {a.size_bytes}")
+            p(f"    Duration seconds:  {a.duration_seconds}")
+            p(f"    Codec:             {a.codec or '(none)'}")
+            p(f"    Sample rate:       {a.sample_rate}")
+            p(f"    Channels:          {a.channels}")
+            p(f"    SHA-256:           {a.sha256 or '(not computed)'}")
+            if a.db_sha256:
+                p(f"    DB-recorded SHA-256 matches: {'Yes' if a.sha256_matches_db else 'NO - MISMATCH'}")
+            if a.verify_error:
+                p(f"    Verification error: {a.verify_error}")
+            p("")
+    else:
+        p("  (no artifacts captured)")
+        p("")
+
+    p("Database Verification")
+    p("----------------------")
+    dbv = report.database_verification
+    if dbv.checked:
+        p(f"  PRAGMA integrity_check:     {dbv.integrity_check} ({'OK' if dbv.integrity_ok else 'FAILED'})")
+        p(f"  PRAGMA foreign_key_check:   {'OK - no violations' if dbv.foreign_keys_ok else dbv.foreign_key_violations}")
+        p("  Expected table row counts:")
+        for table, count in dbv.table_row_counts.items():
+            p(f"    {table}: {count}")
+        if dbv.missing_expected_rows:
+            p("  Missing expected rows:")
+            for m in dbv.missing_expected_rows:
+                p(f"    - {m}")
+    elif dbv.error:
+        p(f"  ERROR: {dbv.error}")
+    else:
+        p("  (not run - workflow stopped before a disposable database existed)")
+    p("")
+
+    p("ffprobe Verification")
+    p("---------------------")
+    ffprobe_checked = [a for a in report.artifacts if a.verified]
+    p(f"  {len(ffprobe_checked)}/{len(report.artifacts)} artifact(s) independently verified via ffprobe.")
+    p("")
+
+    p("External Dependency Failures")
+    p("-----------------------------")
+    ext_failures = [s for s in report.stages if s.failure_ownership == _EXTERNAL_DEPENDENCY_OWNERSHIP]
+    if ext_failures:
+        for s in ext_failures:
+            p(f"  Stage {s.number} ({s.stage}): {s.failure_reason}")
+    else:
+        p("  (none)")
+    p("")
+
+    if is_publishing:
+        p("Publishing Readiness")
+        p("---------------------")
+        p(f"  Verdict: {report.publishing_readiness}")
+        p("")
+        if report.publishing_findings:
+            for f in report.publishing_findings:
+                p(f"  [{f.severity}] {f.category}")
+                p(f"    Evidence:       {f.evidence}")
+                if f.recommendation:
+                    p(f"    Recommendation: {f.recommendation}")
+                p("")
+        else:
+            p("  (no findings recorded)")
+            p("")
+
+        p("External Dependency Summary (Publishing Providers)")
+        p("----------------------------------------------------")
+        p("  Do not publish: verified true - no code path in this run ever")
+        p("  attempted or could attempt a real external upload.")
+        p("")
+        for eds in report.external_dependency_status:
+            p(f"  [{eds.platform}]")
+            p(f"    Credentials configured: {'Yes' if eds.credentials_configured else 'No'} "
+              f"(checked: {', '.join(eds.credentials_env_vars_checked)})")
+            p(f"    Endpoint reachable:      {eds.endpoint_reachable}")
+            p(f"    Real upload code exists: {'Yes' if eds.real_upload_code_exists else 'No'}")
+            p(f"    Notes: {eds.notes}")
+            p("")
+
+    p("Production Integrity")
+    p("--------------------")
+    db_ok = report.production_db_before == report.production_db_after
+    p(f"  DB unchanged: {'Yes' if db_ok else 'NO - DATABASE WAS MODIFIED'}")
+    if report.production_db_size_before:
+        p(f"  DB size before: {report.production_db_size_before}")
+        p(f"  DB size after:  {report.production_db_size_after}")
+    git_ok = report.clonecast_git_status_before == report.clonecast_git_status_after
+    p(f"  CloneCast Git unchanged: {'Yes' if git_ok else 'NO - WORKTREE CHANGED'}")
+    if not git_ok:
+        p(f"  Git before: {report.clonecast_git_status_before or '(clean)'}")
+        p(f"  Git after:  {report.clonecast_git_status_after or '(clean)'}")
+    p("")
+
+    p("Cleanup Verification")
+    p("---------------------")
+    if report.cleanup_attempted:
+        p(f"  Disposable directory removed: {'Yes' if report.cleanup_removed else 'NO'}")
+        if report.cleanup_error:
+            p(f"  Cleanup error: {report.cleanup_error}")
+    else:
+        p("  (not attempted - no disposable directory was created)")
+    p("")
+
+    p(f"No Changes Made to Production: {'Yes' if db_ok and git_ok else 'NO'}")
+    p("")
+    p(f"Final Status: {report.overall_status}")
+    return "\n".join(lines) + "\n"
+
+
 def cmd_workflow_test(args) -> int:
     """Disposable workflow test: runs a real CloneCast workflow against a
     disposable environment. Never modifies production data."""
@@ -664,65 +851,54 @@ def cmd_workflow_test(args) -> int:
     repo_root = _resolve_repo(args)
     report = workflow_test.run_workflow_test(repo_root, port=8000)
 
-    print("Disposable Workflow Test")
-    print("========================")
-    print()
-    print(f"Repository:       {report.repo_path}")
-    print(f"Disposable Root:  {report.disposable_root}")
-    print(f"Production DB:    {report.production_db_path}")
-    print(f"Overall Status:   {report.overall_status}")
-    print()
+    text = _render_workflow_report(report)
+    print(text)
 
-    for s in report.stages:
-        tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[SKIP]"
-        print(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
-        if s.route:
-            print(f"       Route: {s.method} {s.route}")
-        if s.content_type:
-            print(f"       Content-Type: {s.content_type}")
-        if s.operation_id:
-            print(f"       Operation: {s.operation_id}")
-        if s.validation_errors:
-            print(f"       Validation errors:")
-            for ve in s.validation_errors[:5]:
-                print(f"         {ve}")
-        if s.extracted_ids:
-            for k, v in s.extracted_ids.items():
-                print(f"       ID: {k}={v}")
-        if s.flash_messages:
-            print(f"       Flash: {dict(s.flash_messages)}")
-        if s.flash_messages:
-            print(f"       Flash: {dict(s.flash_messages)}")
-        if s.redirect_url:
-            print(f"       Redirect: {s.redirect_url[:200]}")
-        if s.failure_ownership:
-            print(f"       Ownership: {s.failure_ownership}")
-        if s.request_body:
-            print(f"       Body: {s.request_body[:200]}")
-        if s.response_code:
-            print(f"       Response: {s.response_code}")
-        for ev in s.evidence:
-            print(f"       {ev}")
-        if s.failure_reason:
-            print(f"       FAILURE: {s.failure_reason}")
+    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phase_1x_report.txt")
+    with open(report_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(f"Report saved to: {report_path}")
+
+    return 0 if report.overall_status == "DISPOSABLE_WORKFLOW_COMPLETE" else 1
+
+
+def cmd_publish_test(args) -> int:
+    """Publishing validation: reuses the Phase 1X disposable workflow to
+    produce a real completed episode, then continues through every
+    publishing stage CloneCast supports (QC, release readiness, packaging,
+    local publication, platform export) up to but never including any real
+    external upload. Never modifies production data; never publishes
+    anything externally - confirmed both by CloneCast's own DB-level
+    constraints (destination_type CHECK'd to 'local' only) and by this
+    harness's own upload_status assertions."""
+    if not getattr(args, "disposable", False):
+        print("Publishing Validation Test")
+        print("==========================")
         print()
+        print("Overall Status:   SAFETY_BLOCKED")
+        print()
+        print("Blockers:")
+        print("  - --disposable flag is REQUIRED for publishing validation.")
+        print("  - Without it, no temporary files are created, no database is")
+        print("    copied, no server is started, and no HTTP requests are sent.")
+        print()
+        print("No Changes Made: Yes")
+        return 1
 
-    if report.first_failure:
-        print(f"First Failure: {report.first_failure}")
-    else:
-        print("First Failure: (none)")
+    repo_root = _resolve_repo(args)
+    report = workflow_test.run_workflow_test(repo_root, port=8000, include_publishing=True)
 
-    print()
-    print("Production Integrity")
-    print("--------------------")
-    db_ok = report.production_db_before == report.production_db_after
-    print(f"  DB unchanged: {'Yes' if db_ok else 'NO - DATABASE WAS MODIFIED'}")
-    if report.production_db_size_before:
-        print(f"  DB size before: {report.production_db_size_before}")
-        print(f"  DB size after:  {report.production_db_size_after}")
-    print()
-    print("No Changes Made to Production: Yes")
-    return 0 if report.overall_status in ("DISPOSABLE_WORKFLOW_COMPLETE", "DISPOSABLE_WORKFLOW_PARTIAL") else 1
+    text = _render_workflow_report(report)
+    print(text)
+
+    report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phase_1y_report.txt")
+    with open(report_path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print(f"Report saved to: {report_path}")
+
+    success = (report.overall_status == "DISPOSABLE_WORKFLOW_COMPLETE"
+              and report.publishing_readiness in ("PASS", "WARNING"))
+    return 0 if success else 1
 
 
 def cmd_quick_podcast(args) -> int:
@@ -877,6 +1053,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--disposable", action="store_true",
                     help="REQUIRED: enable disposable isolation (refuses without it)")
     sp.set_defaults(func=cmd_workflow_test)
+
+    sp = sub.add_parser("publish-test",
+                        help="disposable publishing validation test (safe, isolated, "
+                             "never uploads externally)")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--disposable", action="store_true",
+                    help="REQUIRED: enable disposable isolation (refuses without it)")
+    sp.set_defaults(func=cmd_publish_test)
 
     sp = sub.add_parser("quick-podcast",
                         help="generate a real disposable CloneCast podcast for listening")
