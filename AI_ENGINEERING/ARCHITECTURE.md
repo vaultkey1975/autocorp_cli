@@ -251,17 +251,26 @@ full `reliability_engine` test suite (60/60, including the one new test
 below) and a direct `from reliability_engine.orchestrator import
 ReliabilityOrchestrator` import both pass after the rename.
 
-**Test coverage proves unit-level correctness, not integrated behavior.**
-`tests/test_reliability_engine.py`'s 59 tests each exercise one module in
-isolation (often with a fake engine/tester); `ReliabilityOrchestrator.run()`
-— the actual end-to-end entry point — is never called anywhere in the test
-suite. Passing tests here do not demonstrate the full request → worktree →
-patch → gate → test → regression → merge pipeline has ever run successfully
-against a real Ollama model.
+**Test coverage proves unit-level correctness, not integrated behavior —
+confirmed a third time, independently, on 2026-07-30.**
+`tests/test_reliability_engine.py`'s tests each exercise one module in
+isolation (often with a fake engine/tester), or construct a
+`ReliabilityOrchestrator` and call only its private helpers
+(`_dependency_context`, `_edit_plan`, `_test_targets_for`).
+**`ReliabilityOrchestrator.run()` — the actual end-to-end entry point that
+drives every real build/repair cycle — has never been called by any test
+in this repository's history.** This was re-confirmed directly (grepping
+every `ReliabilityOrchestrator(...)` construction site and reading what
+method is called on each) rather than taken on trust from the prior
+investigation. Passing tests here do not demonstrate the full request →
+worktree → patch → gate → test → regression → merge pipeline has ever run
+successfully against a real Ollama model — and, per the next finding, that
+absence of end-to-end testing is not a theoretical concern.
 
 **Concrete risks found by reading the code, each independently
-re-verified 2026-07-29 (not just re-stated from the original investigation
-— see `PROJECT_MEMORY.md` on why that distinction matters):**
+re-verified across two sessions (2026-07-29, 2026-07-30) — not just
+re-stated from a prior investigation or a prior session's own findings
+(see `PROJECT_MEMORY.md` on why that distinction matters, twice over now):**
 
 1. `chromadb`/`PyYAML` are only in the uncommitted requirements files —
    `config_loader.py` silently degrades to a hand-rolled, two-level-only
@@ -270,21 +279,33 @@ re-verified 2026-07-29 (not just re-stated from the original investigation
    requirements changes, which is a packaging decision bundled with the
    larger "decide the fate of the Reliability Engine" question, not a safe
    isolated patch).
-2. ~~A missing `ruff`/`flake8`/`mypy` binary is treated as a blocking
-   static-gate issue~~ — **this claim was WRONG, corrected 2026-07-29.**
-   Verified empirically (monkeypatching `_tool_path` to simulate all three
-   tools missing, then calling `StaticGate.run_delta`, the only method any
-   real caller — `ReliabilityTestLoop` in `test_loop.py` — actually
-   invokes): a missing-tool `StaticIssue` appears identically in both the
-   before and after snapshots `run_delta` compares, so it is never treated
-   as a *new* issue and never blocks. The conflation (missing tool
-   presented as the same `StaticIssue` type as a real lint/type failure)
-   remains a design smell — `StaticGate.run()`, the unused absolute-mode
-   method, genuinely would block on it if a future caller used that method
-   instead of `run_delta()` — but it does not block anything in the actual,
-   currently-exercised code path. **Not fixed**, because there is nothing
-   currently broken to fix; noted here so a future caller of `run()`
-   directly knows the risk.
+2. **A missing `ruff`/`flake8`/`mypy` binary blocking a static-gate check —
+   more nuanced than either prior pass concluded, and a genuine bug was
+   found and fixed 2026-07-30.** `StaticGate.run()` (the absolute mode) does
+   treat a missing tool as a real, blocking issue — confirmed empirically.
+   Two of its three call sites already avoided this correctly by using
+   `collect_issues()` + `run_delta()` instead (a missing-tool marker appears
+   identically before and after a delta comparison, so it's never flagged as
+   "new"): `ReliabilityTestLoop` in `test_loop.py`, and
+   `SelfConsistencyRunner.choose_edit()`. **The third call site,
+   `SelfConsistencyRunner.choose()` (the greenfield-mode self-consistency
+   path — used precisely for the high-blast-radius/core-touching changes
+   this voting mechanism exists to protect), called the unsafe `run()`
+   directly**, meaning every candidate would be rejected in any environment
+   lacking these tools, silently defeating self-consistency voting for the
+   highest-stakes edits. This was missed by the 2026-07-29 investigation and
+   by this same document's own "corrected, not a live bug" claim written
+   that day — both checked only the `test_loop.py` call site. **Fixed
+   2026-07-30**: `choose()` now uses `collect_issues()` + `run_delta()`,
+   matching its sibling `choose_edit()`. Verified via a new regression test
+   (`test_self_consistency_choose_does_not_block_on_missing_static_tools`)
+   confirmed to fail against the pre-fix code and pass against the fix.
+   This bug — sitting in a core safety path, undetected across two rounds
+   of "independent verification" until a third pass specifically re-checked
+   every call site of `StaticGate.run()` rather than only the one already
+   known — is itself concrete evidence for why `ReliabilityOrchestrator.run()`
+   needs a real end-to-end test before this subsystem is trusted with real
+   edits (see the production-readiness verdict below).
 3. `DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` both do a
    full, uncached repo rescan on every single `run()` call. **Confirmed,
    not fixed** (a caching layer is a real design change, not a safe,
@@ -305,9 +326,9 @@ re-verified 2026-07-29 (not just re-stated from the original investigation
    second instance creating a worktree for the same subtask id.
 
 **Staged integration plan, if the repository owner decides to proceed**
-(steps 2 and 4 are now complete on their own merits as general code-quality
-fixes; completing them is not the same as authorizing integration, which
-remains a separate, still-open owner decision): ~~(1)
+(steps 2, 4, and 5 are now complete on their own merits as general
+code-quality fixes; completing them is not the same as authorizing
+integration, which remains a separate, still-open owner decision): ~~(1)
 triage/commit-or-discard the unrelated Phase 1X/1Y and repair-redaction
 changes~~ — done, they no longer share this working tree with
 reliability_engine (see `CURRENT_PHASE.md`); ~~(2) rename
@@ -316,15 +337,59 @@ the three purely-additive, low-risk pieces first and separately — the
 `brains/builder.py` diff, the `memory/store.py` diff, and the
 `chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions; ~~(4) fix the
 worktree-ID-collision-destroys-blocked-state issue~~ — **done**, see above;
-(5) the missing-tool-vs-real-issue distinction in `StaticGate` turned out
-not to be live (see item 2 above) — no longer a precondition; (6) add a
-true end-to-end test of `ReliabilityOrchestrator.run()` before trusting it
-with real edits; (7) only then add a CLI subcommand (following the
+~~(5) the missing-tool-vs-real-issue distinction in `StaticGate`~~ — **done,
+2026-07-30**, see item 2 above (this one turned out to need an actual code
+fix, not just documentation, once the third call site was found); **(6) add
+a true end-to-end test of `ReliabilityOrchestrator.run()` before trusting it
+with real edits — still the single largest remaining gap, and per the
+2026-07-30 production-readiness review below, the reason integration is not
+recommended yet;** (7) only then add a CLI subcommand (following the
 `cmd_workflow_test`/`cmd_build` pattern, confirming the existing
 `console.confirm("Proceed with this plan?")` gate at
 `orchestrator.py:172-174/199-200` stays intact and is not bypassed by
 `--auto`-style defaults without the owner's explicit intent). See
 `NEXT_STEPS.md` for the live status of this decision.
+
+### Production-readiness verdict (2026-07-30)
+
+**Not ready for production integration.** Requested explicitly this date:
+"determine whether it is now production-ready... use repository evidence
+only... if not ready, do not force integration, explain exactly what
+remains and stop." The evidence:
+
+- Architecture is internally consistent and complete for the paths it
+  implements: no dead files (every module is imported by at least one
+  other file or its test), no dead APIs, no TODOs/FIXMEs/`NotImplementedError`
+  stubs, no mock/fake implementations presented as real (confirmed by
+  grepping the source itself, not just its tests).
+- It does duplicate existing functionality: a second, parallel build/repair
+  orchestration pipeline alongside `core/orchestrator.py::Session`, with its
+  own reimplemented self-heal/retry logic. Whether to merge, replace, or
+  keep both as separate modes is a product decision for the repository
+  owner (see step 8 of the original investigation's recommendation,
+  unchanged) — not something resolved by this review.
+- **The decisive fact:** `ReliabilityOrchestrator.run()` has never been
+  exercised by any test, ever. A third bug (the `choose()` static-gate
+  misuse above) was found only by manually re-reading every call site of a
+  function already investigated twice — direct, current proof that
+  untested integration paths hide real, non-hypothetical bugs, and that
+  two prior "independent verification" passes were not sufficient to find
+  everything. Integrating this into the CLI now would expose a capability
+  that can write real changes to the user's actual repository
+  (`WorktreeSandbox.merge_to_main` applies a real diff via `git apply`)
+  through a path that has never once completed successfully end-to-end.
+  This is exactly the scenario `AI_ENGINEERING_CONSTITUTION.md` §4/§12 and
+  `ENGINEERING_RULES.md`'s "no fake verification" rule exist to prevent.
+- Packaging is incomplete for a fresh checkout (`chromadb`/`PyYAML` not in
+  the committed `requirements.txt`).
+
+**What remains before production integration could be recommended:** add a
+real end-to-end test of `ReliabilityOrchestrator.run()` (a disposable temp
+git repo, a trivial real request, a real or realistically-faked engine
+wired all the way through, asserting on the final status) — step 6 of the
+staged plan above — then re-run this same review. Steps 1–5 are now done;
+step 6 is the blocking gap. No CLI wiring was added this session; no part
+of `reliability_engine/` was committed.
 
 ## Data flow (build loop, original architecture, still current)
 

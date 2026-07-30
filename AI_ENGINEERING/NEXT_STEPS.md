@@ -18,31 +18,33 @@ discovers any item — see `DOCUMENTATION_POLICY.md`.
    **Done (2026-07-29).** Committed as `53f0d7d "feat: wire quick-podcast
    CLI subcommand"`, by owner decision. `quick-podcast` is now reachable
    from a fresh checkout of `main`.
-3. **Reliability Engine: investigation complete (2026-07-29), two verified
-   bugs fixed (2026-07-29, same day), integration still NOT authorized.**
-   Full findings are in `ARCHITECTURE.md`'s "Reliability Engine" section.
-   Summary: it is a second, parallel build/repair orchestration pipeline
-   (duplicates rather than composes with `core/orchestrator.py::Session`),
-   functionally complete and unit-tested, but its true end-to-end entry
-   point (`ReliabilityOrchestrator.run()`) has never been exercised by any
-   test. Every finding from the original investigation was independently
-   re-verified against the actual code (not re-stated at face value) before
-   acting on it: the worktree-ID-collision-destroys-blocked-state bug was
-   confirmed and **fixed** (`WorktreeSandbox` now namespaces every worktree
-   by a per-run random id); the `model_router.py` naming collision was
-   confirmed and **fixed** (renamed to `model_availability.py`); the
-   "missing-tool blocks every edit" claim was re-verified empirically and
-   found **incorrect** — the real code path (`StaticGate.run_delta`)
-   cancels out a missing-tool marker since it's identical before and after,
-   so nothing was changed for that one (see `PROJECT_MEMORY.md`). Remaining
-   unaddressed, by design (each requires a larger decision than a safe
-   isolated patch): `chromadb`/`PyYAML` only in uncommitted requirements
-   files; uncached full-repo rescans per call; no true end-to-end test of
-   `run()`. **Do not import or register any `reliability_engine/` module,
-   and do not add a CLI subcommand, until the repository owner reviews this
-   proposal and explicitly approves integration** — fixing internal bugs is
-   not the same decision as authorizing integration, and remains
-   unauthorized.
+3. **Reliability Engine: production-readiness review complete (2026-07-30)
+   — VERDICT: NOT READY.** Full findings are in `ARCHITECTURE.md`'s
+   "Reliability Engine" section, including a dated "Production-readiness
+   verdict" subsection. Summary: it is a second, parallel build/repair
+   orchestration pipeline (duplicates rather than composes with
+   `core/orchestrator.py::Session`, a product decision for the owner, not
+   resolved here), architecturally complete and internally consistent (no
+   dead files, no dead APIs, no TODOs, no placeholders, no mocks), but its
+   true end-to-end entry point (`ReliabilityOrchestrator.run()`) has never
+   been exercised by any test in this repository's history — confirmed
+   directly a third time this session. That gap is not theoretical: a third
+   independent pass (2026-07-30) found and fixed a genuine bug missed by
+   two prior "independent verification" passes —
+   `SelfConsistencyRunner.choose()` called the unsafe `StaticGate.run()`
+   instead of the safe `run_delta()` its sibling `choose_edit()` already
+   used correctly, meaning self-consistency voting for core-touching/
+   high-blast-radius changes would silently fail in any environment missing
+   `ruff`/`mypy`. Three bugs fixed total across two sessions (worktree-ID
+   collision, `model_router.py` naming collision, this self-consistency
+   bug); `chromadb`/`PyYAML` packaging and uncached full-repo rescans remain
+   unaddressed by design. **A real end-to-end test of `run()` is the single
+   remaining precondition before integration could be recommended.** Until
+   that exists, do not import or register any `reliability_engine/` module
+   and do not add a CLI subcommand — a capability that can write real
+   changes to the user's repository (`WorktreeSandbox.merge_to_main`)
+   should not ship through a path that has never once completed
+   successfully end-to-end.
 4. ~~Fix the missing `README.md` update~~ — **Done (2026-07-29).** Added a
    "Current commands" section listing all fifteen subcommands (fourteen
    committed as of `53f0d7d`, `publish-test` still uncommitted per item 1

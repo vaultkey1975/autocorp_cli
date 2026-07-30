@@ -26,20 +26,29 @@ as separately uncommitted; three of the four are now resolved:
 2. **Quick Podcast CLI wiring — DONE**, committed as `53f0d7d`.
 3. **Phase 1G redaction fix + README accuracy fix — DONE**, committed as
    `fad85a8`.
-4. **Reliability Engine — investigation complete, two verified bugs fixed
-   in the working tree, integration still NOT authorized.** This session
-   independently re-verified every finding from the prior investigation
-   against the actual source (not re-stated at face value): the
-   worktree-ID-collision-destroys-blocked-state bug was confirmed and
-   fixed; the `model_router.py` naming collision was confirmed and fixed
-   (renamed to `model_availability.py`); the "missing-tool blocks every
-   edit" claim was re-verified empirically and found **incorrect** (the
-   real code path doesn't block on it — see `PROJECT_MEMORY.md`). See
-   `ARCHITECTURE.md`'s "Reliability Engine" section for full detail. **The
-   entire `reliability_engine/` tree remains uncommitted** — fixing
-   internal bugs is a different decision from authorizing integration, and
-   integration remains unauthorized. Do not commit or wire in any part of
-   this subsystem without a fresh, explicit instruction to do so.
+4. **Reliability Engine — production-readiness review complete
+   (2026-07-30). VERDICT: NOT READY.** Explicitly requested: determine from
+   repository evidence whether this subsystem is ready for production
+   integration, and if not, explain what remains and stop rather than force
+   it. Three bugs have now been found and fixed across two sessions
+   (worktree-ID collision, `model_router.py` naming collision, and — found
+   only on this third pass, missed by both prior ones —
+   `SelfConsistencyRunner.choose()` calling the unsafe `StaticGate.run()`
+   instead of the safe `run_delta()` pattern its sibling already used
+   correctly). The decisive fact, re-confirmed directly this session:
+   **`ReliabilityOrchestrator.run()`, the actual production entry point,
+   has never been exercised by any test in this repository's history.**
+   That a third bug surfaced only when a third pass specifically enumerated
+   every call site (rather than trusting the two prior passes' conclusions)
+   is itself concrete evidence that untested paths in this subsystem hide
+   real bugs. Full architecture review (dead files, dead APIs, TODOs,
+   placeholders, mocks, duplication) found the implementation otherwise
+   complete and internally consistent, but a real end-to-end test of
+   `run()` is the one remaining precondition before integration could be
+   recommended. See `ARCHITECTURE.md`'s "Production-readiness verdict" for
+   full detail. **The entire `reliability_engine/` tree remains
+   uncommitted; no CLI wiring was added.** Do not commit or wire in any
+   part of this subsystem without a fresh, explicit instruction to do so.
 
 ## Status
 
@@ -49,7 +58,9 @@ Confirmed by `git status --porcelain` (as of `ecf6a11`):
 
 ```
  M AI_ENGINEERING/ARCHITECTURE.md
+ M AI_ENGINEERING/CURRENT_PHASE.md
  M AI_ENGINEERING/NEXT_STEPS.md
+ M AI_ENGINEERING/PHASES.md
  M AI_ENGINEERING/PROJECT_MEMORY.md
  M brains/builder.py
  M memory/store.py
@@ -68,10 +79,22 @@ Confirmed by `git status --porcelain` (as of `ecf6a11`):
 
 `brains/builder.py` and `memory/store.py`'s modifications, and every `??`
 entry except the untracked report files and `data/`, are all the
-Reliability Engine (investigated and partially bug-fixed this session, not
-authorized for integration). The three modified `AI_ENGINEERING/*.md` files
-record this session's investigation/fix findings and are ready to commit as
-a documentation-only commit.
+Reliability Engine (investigated, bug-fixed across two sessions, reviewed
+for production readiness — verdict NOT READY, not authorized for
+integration). The five modified `AI_ENGINEERING/*.md` files record this
+session's review findings and are themselves uncommitted, consistent with
+not creating any commit for a subsystem whose integration was not
+recommended.
+
+Full test suite: **938 passed, 1 xfailed, 0 failed**, exit code 0, via
+`.venv/bin/python -m pytest -q` (one further new regression test this
+session, proving the `SelfConsistencyRunner.choose()` fix). Also verified
+with `-W error` (938 passed, 1 xfailed, exit 0), `git diff --check` (exit
+0, no whitespace errors), and `python -m compileall` on every real source
+directory (`autocorp.py`, `config.py`, `core/`, `brains/`, `memory/`,
+`safety/`, `reliability_engine/`, `tests/` — exit 0; `workspace/`'s
+gitignored, pre-existing AI-generated demo fixtures contain expected,
+unrelated syntax errors and are excluded).
 
 (`phase_1x_report.txt` and `phase_1y_report.txt` also exist on disk from
 real verification runs but are excluded from `git status` by
@@ -79,9 +102,6 @@ real verification runs but are excluded from `git status` by
 invisible to a plain `git status` check. Confirm with `git check-ignore -v`
 if you need to see them.)
 
-The full test suite passes against this state: **937 passed, 1 xfailed, 0
-failed**, exit code 0, via `.venv/bin/python -m pytest -q` (one further new
-regression test this session, proving the worktree-ID-collision fix).
 Passing tests do not make uncommitted work complete — see
 `PHASE_COMPLETION_POLICY.md`.
 
@@ -92,7 +112,7 @@ complete or integrated by an AI engineer. Current status:
 
 - **Phase 1X/1Y, Quick Podcast wiring, Phase 1G/README fixes:** all
   committed, per explicit owner decisions.
-- **Reliability Engine:** two verified internal bugs fixed in the working
+- **Reliability Engine:** three verified internal bugs fixed in the working
   tree; the subsystem itself remains uncommitted; integration proposal
   delivered and awaiting owner review/approval before any commit or CLI
   wiring happens.
@@ -116,18 +136,23 @@ plan) that has not been made.
 - ~~Phase 1G's five documented gaps~~ — **corrected 2026-07-29: four of the
   five were already fixed** by a commit (`ea71d54`) that predates this
   document's prior claim; the fifth (inline-redaction's two remaining
-  adversarial cases) was fixed this session, uncommitted pending owner
-  review. None remain open. See `PHASES.md` (Phase 1G) and `NEXT_STEPS.md`
+  adversarial cases) was fixed and committed as `fad85a8` the same day.
+  None remain open. See `PHASES.md` (Phase 1G) and `NEXT_STEPS.md`
   "Known bugs" for the full, per-item, re-verified account.
 - ~~`quick-podcast` is not runnable from a fresh checkout of `HEAD`~~ —
   **fixed 2026-07-29**, committed as `53f0d7d`. `quick-podcast` is now
   runnable from a fresh checkout of `main`.
-- **Reliability Engine has no integration point.** It cannot be exercised
-  via the CLI at all; only its own isolated test file proves it does
-  anything. Investigated in full 2026-07-29 (see `ARCHITECTURE.md`); two
-  verified internal bugs (worktree-ID collision, `model_router.py` naming
-  collision) were fixed the same day, but a staged integration plan still
-  exists and integration itself is not authorized.
+- **Reliability Engine has no integration point, and per the 2026-07-30
+  production-readiness review, should not get one yet.** It cannot be
+  exercised via the CLI at all; only its own isolated test file proves it
+  does anything, and that test file never calls its actual production
+  entry point (`ReliabilityOrchestrator.run()`). Investigated in full
+  2026-07-29, reviewed for production readiness 2026-07-30 (see
+  `ARCHITECTURE.md`); three verified internal bugs fixed across the two
+  sessions (worktree-ID collision, `model_router.py` naming collision,
+  `SelfConsistencyRunner.choose()`'s unsafe static-gate call), but a real
+  end-to-end test of `run()` remains the blocking precondition before
+  integration could be recommended.
 
 ## Next Phase
 

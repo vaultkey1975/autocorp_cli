@@ -448,17 +448,34 @@ docstring header.
   (rather than reuses) the existing pipeline's self-heal/retry/repair-budget
   logic, and its own true end-to-end entry point
   (`ReliabilityOrchestrator.run()`) is never exercised by its own test
-  suite — the 59 (now 60) passing tests prove unit-level correctness of
-  individual modules, not integrated behavior. **Update, same day:** every
-  finding above was independently re-verified against the source (not
-  re-stated at face value) and two were fixed in the working tree — a
-  worktree-ID collision that could destroy a preserved blocked-subtask's
-  diagnostic state, and the `model_router.py`/`brains/model_router.py`
-  filename collision (renamed to `model_availability.py`). A third
-  finding, that a missing lint/type-check tool blocks every edit, was
-  re-verified and found **incorrect** for the actual code path used. See
-  `ARCHITECTURE.md` and `PROJECT_MEMORY.md` for full detail. The subsystem
-  remains entirely uncommitted; integration remains unauthorized.
+  suite — the 61 passing tests prove unit-level correctness of individual
+  modules, not integrated behavior. **Update, 2026-07-29:** every finding
+  above was independently re-verified against the source (not re-stated at
+  face value) and two were fixed in the working tree — a worktree-ID
+  collision that could destroy a preserved blocked-subtask's diagnostic
+  state, and the `model_router.py`/`brains/model_router.py` filename
+  collision (renamed to `model_availability.py`). A third finding, that a
+  missing lint/type-check tool blocks every edit, was re-verified and
+  found incorrect for the one code path checked that day.
+  **Update, 2026-07-30 — production-readiness review, VERDICT: NOT READY:**
+  re-checking every call site of the "missing lint tool" question (not just
+  the one checked the day before) found the prior day's "incorrect, not a
+  bug" conclusion was itself incomplete: `SelfConsistencyRunner.choose()`
+  (the greenfield high-blast-radius voting path) called the unsafe
+  `StaticGate.run()` directly and would genuinely block every candidate in
+  an environment missing `ruff`/`mypy` — a real bug, missed by two prior
+  independent-verification passes, found only by a third that specifically
+  re-checked every caller rather than the one already known. Fixed the same
+  way its sibling `choose_edit()` already handled it correctly. This
+  three-strikes history (two "independent" reviews, then a third finding
+  what the first two missed) is itself the strongest evidence for the
+  verdict: `ReliabilityOrchestrator.run()`, the actual production entry
+  point, has never been tested end-to-end, and untested paths in this
+  subsystem have now been shown twice to hide real bugs. See
+  `ARCHITECTURE.md`'s "Production-readiness verdict" and
+  `PROJECT_MEMORY.md` for full detail. The subsystem remains entirely
+  uncommitted; integration remains unauthorized, and is not recommended
+  until a real end-to-end test of `run()` exists.
 - **Deliverables (working tree only):** `reliability_engine/` (16 modules,
   2,346 lines), `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
   `tests/test_reliability_engine.py` (1,304 lines), plus supporting,

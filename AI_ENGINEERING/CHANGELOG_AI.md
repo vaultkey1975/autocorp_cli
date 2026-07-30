@@ -300,10 +300,75 @@ Full suite after this entry's changes: **937 passed, 1 xfailed, 0 failed**,
 exit code 0 (one further new regression test, for the worktree-ID-collision
 fix).
 
+### 2026-07-30 — Reliability Engine production-readiness review: VERDICT NOT READY, third bug found and fixed
+Explicitly requested: determine from repository evidence whether the
+Reliability Engine is now production-ready, integrate it if so, and if not,
+explain exactly what remains and stop rather than force it.
+
+**Architecture review** (dead files, dead APIs, TODOs, placeholders, mocks,
+duplication) found the implementation complete and internally consistent
+for what it does: every one of its 16 modules is referenced by at least
+one other file (no dead files); no `TODO`/`FIXME`/`NotImplementedError`
+stubs; no mock/fake logic in the source itself (only in its tests, where
+that's expected); `brains/builder.py` and `memory/store.py`'s supporting
+diffs are purely additive (zero deletions, re-confirmed directly) so they
+carry no regression risk to the existing pipeline. It does genuinely
+duplicate `core/orchestrator.py::Session`'s role as a second, parallel
+build/repair orchestration pipeline with its own reimplemented self-heal
+logic — a real architectural overlap, and a product decision for the
+repository owner, not resolved by this review.
+
+**A third bug, missed by both prior "independent verification" passes, was
+found by re-checking every call site of a question already investigated
+twice.** The 2026-07-29 investigation, and this same day's own first-pass
+re-verification, both concluded "a missing `ruff`/`mypy` binary doesn't
+block real edits" by checking exactly one call site
+(`ReliabilityTestLoop` in `test_loop.py`, which correctly uses
+`collect_issues()` + `run_delta()`). Re-checking today by grepping every
+call site of `StaticGate.run(` found `SelfConsistencyRunner.choose()` (the
+greenfield high-blast-radius voting path, in a different file) calls the
+unsafe absolute `run()` directly - confirmed empirically to reject every
+candidate when tools are missing. Fixed to match its sibling
+`choose_edit()`'s already-correct pattern, with a new regression test
+(`test_self_consistency_choose_does_not_block_on_missing_static_tools`)
+verified to fail against the pre-fix code (reverted temporarily to confirm)
+and pass against the fix.
+
+**The decisive fact for the verdict, re-confirmed directly (not taken on
+trust from either prior investigation):** grepping every
+`ReliabilityOrchestrator(...)` construction site in the test suite and
+reading what method is called on each showed `ReliabilityOrchestrator.run()`
+— the actual production entry point that drives every real build/repair
+cycle — has never been called by any test, ever. That the self-consistency
+bug above sat undiscovered through two prior review passes, in a subsystem
+this thoroughly unit-tested, is direct evidence of what an untested
+integration path can hide. Given `WorktreeSandbox.merge_to_main()` can write
+real changes to the user's actual repository via `git apply`, shipping a
+CLI command backed by a path that has never once completed successfully
+end-to-end would violate this repository's own repeatedly-stated "no fake
+verification" principle.
+
+**VERDICT: NOT READY for production integration.** No CLI subcommand was
+added; no part of `reliability_engine/` was committed. What remains: a real
+end-to-end test of `ReliabilityOrchestrator.run()` (a disposable temp git
+repo, a real request, a real or realistically-faked engine wired all the
+way through, asserting on the final status) is the single blocking
+precondition before this review could be repeated with a different outcome.
+
+Verification performed: `git diff --check` (exit 0, no whitespace errors);
+`python -m compileall` on every real source directory (`autocorp.py`,
+`config.py`, `core/`, `brains/`, `memory/`, `safety/`, `reliability_engine/`,
+`tests/` — exit 0; `workspace/`'s gitignored, pre-existing AI-generated demo
+fixtures contain expected, unrelated syntax errors and were excluded);
+`.venv/bin/python -m pytest -W error` (full suite, strict-warnings mode):
+**938 passed, 1 xfailed, 0 failed**, exit 0; `tests/test_reliability_engine.py`
+alone: 61/61 passed.
+
 ## Full test suite status at time of writing
 
 `.venv/bin/python -m pytest -q` (rerun to produce this entry, not copied
-from an old report): **937 passed, 1 xfailed, 0 failed**, exit code 0 —
+from an old report): **938 passed, 1 xfailed, 0 failed**, exit code 0 —
 against the full working tree, uncommitted changes included (933 passed
-before this day's 4 new regression tests: 3 for the inline-redaction fix,
-1 for the worktree-ID-collision fix).
+before two days' worth of 5 new regression tests: 3 for the inline-redaction
+fix, 1 for the worktree-ID-collision fix, 1 for the
+self-consistency static-gate fix).
