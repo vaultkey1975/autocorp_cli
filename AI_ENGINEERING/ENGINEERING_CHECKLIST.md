@@ -45,6 +45,12 @@ not done — say so, and say what's blocking it.
 
 - [ ] Ran the FULL test suite again (not just the tests for the file you
       changed) and recorded the exact pass/fail/xfail counts and exit code.
+- [ ] Ran the maintained-source compile verifier
+      (`.venv/bin/python scripts/verify_compileall.py`) and recorded the
+      exact exit code. Do not use `python -m compileall .` as the
+      repository-level gate: it traverses `.venv/`, `workspace/`, `data/`,
+      and other ignored artifacts that are intentionally outside maintained
+      source ownership.
 - [ ] Ran `git status --porcelain` again and reported precisely what is
       committed vs. uncommitted — do not describe uncommitted work as
       "complete."

@@ -137,6 +137,15 @@ down to "failure" in a way that hides what actually happened.
 - Every new module gets real unit tests for its deterministic/pure logic,
   following this repository's established pattern (93+ tracked test files,
   one test file per module in almost every case).
+- Compile maintained Python source with
+  `.venv/bin/python scripts/verify_compileall.py`. This verifier compiles
+  tracked Python files plus non-ignored untracked Python files. It
+  deliberately excludes ignored generated/runtime/dependency artifacts
+  (`workspace/`, `data/`, `.venv/`, caches, build outputs) because
+  repository evidence already classifies them outside maintained source:
+  `.gitignore` ignores them, `pytest.ini` excludes them, and
+  `brains/analyzer.py` excludes `workspace/`/`data/` from AutoCorp's own
+  architecture analysis.
 - Run the FULL test suite, not just the tests for the file you changed,
   before reporting anything as done. This repository has a concrete,
   recent example of a regression (unclosed file handles) that only
