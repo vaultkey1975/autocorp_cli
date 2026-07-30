@@ -237,14 +237,19 @@ this subsystem's own naming convention (`worktree_sandbox.py`'s
 from an earlier real run of this code, left behind by `rollback()` not being
 reached, not evidence of a separate git-history origin.
 
-**Name collision, confirmed harmless today but worth fixing before
-integration**: `brains/model_router.py::ModelRouter` (a deterministic,
-rule-based *engine* selector — local/deepseek/claude) and
-`reliability_engine/model_router.py::ReliabilityModelRouter` (a narrow
-Ollama-liveness/fallback checker) are unrelated in function despite the
-identical filename and class-naming convention. No live import collision
-exists (both are proper subpackages), but the ambiguity is a real hazard for
-a future maintainer.
+**Name collision — FIXED 2026-07-29.** `brains/model_router.py::ModelRouter`
+(a deterministic, rule-based *engine* selector — local/deepseek/claude) and
+the former `reliability_engine/model_router.py::ReliabilityModelRouter` (a
+narrow Ollama-liveness/fallback checker) were unrelated in function despite
+the identical filename and class-naming convention. No live import collision
+ever existed (both were proper subpackages), but the ambiguity was a real
+hazard for a future maintainer. Renamed to
+`reliability_engine/model_availability.py` (class name unchanged — only the
+file collided); the two call sites (`reliability_engine/orchestrator.py`,
+`tests/test_reliability_engine.py`) were updated to match. Verified: the
+full `reliability_engine` test suite (60/60, including the one new test
+below) and a direct `from reliability_engine.orchestrator import
+ReliabilityOrchestrator` import both pass after the rename.
 
 **Test coverage proves unit-level correctness, not integrated behavior.**
 `tests/test_reliability_engine.py`'s 59 tests each exercise one module in
@@ -254,33 +259,67 @@ suite. Passing tests here do not demonstrate the full request → worktree →
 patch → gate → test → regression → merge pipeline has ever run successfully
 against a real Ollama model.
 
-**Concrete risks found by reading the code** (not integrated as-is until
-these are addressed): (1) `chromadb`/`PyYAML` are only in the uncommitted
-requirements files — `config_loader.py` silently degrades to a hand-rolled,
-two-level-only YAML parser without PyYAML, and `rag_index.py` hard-fails
-without chromadb; (2) a missing `ruff`/`flake8`/`mypy` binary is treated as
-a blocking static-gate *issue* indistinguishable from a real lint/type
-failure, rather than a distinct environment-setup error; (3)
-`DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` both do a full,
-uncached repo rescan on every single `run()` call; (4) `WorktreeSandbox`
-reuses SQLite-autoincrement subtask IDs that `reset_subtasks()` clears at
-the start of every run, so a worktree left behind after a `blocked` result
-(kept intentionally, for inspection) will be silently destroyed the next
-time an ID collides — undermining the apparent intent of preserving blocked
-diagnostic state.
+**Concrete risks found by reading the code, each independently
+re-verified 2026-07-29 (not just re-stated from the original investigation
+— see `PROJECT_MEMORY.md` on why that distinction matters):**
+
+1. `chromadb`/`PyYAML` are only in the uncommitted requirements files —
+   `config_loader.py` silently degrades to a hand-rolled, two-level-only
+   YAML parser without PyYAML, and `rag_index.py` hard-fails without
+   chromadb. **Confirmed, not fixed** (fixing this means committing the
+   requirements changes, which is a packaging decision bundled with the
+   larger "decide the fate of the Reliability Engine" question, not a safe
+   isolated patch).
+2. ~~A missing `ruff`/`flake8`/`mypy` binary is treated as a blocking
+   static-gate issue~~ — **this claim was WRONG, corrected 2026-07-29.**
+   Verified empirically (monkeypatching `_tool_path` to simulate all three
+   tools missing, then calling `StaticGate.run_delta`, the only method any
+   real caller — `ReliabilityTestLoop` in `test_loop.py` — actually
+   invokes): a missing-tool `StaticIssue` appears identically in both the
+   before and after snapshots `run_delta` compares, so it is never treated
+   as a *new* issue and never blocks. The conflation (missing tool
+   presented as the same `StaticIssue` type as a real lint/type failure)
+   remains a design smell — `StaticGate.run()`, the unused absolute-mode
+   method, genuinely would block on it if a future caller used that method
+   instead of `run_delta()` — but it does not block anything in the actual,
+   currently-exercised code path. **Not fixed**, because there is nothing
+   currently broken to fix; noted here so a future caller of `run()`
+   directly knows the risk.
+3. `DependencyGraph.build()` and `CodebaseRAGIndex.rebuild()` both do a
+   full, uncached repo rescan on every single `run()` call. **Confirmed,
+   not fixed** (a caching layer is a real design change, not a safe,
+   isolated patch — deferred to the staged integration plan below).
+4. ~~`WorktreeSandbox` reuses SQLite-autoincrement subtask IDs... silently
+   destroyed~~ — **FIXED 2026-07-29.** Independently confirmed by reading
+   `memory/store.py`'s schema (`id INTEGER PRIMARY KEY` with no
+   `AUTOINCREMENT` keyword, so SQLite reuses ROWIDs starting at 1 after
+   `state_store.reset_subtasks()` empties the table) alongside
+   `worktree_sandbox.py`'s unconditional `rollback(..., keep=False)` on any
+   path collision. Fixed by giving every `WorktreeSandbox` instance its own
+   random `run_id` (one per `ReliabilityOrchestrator`, i.e. one per `run()`
+   call), folded into every worktree path/branch name
+   (`subtask-{run_id}-{subtask_id}`), so a reused subtask id can no longer
+   collide across separate runs. A new regression test,
+   `test_reused_subtask_id_across_runs_does_not_destroy_preserved_worktree`,
+   proves a worktree preserved by one `WorktreeSandbox` instance survives a
+   second instance creating a worktree for the same subtask id.
 
 **Staged integration plan, if the repository owner decides to proceed**
-(none of this has been done): (1) triage/commit-or-discard the unrelated
-Phase 1X/1Y and repair-redaction changes currently sharing the working tree
-first, so the integration diff is reviewable on its own; (2) rename
-`reliability_engine/model_router.py` to remove the collision; (3) commit the
-three purely-additive, low-risk pieces first and separately — the
+(steps 2 and 4 are now complete on their own merits as general code-quality
+fixes; completing them is not the same as authorizing integration, which
+remains a separate, still-open owner decision): ~~(1)
+triage/commit-or-discard the unrelated Phase 1X/1Y and repair-redaction
+changes~~ — done, they no longer share this working tree with
+reliability_engine (see `CURRENT_PHASE.md`); ~~(2) rename
+`reliability_engine/model_router.py`~~ — **done**, see above; (3) commit
+the three purely-additive, low-risk pieces first and separately — the
 `brains/builder.py` diff, the `memory/store.py` diff, and the
-`chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions; (4) fix the
-worktree-ID-collision-destroys-blocked-state issue; (5) decide the
-missing-tool-vs-real-issue distinction in `StaticGate`; (6) add a true
-end-to-end test of `ReliabilityOrchestrator.run()` before trusting it with
-real edits; (7) only then add a CLI subcommand (following the
+`chromadb`/`PyYAML`/`mypy`/`ruff` requirements additions; ~~(4) fix the
+worktree-ID-collision-destroys-blocked-state issue~~ — **done**, see above;
+(5) the missing-tool-vs-real-issue distinction in `StaticGate` turned out
+not to be live (see item 2 above) — no longer a precondition; (6) add a
+true end-to-end test of `ReliabilityOrchestrator.run()` before trusting it
+with real edits; (7) only then add a CLI subcommand (following the
 `cmd_workflow_test`/`cmd_build` pattern, confirming the existing
 `console.confirm("Proceed with this plan?")` gate at
 `orchestrator.py:172-174/199-200` stays intact and is not bypassed by

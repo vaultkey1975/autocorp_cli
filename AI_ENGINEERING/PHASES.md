@@ -304,7 +304,7 @@ docstring header.
   9 foreign-key constraint violations in its legacy chapter-script tables,
   present before and unaffected by this phase's own tables.
 
-### Phase 1X — CloneCast Production Episode Validation (uncommitted)
+### Phase 1X — CloneCast Production Episode Validation
 - **Purpose:** Extend Phase 1M–1S with independent SHA-256 + `ffprobe`
   verification of every generated artifact (not just the final episode
   MP3), `PRAGMA integrity_check`/`PRAGMA foreign_key_check` database
@@ -323,18 +323,22 @@ docstring header.
   reached `DISPOSABLE_WORKFLOW_COMPLETE` with all artifacts verified,
   production database/git state independently confirmed unchanged, and the
   disposable directory confirmed removed.
-- **Completion Evidence:** **Uncommitted.** `git status --porcelain` shows
-  `brains/workflow_test.py` and `autocorp.py` as modified against the
-  current `HEAD` (`143825a`), which does not include this phase's changes.
-  A generated report (`phase_1x_report.txt`) exists on disk but is
-  excluded from git by `.gitignore`'s `phase_*_report.txt` pattern, so it
-  will never appear in `git status` regardless of whether the underlying
-  code is committed.
-- **Notes:** Per `PHASE_COMPLETION_POLICY.md`, this phase is implemented
-  and verified by real runs, but **not complete** until committed and
-  approved by the repository owner.
+- **Completion Evidence:** **Committed** as `ecf6a11 "feat: complete Phase
+  1X/1Y CloneCast production/publishing validation"` (2026-07-29),
+  by explicit repository-owner decision, after this session re-reviewed the
+  full diff for accidental/unrelated content (none found) and completeness
+  (all new helpers exercised by tests, both CLI commands correctly refuse
+  to run without `--disposable`). A generated report (`phase_1x_report.txt`)
+  exists on disk but is excluded from git by `.gitignore`'s
+  `phase_*_report.txt` pattern, so it will never appear in `git status`
+  regardless of whether the underlying code is committed.
+- **Notes:** Per `PHASE_COMPLETION_POLICY.md`, this phase's AutoCorp-side
+  code is now committed and its real-run verification is documented above.
+  It has never reached a full end-to-end PASS, but that is solely because
+  of the external CloneCast audio-clipping defect (see Phase 1Y below and
+  `NEXT_STEPS.md`), not an AutoCorp-side gap.
 
-### Phase 1Y — Production Publishing Validation (uncommitted)
+### Phase 1Y — Production Publishing Validation
 - **Purpose:** Reuse Phase 1X's disposable workflow to produce a real
   completed episode, then continue through every publishing stage
   CloneCast supports (QC, human review, release readiness, release
@@ -362,11 +366,15 @@ docstring header.
   reproducible, CloneCast-side finding confirmed four times across two
   different phases and four separate real runs. No run in this phase has
   yet reached a fully successful PASS through packaging/publication.
-- **Completion Evidence:** **Uncommitted**, same basis as Phase 1X. A
-  generated report (`phase_1y_report.txt`) exists but is gitignored.
-- **Notes:** Per `PHASE_COMPLETION_POLICY.md`, this phase is implemented
-  and has real, if incomplete (blocked by a genuine external finding),
-  verification. It is not complete.
+- **Completion Evidence:** **Committed**, same commit as Phase 1X
+  (`ecf6a11`). A generated report (`phase_1y_report.txt`) exists but is
+  gitignored.
+- **Notes:** Per `PHASE_COMPLETION_POLICY.md`, this phase's AutoCorp-side
+  code is committed, tested, and verified by real runs. It has real, if
+  incomplete (blocked by a genuine external CloneCast finding, not an
+  AutoCorp defect), end-to-end verification — a full PASS through
+  packaging/publication has never been observed, and won't be until
+  CloneCast's own audio-clipping issue is fixed on that side.
 
 ---
 
@@ -440,8 +448,17 @@ docstring header.
   (rather than reuses) the existing pipeline's self-heal/retry/repair-budget
   logic, and its own true end-to-end entry point
   (`ReliabilityOrchestrator.run()`) is never exercised by its own test
-  suite — the 59 passing tests prove unit-level correctness of individual
-  modules, not integrated behavior.
+  suite — the 59 (now 60) passing tests prove unit-level correctness of
+  individual modules, not integrated behavior. **Update, same day:** every
+  finding above was independently re-verified against the source (not
+  re-stated at face value) and two were fixed in the working tree — a
+  worktree-ID collision that could destroy a preserved blocked-subtask's
+  diagnostic state, and the `model_router.py`/`brains/model_router.py`
+  filename collision (renamed to `model_availability.py`). A third
+  finding, that a missing lint/type-check tool blocks every edit, was
+  re-verified and found **incorrect** for the actual code path used. See
+  `ARCHITECTURE.md` and `PROJECT_MEMORY.md` for full detail. The subsystem
+  remains entirely uncommitted; integration remains unauthorized.
 - **Deliverables (working tree only):** `reliability_engine/` (16 modules,
   2,346 lines), `reliability_config.yaml`, `mypy.ini`, `ruff.toml`,
   `tests/test_reliability_engine.py` (1,304 lines), plus supporting,

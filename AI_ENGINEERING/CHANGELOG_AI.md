@@ -232,9 +232,78 @@ wiring was committed, per explicit owner instruction to do so.
 Full suite after all of this session's changes: **936 passed, 1 xfailed, 0
 failed**, exit code 0 (933 plus 3 new tests for the inline-redaction fix).
 
+### 2026-07-29 — README/Phase 1G fixes committed after re-review; Phase 1X/1Y reviewed and committed; two Reliability Engine bugs fixed
+A follow-up instruction asked for one more independent, skeptical review of
+the previous entry's uncommitted work before committing it — explicitly not
+to assume it was correct just because tests had passed.
+
+**README.md + Phase 1G inline-redaction fix — re-reviewed and committed as
+`fad85a8`.** Re-verified all 9 of the original audit's adversarial redaction
+cases directly (not re-run from memory), checked for false positives
+(`secretary_name`, `tokenizer`, `password_reset_enabled` all correctly stay
+unredacted), and confirmed the README's "15 total / 14 committed" command
+counts against live `--help` output. Found and fixed one real contradiction
+this review was meant to catch: `PHASE_COMPLETION_POLICY.md` (not in the
+original file list, but factually entangled with it) still cited the
+quick-podcast CLI wiring as its example of "committed, but partially
+wired" — false since it had already been committed as `53f0d7d`. Corrected
+and included in the commit (11 files, not 10). Noted but did not fix
+(pre-existing, unrelated to this diff): `README.md`'s
+`#agent-watchdog-integration-future` anchor doesn't match its actual header.
+
+**A further instruction requested completing the remaining Phase 1X/1Y work
+and resolving the Reliability Engine's investigation findings.** Reviewed
+the full Phase 1X/1Y diff (`autocorp.py`, `brains/workflow_test.py`,
+`tests/test_workflow_character_id_propagation.py`) for accidental or
+unrelated content (none found) and completeness (all new helpers exercised
+by tests; both `workflow-test` and `publish-test` correctly refuse to run
+without `--disposable`). Found the implementation genuinely complete,
+blocked only by the external CloneCast audio-clipping defect already
+documented — committed as `ecf6a11`.
+
+**Every Reliability Engine investigation finding was independently
+re-verified against the actual source before acting on it**, per explicit
+instruction not to assume the prior investigation's conclusions were
+correct:
+- The worktree-ID-collision claim was **confirmed** by reading
+  `memory/store.py`'s schema (`id INTEGER PRIMARY KEY`, no `AUTOINCREMENT`,
+  so SQLite reuses ROWIDs after `state_store.reset_subtasks()` empties the
+  table) alongside `worktree_sandbox.py`'s unconditional
+  `rollback(..., keep=False)` on any path collision — and **fixed**: every
+  `WorktreeSandbox` now gets its own random `run_id` folded into every
+  worktree path/branch name, with a new regression test proving a preserved
+  worktree survives a second instance reusing the same subtask id.
+- The `model_router.py` naming-collision claim was **confirmed** (no live
+  import collision, but a real hazard from two unrelated modules sharing a
+  filename and class-naming convention) and **fixed**: renamed to
+  `reliability_engine/model_availability.py`, with its two call sites
+  (`orchestrator.py`, `tests/test_reliability_engine.py`) updated.
+- The "a missing `ruff`/`flake8`/`mypy` binary blocks every edit" claim was
+  **re-verified empirically and found incorrect**: monkeypatching tool
+  detection to simulate all three missing and calling the actual code path
+  used by any real caller (`StaticGate.run_delta`, via
+  `ReliabilityTestLoop`) showed the missing-tool marker appears identically
+  in both the before/after snapshots `run_delta` compares, so it is never
+  flagged as "new" and never blocks. Documented the correction rather than
+  implementing a fix for a problem that doesn't actually occur in the real
+  code path.
+
+**The entire `reliability_engine/` tree remains uncommitted.** Fixing
+internal bugs is a different decision from authorizing integration or even
+committing the subsystem to git history for the first time — neither has
+been authorized, and the standing "integration NOT authorized" decision was
+more absolute and more recently reinforced than Phase 1X/1Y's "keep
+iterating," which is why these two items were treated differently this
+session (one committed, one not).
+
+Full suite after this entry's changes: **937 passed, 1 xfailed, 0 failed**,
+exit code 0 (one further new regression test, for the worktree-ID-collision
+fix).
+
 ## Full test suite status at time of writing
 
 `.venv/bin/python -m pytest -q` (rerun to produce this entry, not copied
-from an old report): **936 passed, 1 xfailed, 0 failed**, exit code 0 —
+from an old report): **937 passed, 1 xfailed, 0 failed**, exit code 0 —
 against the full working tree, uncommitted changes included (933 passed
-prior to this session's 3 new regression tests).
+before this day's 4 new regression tests: 3 for the inline-redaction fix,
+1 for the worktree-ID-collision fix).

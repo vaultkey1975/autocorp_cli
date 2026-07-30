@@ -79,6 +79,8 @@ file. **Before restating any "known bug"/"known gap" from an existing
 it.** Do not assume a document written last week is still accurate just
 because it was carefully evidence-based when written.
 
+**A second, independent instance of the same lesson: an investigation report's claim can be wrong even when it was carefully evidence-based and written minutes earlier — always re-verify empirically before acting on it, including your own prior session's findings.** The Reliability Engine investigation (this same day, 2026-07-29) claimed a missing `ruff`/`flake8`/`mypy` binary would be "treated as a blocking static-gate issue" for every edit. Re-verifying by actually monkeypatching tool detection to simulate the missing-tool case and calling the real code path (`StaticGate.run_delta`, the only method any caller actually invokes) showed it does NOT block — the missing-tool marker appears identically in both the before and after snapshots `run_delta` diffs, so it's never flagged as "new." The claim was true of `StaticGate.run()` (an unused alternate method) but not of the code path actually exercised. Nothing was "fixed" for this one — the correct action, per the task that requested this re-validation, was to document why the original finding didn't hold up. **Treat "an investigation already covered this" as a reason to re-verify quickly, not a reason to skip verification** — see also the Phase 1G audit entry above, a separate concrete instance of the identical pattern.
+
 **A resource leak can hide until a specific test flag surfaces it.** New
 unit tests for the Quick Podcast refactor's `Progress`/`_TeeLog` classes
 passed individually, then failed only when run as part of the full suite

@@ -1,71 +1,60 @@
 # Current Phase
 
 **Last verified against the repository:** `git log --oneline -1` →
-`53f0d7d feat: wire quick-podcast CLI subcommand` (branch `main`). Re-run
-this check yourself before trusting the rest of this document — see
-`BOOTSTRAP_PROMPT.md`.
+`ecf6a11 feat: complete Phase 1X/1Y CloneCast production/publishing
+validation` (branch `main`). Re-run this check yourself before trusting the
+rest of this document — see `BOOTSTRAP_PROMPT.md`.
 
 ---
 
 ## Current Phase
 
 There is no single current phase. As of 2026-07-29, the repository owner
-reviewed the three independent efforts previously recorded here and gave
-explicit direction on each — this section records those decisions:
+gave explicit direction on each of the efforts this document used to track
+as separately uncommitted; three of the four are now resolved:
 
-1. **Phase 1X/1Y** (`brains/workflow_test.py`, `autocorp.py`'s
-   `publish-test` wiring): extends the disposable CloneCast workflow test
-   with independent artifact verification, database integrity checks,
-   cleanup verification, and full publishing-pipeline validation (QC →
-   release readiness → packaging → local publication → platform export).
-   **Owner decision (2026-07-29): keep iterating, stay uncommitted.** Do
-   not commit this without a fresh, explicit instruction.
-2. **Quick Podcast CLI wiring** — **DONE.** The `quick-podcast` subcommand
-   registration and `cmd_quick_podcast` handler (making the already-
-   committed `brains/quick_podcast.py`/`quick_podcast_runner.py` reachable
-   from the command line) were isolated from the Phase 1X/1Y changes
-   sharing `autocorp.py`'s diff and committed separately, by owner
-   decision, as `53f0d7d "feat: wire quick-podcast CLI subcommand"`.
-3. **Reliability Engine** (`reliability_engine/`, plus supporting changes
-   to `brains/builder.py`, `memory/store.py`, `requirements*.txt`,
-   `mypy.ini`, `ruff.toml`, `reliability_config.yaml`): an entirely
-   separate, unintegrated subsystem with its own passing test file but no
-   CLI entry point and no commit. **Owner decision (2026-07-29):
-   investigate and propose integration, do not wire in.** That
-   investigation is complete — see `ARCHITECTURE.md`'s "Reliability
-   Engine" section and `NEXT_STEPS.md` item 3 for the full findings and a
-   7-step staged integration plan. **Integration itself remains
-   unauthorized** pending owner review of that proposal.
-
-Additionally, this session independently fixed two remaining gaps in the
-already-committed Phase 1G inline-secret-redaction logic
-(`brains/repair_proposal.py`) that a prior, untracked audit
-(`claude_phase_1g_audit.txt`) had found and that had not yet been fixed —
-see `PHASES.md` Phase 1G and `NEXT_STEPS.md` "Known bugs" for the full,
-corrected account (three of that audit's five findings turned out to
-already be fixed by an earlier commit the audit predates; only the
-inline-redaction gap was still genuinely open). This fix, and the
-`README.md` accuracy update also done this session, are **uncommitted** —
-see "Status" below.
+1. **Phase 1X/1Y — DONE, committed as `ecf6a11`.** Re-reviewed in full this
+   session (checked for accidental/unrelated content — none found; checked
+   completeness of every new helper — complete) and committed. Extends the
+   disposable CloneCast workflow test with independent artifact
+   verification, database integrity checks, cleanup verification, and full
+   publishing-pipeline validation (QC → release readiness → packaging →
+   local publication → platform export). Blocked only by a real, external,
+   non-AutoCorp CloneCast defect (see "Known Blockers" below) from reaching
+   a full end-to-end PASS — the AutoCorp-side implementation itself is
+   complete.
+2. **Quick Podcast CLI wiring — DONE**, committed as `53f0d7d`.
+3. **Phase 1G redaction fix + README accuracy fix — DONE**, committed as
+   `fad85a8`.
+4. **Reliability Engine — investigation complete, two verified bugs fixed
+   in the working tree, integration still NOT authorized.** This session
+   independently re-verified every finding from the prior investigation
+   against the actual source (not re-stated at face value): the
+   worktree-ID-collision-destroys-blocked-state bug was confirmed and
+   fixed; the `model_router.py` naming collision was confirmed and fixed
+   (renamed to `model_availability.py`); the "missing-tool blocks every
+   edit" claim was re-verified empirically and found **incorrect** (the
+   real code path doesn't block on it — see `PROJECT_MEMORY.md`). See
+   `ARCHITECTURE.md`'s "Reliability Engine" section for full detail. **The
+   entire `reliability_engine/` tree remains uncommitted** — fixing
+   internal bugs is a different decision from authorizing integration, and
+   integration remains unauthorized. Do not commit or wire in any part of
+   this subsystem without a fresh, explicit instruction to do so.
 
 ## Status
 
-**Uncommitted.** Confirmed by `git status --porcelain` (as of `53f0d7d`):
+**Reliability Engine remains entirely uncommitted; the AI_ENGINEERING doc
+updates recording this session's work are also not yet committed.**
+Confirmed by `git status --porcelain` (as of `ecf6a11`):
 
 ```
  M AI_ENGINEERING/ARCHITECTURE.md
  M AI_ENGINEERING/NEXT_STEPS.md
- M AI_ENGINEERING/PHASES.md
- M README.md
- M autocorp.py
+ M AI_ENGINEERING/PROJECT_MEMORY.md
  M brains/builder.py
- M brains/repair_proposal.py
- M brains/workflow_test.py
  M memory/store.py
  M requirements-dev.txt
  M requirements.txt
- M tests/test_repair_proposal.py
- M tests/test_workflow_character_id_propagation.py
 ?? claude_phase_1g_audit.txt
 ?? clonecast_live_readiness_report.txt
 ?? data/
@@ -77,17 +66,12 @@ see "Status" below.
 ?? tests/test_reliability_engine.py
 ```
 
-`autocorp.py`, `brains/workflow_test.py`, and
-`tests/test_workflow_character_id_propagation.py`'s modifications are all
-Phase 1X/1Y (kept uncommitted, owner decision above). `brains/builder.py`,
-`memory/store.py`, `requirements*.txt`, `mypy.ini`, `ruff.toml`,
-`reliability_config.yaml`, `reliability_engine/`,
-`tests/test_reliability_engine.py` are all the Reliability Engine
-(investigated, not yet authorized for integration). `README.md`,
-`brains/repair_proposal.py`, `tests/test_repair_proposal.py`, and the three
-`AI_ENGINEERING/*.md` files are this session's README fix and Phase 1G
-inline-redaction fix — **implemented and verified, but not yet committed**;
-whether to commit them is a pending decision (see `NEXT_STEPS.md`).
+`brains/builder.py` and `memory/store.py`'s modifications, and every `??`
+entry except the untracked report files and `data/`, are all the
+Reliability Engine (investigated and partially bug-fixed this session, not
+authorized for integration). The three modified `AI_ENGINEERING/*.md` files
+record this session's investigation/fix findings and are ready to commit as
+a documentation-only commit.
 
 (`phase_1x_report.txt` and `phase_1y_report.txt` also exist on disk from
 real verification runs but are excluded from `git status` by
@@ -95,27 +79,28 @@ real verification runs but are excluded from `git status` by
 invisible to a plain `git status` check. Confirm with `git check-ignore -v`
 if you need to see them.)
 
-The full test suite passes against this uncommitted state: **936 passed, 1
-xfailed, 0 failed**, exit code 0, via `.venv/bin/python -m pytest -q` (933
-plus 3 new regression tests added this session for the inline-redaction
-fix). Passing tests do not make uncommitted work complete — see
+The full test suite passes against this state: **937 passed, 1 xfailed, 0
+failed**, exit code 0, via `.venv/bin/python -m pytest -q` (one further new
+regression test this session, proving the worktree-ID-collision fix).
+Passing tests do not make uncommitted work complete — see
 `PHASE_COMPLETION_POLICY.md`.
 
 ## Objective
 
-Per `PHASE_COMPLETION_POLICY.md`, none of the remaining uncommitted efforts
-may be marked complete by an AI engineer. Current per-effort status:
+Per `PHASE_COMPLETION_POLICY.md`, the Reliability Engine may not be marked
+complete or integrated by an AI engineer. Current status:
 
-- **Phase 1X/1Y:** continue iterating uncommitted (owner decision).
-- **Reliability Engine:** integration proposal delivered; awaiting owner
-  review/approval before any wiring happens.
-- **README fix + Phase 1G inline-redaction fix (this session):** implemented,
-  tested, and verified; awaiting owner decision on whether to commit.
+- **Phase 1X/1Y, Quick Podcast wiring, Phase 1G/README fixes:** all
+  committed, per explicit owner decisions.
+- **Reliability Engine:** two verified internal bugs fixed in the working
+  tree; the subsystem itself remains uncommitted; integration proposal
+  delivered and awaiting owner review/approval before any commit or CLI
+  wiring happens.
 
-Do not silently commit all of the uncommitted state as a bundle — these are
-unrelated efforts and should be reviewed and committed (or not) separately,
-matching this repository's own established git history pattern of small,
-single-purpose commits.
+Do not silently commit the Reliability Engine as a side effect of committing
+something else — it is a distinct, larger decision (see
+`PHASE_COMPLETION_POLICY.md` and `ARCHITECTURE.md`'s staged integration
+plan) that has not been made.
 
 ## Known Blockers
 
@@ -139,8 +124,10 @@ single-purpose commits.
   runnable from a fresh checkout of `main`.
 - **Reliability Engine has no integration point.** It cannot be exercised
   via the CLI at all; only its own isolated test file proves it does
-  anything. Investigated in full 2026-07-29 (see `ARCHITECTURE.md`); a
-  staged integration plan exists but integration itself is not authorized.
+  anything. Investigated in full 2026-07-29 (see `ARCHITECTURE.md`); two
+  verified internal bugs (worktree-ID collision, `model_router.py` naming
+  collision) were fixed the same day, but a staged integration plan still
+  exists and integration itself is not authorized.
 
 ## Next Phase
 

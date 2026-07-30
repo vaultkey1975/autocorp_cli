@@ -18,20 +18,31 @@ discovers any item — see `DOCUMENTATION_POLICY.md`.
    **Done (2026-07-29).** Committed as `53f0d7d "feat: wire quick-podcast
    CLI subcommand"`, by owner decision. `quick-podcast` is now reachable
    from a fresh checkout of `main`.
-3. **Reliability Engine: investigation complete (2026-07-29), integration
-   NOT authorized.** Full findings are in `ARCHITECTURE.md`'s "Reliability
-   Engine" section. Summary: it is a second, parallel build/repair
-   orchestration pipeline (duplicates rather than composes with
-   `core/orchestrator.py::Session`), functionally complete and unit-tested,
-   but its true end-to-end entry point (`ReliabilityOrchestrator.run()`) has
-   never been exercised by any test, and reading the code found real,
-   unaddressed risks (a worktree-ID collision that silently destroys
-   preserved diagnostic state for a blocked subtask; missing
-   `ruff`/`mypy`/`chromadb`/`PyYAML` treated inconsistently; full repo
-   rescans on every call). A 7-step staged integration plan is recorded in
-   `ARCHITECTURE.md`. **Do not import or register any `reliability_engine/`
-   module, and do not act on the staged plan, until the repository owner
-   reviews this proposal and explicitly approves proceeding.**
+3. **Reliability Engine: investigation complete (2026-07-29), two verified
+   bugs fixed (2026-07-29, same day), integration still NOT authorized.**
+   Full findings are in `ARCHITECTURE.md`'s "Reliability Engine" section.
+   Summary: it is a second, parallel build/repair orchestration pipeline
+   (duplicates rather than composes with `core/orchestrator.py::Session`),
+   functionally complete and unit-tested, but its true end-to-end entry
+   point (`ReliabilityOrchestrator.run()`) has never been exercised by any
+   test. Every finding from the original investigation was independently
+   re-verified against the actual code (not re-stated at face value) before
+   acting on it: the worktree-ID-collision-destroys-blocked-state bug was
+   confirmed and **fixed** (`WorktreeSandbox` now namespaces every worktree
+   by a per-run random id); the `model_router.py` naming collision was
+   confirmed and **fixed** (renamed to `model_availability.py`); the
+   "missing-tool blocks every edit" claim was re-verified empirically and
+   found **incorrect** — the real code path (`StaticGate.run_delta`)
+   cancels out a missing-tool marker since it's identical before and after,
+   so nothing was changed for that one (see `PROJECT_MEMORY.md`). Remaining
+   unaddressed, by design (each requires a larger decision than a safe
+   isolated patch): `chromadb`/`PyYAML` only in uncommitted requirements
+   files; uncached full-repo rescans per call; no true end-to-end test of
+   `run()`. **Do not import or register any `reliability_engine/` module,
+   and do not add a CLI subcommand, until the repository owner reviews this
+   proposal and explicitly approves integration** — fixing internal bugs is
+   not the same decision as authorizing integration, and remains
+   unauthorized.
 4. ~~Fix the missing `README.md` update~~ — **Done (2026-07-29).** Added a
    "Current commands" section listing all fifteen subcommands (fourteen
    committed as of `53f0d7d`, `publish-test` still uncommitted per item 1
@@ -49,13 +60,10 @@ discovers any item — see `DOCUMENTATION_POLICY.md`.
   and commit-message search results, going forward) to avoid future
   confusion — this cannot retroactively fix commit messages, but new work
   should not add a third overloaded "Phase 1."
-- `brains/model_router.py::ModelRouter` (a deterministic engine selector)
-  and `reliability_engine/model_router.py::ReliabilityModelRouter` (an
-  Ollama liveness/fallback checker — unrelated function) share a filename.
-  Confirmed harmless today (both are proper subpackages, no live import
-  collision), but if the Reliability Engine is ever integrated, rename the
-  latter (e.g. to `model_availability.py`) first — see `ARCHITECTURE.md`'s
-  Reliability Engine section, step 2 of the staged integration plan.
+- ~~`brains/model_router.py::ModelRouter` and
+  `reliability_engine/model_router.py::ReliabilityModelRouter` share a
+  filename~~ — **fixed 2026-07-29**, the latter is now
+  `reliability_engine/model_availability.py`.
 
 ## Known bugs
 
