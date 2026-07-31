@@ -1,0 +1,120 @@
+AutoCorp Guided CloneCast Episode Operator Report
+=================================================
+
+Date: 2026-07-31
+AutoCorp repository: /home/larry/autocorp_cli
+Target CloneCast repository inspected: /home/larry/clonecast
+
+Implementation Summary
+----------------------
+
+Added the terminal command:
+
+  .venv/bin/python autocorp.py episode-build --repo /home/larry/clonecast
+
+Primary files changed:
+
+  - autocorp.py
+  - brains/guided_clonecast_episode.py
+  - tests/test_guided_clonecast_episode_operator.py
+
+The new AutoCorp operator:
+
+  - Confirms the target CloneCast repository before work starts.
+  - Verifies CloneCast CLI availability and discovers supported commands.
+  - Asks the guided setup questions in the required order.
+  - Parses podcast duration values such as 10m, 600s, and 1h.
+  - Imports research through CloneCast's research-ingest CLI.
+  - Accepts final approved scripts by path, @path, or pasted text.
+  - Preserves approved script bytes exactly inside AutoCorp managed session state.
+  - Calculates source and stored script SHA-256 checksums.
+  - Aborts if the approved script checksum changes during import.
+  - Uses CloneCast's si-import command for supported Story Intelligence script import when available.
+  - Persists session state under AutoCorp's managed data area after completed stages.
+  - Records CloneCast command stdout/stderr for truthful progress evidence.
+  - Blocks all CloneCast publication commands from this operator.
+  - Keeps publishing locked by default.
+  - Supports durable owner approve/reject state after final audio exists.
+  - Supports recording regeneration requests only for failed or rejected sections.
+
+Publishing Gate
+---------------
+
+Default state:
+
+  PUBLISHING LOCKED
+  Reason: Owner review not completed
+
+After explicit owner approval of a completed artifact:
+
+  PUBLISHING ELIGIBLE
+  Reason: Owner listened and approved the completed episode
+
+Publishing eligibility is only an AutoCorp review state. The operator still does not publish and blocks CloneCast publication commands.
+
+CloneCast Compatibility Finding
+-------------------------------
+
+CloneCast exposes supported CLI commands for research ingestion, episode creation, planning, generated scripts, chapter script text replacement, voice rendering, episode assembly, QC, release packaging, and publication.
+
+However, during this phase I did not find a supported CloneCast CLI command that imports one complete owner-approved final script as the authoritative production script for voice generation while preserving it byte-for-byte. CloneCast has:
+
+  - si-import --category script
+  - episode-chapter-script-set-text
+
+Those are not equivalent to a one-shot approved full-script production import interface.
+
+Because the request explicitly forbids direct CloneCast database writes and forbids inventing CloneCast behavior, the AutoCorp operator truthfully stops at this integration point with a blocker instead of fabricating production success.
+
+Verification
+------------
+
+Focused AutoCorp tests:
+
+  .venv/bin/python -m pytest tests/test_guided_clonecast_episode_operator.py -q
+  Result: passed, 14 tests
+
+Full AutoCorp test suite:
+
+  .venv/bin/python -m pytest -q
+  Result: passed
+
+Compile verification:
+
+  .venv/bin/python scripts/verify_compileall.py --repo /home/larry/autocorp_cli
+  Result: passed, compiled 173 maintained Python files
+
+Command registration smoke test:
+
+  .venv/bin/python autocorp.py episode-build --help
+  Result: passed
+
+CloneCast disposable workflow validation:
+
+  .venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast --disposable
+  Result: DISPOSABLE_WORKFLOW_COMPLETE
+  Stages: 46 passed, 0 failed
+  Production DB unchanged: Yes
+  CloneCast repository unchanged: Yes
+  Final disposable audio artifact verified: Yes
+
+CloneCast static readiness:
+
+  .venv/bin/python autocorp.py live-readiness --repo /home/larry/clonecast
+  Result: ready
+  Static inspection only: Yes
+  No changes made: Yes
+
+Production Safety Notes
+-----------------------
+
+No CloneCast source files were modified.
+No CloneCast production database writes were performed by the new AutoCorp operator.
+The existing disposable workflow test reported that /home/larry/clonecast/db/cloneshow.db was unchanged.
+The operator never publishes automatically.
+The operator does not silently fall back when CloneCast command execution fails.
+
+Current Blocker
+---------------
+
+The operator cannot honestly complete a real approved-script CloneCast episode through final generation until CloneCast exposes a supported production interface for importing an already-approved full script, or documents the intended mapping from a full approved script into chapter/conversation production records without direct database writes.

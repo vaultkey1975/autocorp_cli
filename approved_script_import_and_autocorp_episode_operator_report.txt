@@ -1,0 +1,130 @@
+Verdict: READY FOR REVIEW
+
+Root cause of low loudness
+- The real disposable assembled mono MP3 was valid and complete, but CloneCast stopped after raw assembly validation. The raw Chatterbox Turbo speech sections were assembled without a final podcast loudness mastering pass, producing integrated loudness around -39.19 LUFS and true peak -13.78 dBTP.
+
+Files changed in CloneCast
+- src/clonecast/episode_mastering_service.py
+- src/clonecast/cli.py
+- migrations/0039_episode_audio_mastering.sql
+- tests/test_episode_audio_mastering.py
+- tests/test_phase10_fastapi_web.py
+- Existing uncommitted baseline files remain preserved: approved_script_import_service.py, chatterbox_worker.py, speech_provider.py, speech_service.py, tests/test_approved_script_import.py, tests/test_phase4_voice.py.
+
+Files changed in AutoCorp
+- brains/guided_clonecast_episode.py
+- tests/test_guided_clonecast_episode_operator.py
+- Existing uncommitted baseline file preserved: autocorp.py.
+
+Exact mastering architecture
+- Raw assembled episode MP3 remains preserved as source artifact.
+- CloneCast command: episode-audio-master --episode-audio-job-id <episode_audio_job_id> --idempotency-key <key>
+- CloneCast service: clonecast.episode_mastering_service.EpisodeMasteringService
+- Pass 1: FFmpeg loudnorm JSON measurement.
+- Pass 2: FFmpeg loudnorm using measured_I, measured_TP, measured_LRA, measured_thresh, and offset from pass 1.
+- Independent validation: FFmpeg loudnorm measurement of mastered MP3 plus ffprobe decode/metadata validation.
+- Mastered artifact is separate: episode.mastered.mp3.
+- Durable metadata is stored in episode_audio_mastering_jobs and episode_audio_mastering_artifacts.
+- AutoCorp uses the mastered MP3 as final_audio and retains raw_audio separately.
+
+Exact FFmpeg commands
+- Raw analysis:
+  ffmpeg -hide_banner -nostdin -i /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mp3 -af loudnorm=I=-16:TP=-1.5:LRA=7:print_format=json -f null -
+- Mastering pass 1:
+  ffmpeg -hide_banner -nostdin -i /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mp3 -af loudnorm=I=-16:TP=-1.5:LRA=7:print_format=json -f null -
+- Mastering pass 2:
+  ffmpeg -hide_banner -nostdin -y -i /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mp3 -af loudnorm=I=-16:TP=-1.5:LRA=7:measured_I=-39.19:measured_TP=-13.78:measured_LRA=6.2:measured_thresh=-49.42:offset=1.29:linear=true:print_format=json -codec:a libmp3lame -b:a 128000 -ar 48000 -ac 1 /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/.episode.mastered-75ddc0bb4a574527be346f7db785fb5e.mp3
+- Independent mastered validation:
+  ffmpeg -hide_banner -nostdin -i /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mastered.mp3 -af loudnorm=I=-16:TP=-1.5:LRA=7:print_format=json -f null -
+- Decode metadata:
+  ffprobe -v error -show_entries format=duration,format_name:stream=codec_name,sample_rate,channels -of json /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mastered.mp3
+
+Raw artifact measurements
+- Path: /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mp3
+- SHA-256: a8e53f811e7f2ae8189d3750f698c2fc006ebba73bc528a4950339ef2bcacee4
+- Duration: 352.944 seconds
+- File size: 5,647,532 bytes
+- Format: mono MP3, 48000 Hz
+- Integrated loudness: -39.19 LUFS
+- True peak: -13.78 dBTP
+- Loudness range: 6.20 LU
+
+Mastered artifact measurements
+- Path: /tmp/ac-guided-real-fWBROc/runtime/episode_audio/script_6eac9065f5e948d6bd607d4673cab491/episodeaudio_272ada9d46cc4080874d7606ca710e04/episode.mastered.mp3
+- SHA-256: bdd1022385be87146e03d19449968e024f228c7295dae36814bfaa939370c152
+- Duration: 352.944 seconds
+- File size: 5,647,532 bytes
+- Format: mono MP3, 48000 Hz
+- Integrated loudness: -16.97 LUFS
+- True peak: -1.92 dBTP
+- Loudness range: 3.80 LU
+
+Loudness validation result
+- PASS: output integrated loudness -16.97 LUFS is within configured production tolerance [-17.0, -15.0] LUFS.
+
+True peak validation result
+- PASS: output true peak -1.92 dBTP is below the -1.5 dBTP ceiling.
+
+Duration preservation result
+- PASS: raw duration 352.944 seconds, mastered duration 352.944 seconds, drift 0.0 seconds.
+
+Raw artifact preservation proof
+- Raw path remains present.
+- Raw SHA-256 after mastering: a8e53f811e7f2ae8189d3750f698c2fc006ebba73bc528a4950339ef2bcacee4.
+- Mastered SHA-256 differs, proving a separate artifact was created.
+
+Listening-gate result
+- PASS: AutoCorp resume command reached EPISODE READY FOR OWNER REVIEW and showed the mastered review audio path.
+- Command:
+  printf 'YES\nsave\n' | CLONECAST_ROOT=/tmp/ac-guided-real-fWBROc CLONECAST_DB_PATH=/tmp/ac-guided-real-fWBROc/state.db CLONECAST_MIGRATIONS_PATH=/home/larry/clonecast/migrations /home/larry/autocorp_cli/.venv/bin/python autocorp.py episode-build --repo /home/larry/clonecast --resume acce_d18dcef300c6417e8104a6281d56fae8
+- Exit code: 0
+
+Publishing-lock proof
+- PASS: AutoCorp printed PUBLISHING LOCKED, Reason: Owner review not completed.
+- Session owner_approval_status remained publishing_locked.
+- No publish command was run.
+
+Retry/resume result
+- PASS: AutoCorp resumed an existing guided disposable episode and ran only the mastering/review-gate path against the disposable DB.
+- Chatterbox speech generation and section WAV artifacts were not regenerated.
+- CloneCast mastering idempotency returns the existing completed mastering job for the same raw source/settings without duplicate artifact creation.
+
+Focused test results and exit codes
+- CloneCast focused: .venv/bin/python -m pytest -W error -q tests/test_episode_audio_mastering.py tests/test_approved_script_import.py tests/test_phase4_voice.py::Phase4VoiceTests::test_failed_render_resume_preserves_completed_sections
+- Result: 16 passed, exit code 0.
+- AutoCorp focused: time .venv/bin/python -m pytest -q tests/test_guided_clonecast_episode_operator.py
+- Result: 15 passed, exit code 0, real 0m0.352s.
+
+Full test results and exit codes
+- CloneCast full strict: time .venv/bin/python -m pytest -W error -q
+- Result: 945 collected, passed, exit code 0, real 20m15.643s.
+- AutoCorp full: time .venv/bin/python -m pytest -q
+- Result: 1027 collected, passed with one existing xfail, exit code 0, real 1m1.400s.
+
+Compile result
+- Command: .venv/bin/python scripts/verify_compileall.py --repo /home/larry/autocorp_cli
+- Result: Compiled 173 maintained Python file(s), exit code 0, real 0m0.227s.
+
+Real disposable runtime result
+- Disposable environment: /tmp/ac-guided-real-fWBROc
+- Disposable DB: /tmp/ac-guided-real-fWBROc/state.db
+- CloneCast disposable DB upgraded from migration 38 to 39.
+- CloneCast mastering command:
+  CLONECAST_ROOT=/tmp/ac-guided-real-fWBROc CLONECAST_DB_PATH=/tmp/ac-guided-real-fWBROc/state.db CLONECAST_MIGRATIONS_PATH=/home/larry/clonecast/migrations PYTHONPATH=/home/larry/clonecast/src /home/larry/clonecast/.venv/bin/python -m clonecast.cli episode-audio-master --episode-audio-job-id episodeaudio_272ada9d46cc4080874d7606ca710e04 --idempotency-key runtime-mastering-20260731-1
+- Exit code: 0
+- CloneCast validation command:
+  CLONECAST_ROOT=/tmp/ac-guided-real-fWBROc CLONECAST_DB_PATH=/tmp/ac-guided-real-fWBROc/state.db CLONECAST_MIGRATIONS_PATH=/home/larry/clonecast/migrations PYTHONPATH=/home/larry/clonecast/src /home/larry/clonecast/.venv/bin/python -m clonecast.cli episode-audio-master-validate episodemaster_68133fe40dd944d8a93311e63090760b
+- Exit code: 0
+
+Production DB before and after SHA-256
+- Before: df8e338c49eb697ebaf9100e8ec642692c45ecc3f6591101025ff3878927bfad, size 4,956,160 bytes, no WAL, no SHM.
+- After:  df8e338c49eb697ebaf9100e8ec642692c45ecc3f6591101025ff3878927bfad, size 4,956,160 bytes, no WAL, no SHM.
+- PASS: production CloneCast database unchanged.
+
+Confirmation
+- No placeholders, fake processing, fake audio, hardcoded validation, or mocks were used as runtime evidence.
+- Mocks were used only in isolated unit tests.
+- The approved script was not modified.
+- Successful voice sections were not regenerated for mastering retry/resume.
+- Nothing was committed.
+- Nothing was pushed.

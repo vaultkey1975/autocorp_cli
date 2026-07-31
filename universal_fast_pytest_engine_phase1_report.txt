@@ -1,0 +1,501 @@
+Universal Fast Pytest Engine - Phase 1 Report
+==============================================
+
+Verdict: READY FOR REVIEW
+
+Date: 2026-07-31
+Repository: /home/larry/autocorp_cli
+Branch: main
+
+
+1. Scope
+--------
+Two things were built and run in this phase:
+
+  1. A Universal Fast Pytest Engine (`autocorp_testing/` + `brains/fast_pytest_engine.py`)
+     exposed via four new AutoCorp CLI commands: test-plan, test-fast,
+     test-focused, test-full.
+  2. That engine was used to plan, fast-check, and directly cross-check the
+     existing uncommitted Guided CloneCast Episode Operator work, plus a
+     compile check and a CLI smoke test.
+
+Nothing was committed. Nothing was pushed. CloneCast and Video Lab were not
+modified (Video Lab is not present on this machine; CloneCast's working tree
+was clean before and after, confirmed with `git -C /home/larry/clonecast
+status --short`, which produced no output).
+
+
+2. Pre-existing work preserved
+-------------------------------
+Before any edits, the following was recorded and left untouched apart from
+the new files listed below:
+
+  git status --short (before) showed:
+    M  autocorp.py
+    ?? approved_script_import_and_autocorp_episode_operator_report.txt
+    ?? brains/guided_clonecast_episode.py
+    ?? claude_phase_1g_audit.txt
+    ?? clonecast_live_readiness_report.txt
+    ?? data/
+    ?? guided_clonecast_episode_operator_report.txt
+    ?? phase_1q_runtime_output.txt
+    ?? tests/test_guided_clonecast_episode_operator.py
+
+  Branch: main
+  Last 3 commits: bcb40ed, 3a58fe8, 276fcc3 (all pre-existing, untouched)
+
+The only change made to `autocorp.py` was additive: a new import line and
+four new subparsers/handlers for test-plan/test-fast/test-focused/test-full,
+appended after the existing `episode-build` subparser. The pre-existing
+`cmd_episode_build` and Guided Episode Operator wiring were not altered.
+No file belonging to the pre-existing Guided CloneCast Episode Operator work
+was reset, cleaned, stashed, discarded, or overwritten.
+
+
+3. Files reviewed
+------------------
+  - autocorp.py (full read, before and after edit)
+  - brains/guided_clonecast_episode.py
+  - tests/test_guided_clonecast_episode_operator.py
+  - brains/discovery.py (Universal Repository Discovery Engine - reused as a
+    design reference, not imported, since it profiles a repo's tech stack
+    rather than its pytest execution plan)
+  - scripts/verify_compileall.py and tests/test_verify_compileall.py
+  - pytest.ini, config.py, memory/store.py (for AutoCorp storage conventions)
+  - tests/conftest.py
+
+
+4. Files changed / added
+--------------------------
+Modified:
+  - autocorp.py (+155 lines: import wiring + 4 subcommands + 4 handlers)
+
+Added (Fast Pytest Engine):
+  - autocorp_testing/__init__.py
+  - autocorp_testing/schemas.py       (SelectedTest, TestPlan, TestResult, EngineReport)
+  - autocorp_testing/discovery.py     (repo/test-config discovery)
+  - autocorp_testing/change_detection.py (safe Git inspection + fingerprint)
+  - autocorp_testing/mapping.py       (source-to-test mapping signals)
+  - autocorp_testing/safety.py        (GPU/DB classification, parallelism, prod-DB guard)
+  - autocorp_testing/history.py       (AutoCorp-managed SQLite timing/result history)
+  - autocorp_testing/execution.py     (real subprocess compile/import/pytest execution)
+  - autocorp_testing/planning.py      (ties discovery+change+mapping+safety+history into a plan)
+  - autocorp_testing/reporting.py     (human-readable + JSON rendering)
+  - brains/fast_pytest_engine.py      (orchestrator used by the CLI)
+  - tests/test_fast_pytest_engine.py  (54 focused tests, disposable repos)
+
+Added (this report):
+  - universal_fast_pytest_engine_phase1_report.txt
+
+Total new engine code: ~2,634 lines across the modules above (including
+tests). No file under /home/larry/clonecast or /home/larry/clonecast_video_lab
+was touched.
+
+
+5. Architecture
+----------------
+Followed the suggested structure directly:
+
+  brains/fast_pytest_engine.py   - CLI-facing orchestrator (test_plan/test_fast/
+                                    test_focused/test_full), history recording glue
+  autocorp_testing/
+    schemas.py        - stable dataclasses + the JSON contract
+    discovery.py       - read-only repository/test-config discovery
+    change_detection.py - safe Git inspection + repository fingerprinting
+    mapping.py          - source-to-test mapping signals
+    safety.py           - GPU/DB classification, parallelism decision, prod-DB guard
+    history.py           - AutoCorp-managed SQLite history (never in the target repo)
+    execution.py          - real subprocess compile/import/pytest execution
+    planning.py            - ties everything into a TestPlan (no execution)
+    reporting.py            - human-readable + JSON rendering
+
+No unnecessary abstraction layers were added beyond this list.
+
+
+6. Commands added
+-------------------
+  autocorp.py test-plan    --repo PATH [--feature X] [--base-branch B] [--json]
+  autocorp.py test-fast    --repo PATH [--json]
+  autocorp.py test-focused --repo PATH [--feature X | --path P | --node-id N] [--json]
+  autocorp.py test-full    --repo PATH [--json]
+
+All four require --repo (no ambiguous default target, per the mission spec).
+
+
+7. Repository discovery
+-------------------------
+`autocorp_testing/discovery.py` inspects, read-only: pyproject.toml,
+pytest.ini, setup.cfg, tox.ini, noxfile.py, Makefile, conftest.py, README*,
+.github/workflows/*.yml, .gitlab-ci.yml, azure-pipelines.yml, test roots
+(directories containing test_*.py/*_test.py), dependency/lock files
+(requirements*.txt, pyproject.toml, poetry.lock, Pipfile[.lock], setup.py/cfg,
+uv.lock), migration directories (migrations/, alembic/), pytest markers
+(from ini-style `markers =` blocks), the target's own venv
+(.venv or venv, else falls back to the current interpreter), and
+pytest's installed version.
+
+Strict full command discovery priority: (1) `.autocorp/test-profile.json`
+"strict_full_command" override, (2) CI workflow step lines that look like a
+real pytest invocation, (3) Makefile test targets / tox.ini `commands` /
+noxfile.py `session.run("pytest", ...)`, (4) README fenced/backtick lines
+that look like a real invocation, (5) presence of a pytest config file alone
+(pytest.ini/pyproject/setup.cfg) as medium/high-confidence evidence that
+`<venv_python> -m pytest` is the strict command (pytest then applies the
+repo's own addopts/testpaths). A shared `_looks_like_pytest_invocation()`
+filter rejects false positives such as "pip install pytest" or README prose
+that merely mentions the word "pytest" (this was caught and fixed during
+this phase - see Known Limitations).
+
+For AutoCorp's own repository the discovered strict command is:
+  /home/larry/autocorp_cli/.venv/bin/python -m pytest
+(confidence: medium - no CI/README/-W error evidence exists in this repo;
+pytest.ini's own `addopts = -q` and `testpaths = tests` govern the rest).
+
+Compile command discovery: uses the target's own scripts/verify_compileall.py
+if present (AutoCorp's own repo has one), else falls back to
+`<venv_python> -m compileall -q <repo>`.
+
+
+8. Change detection
+---------------------
+Uses only read-only Git subcommands (status --porcelain, diff --name-only,
+rev-parse). Detects staged, unstaged, and untracked files; committed diffs
+against an explicit --base-branch; and accepts explicit --path/--node-id
+selectors. Verified never to modify the target repository (see
+test_change_detection_never_writes_to_the_repository and
+test_no_target_repository_modification_in_fast_mode).
+
+Repository fingerprint = SHA-256 over: repo path, branch, commit SHA, sorted
+changed file paths, per-file content hashes, config-file content hashes
+(pytest config + conftest.py + dependency files + migration dirs), Python
+version, and pytest version.
+
+
+9. Test mapping
+------------------
+Combines, per changed file: (1) filename matching (module basename appears
+in a test file's basename), (2) import analysis (AST-parsed test file
+imports checked against the changed module's dotted name), (3) one-hop
+dependency expansion (tests of any module that imports the changed module
+are pulled in, reason: "dependency expansion: ..."), (4) feature/symbol
+matching for --feature (test file name / function name / class name /
+body text, plus source symbols that import into a matching test), and
+(5) explicit `.autocorp/test-profile.json` "explicit_mappings" and
+"feature_to_test_mappings". Mandatory safety tests are pulled from the
+profile's "always_run_safety_tests" plus a built-in heuristic (file name
+contains "safety" or "_gate" - this matched AutoCorp's own
+tests/test_gate.py, tests/test_acceptance_gate.py, etc.).
+
+When a changed file has zero direct/import matches, the engine does not
+silently guess broadly - it records an explicit uncertainty warning instead
+(see test_conservative_handling_of_uncertainty), which surfaces in both the
+human report and `uncertainty_warnings` in the plan/JSON.
+
+Every selected test carries its full reasons list; this is enforced by
+test_selection_reasons_are_recorded_for_every_selected_test and is visible
+directly in the JSON `selection_reasons` field.
+
+
+10. Test ordering
+--------------------
+FAST/FOCUSED order by category: previously_failed -> syntax -> import ->
+direct/feature/explicit -> safety -> integration -> slow (name hints:
+"slow", "workflow", "live_test", "publish") -> dependency. FULL is never
+reordered - it runs the repository's own discovered command exactly as
+given.
+
+
+11. Timing and result history
+--------------------------------
+Stored in AutoCorp's own managed data area at
+data/fast_pytest_engine/history.db (SQLite; never inside the target
+repository - verified for an external disposable repo in the test suite).
+Records repo path, node id/path, branch, commit SHA, repository and config
+fingerprints, duration, result, failure type, last run time, python/pytest
+versions, the exact command run, mode, and GPU/DB/network classification.
+No secrets are stored (no environment variables, no credentials).
+
+Cached passes are never treated as proof of a run: FAST/FOCUSED/FULL always
+execute pytest for real (verified by
+test_stale_pass_results_never_replace_execution, which seeds a fake
+"passed" history entry, then breaks the real source, then asserts test-fast
+actually fails).
+
+
+12. Cache invalidation
+-------------------------
+A test's timing estimate is labeled stale (not deleted) whenever the
+config fingerprint - built from the pytest config file(s), conftest.py,
+dependency/lock files, migration directories, Python version, and pytest
+version - differs from what was stored. Verified directly for: conftest.py
+changes, pytest.ini changes, requirements.txt changes, and migration file
+changes (each produces a different fingerprint), and for the timing-estimate
+staleness label itself.
+
+
+13. Parallelism strategy
+----------------------------
+pytest-xdist is not installed in this environment's venv, so parallelism is
+currently reported as disabled with an explicit reason
+("pytest-xdist is not installed in the target environment") for every run
+against this repository - this was confirmed directly
+(`.venv/bin/python -c "import xdist"` fails). When xdist is available, the
+engine additionally refuses to parallelize if any selected test's source
+mentions shared-state signals (sqlite3.connect, .db paths, fixed ports,
+os.environ mutation, globals, /tmp paths); otherwise it picks a conservative
+worker count (min(4, cpu_count // 2)). Both the safe and unsafe paths are
+covered by tests (test_safe_xdist_decision_when_installed_and_no_shared_state,
+test_unsafe_shared_database_decision_disables_parallelism).
+
+
+14. GPU safety
+-----------------
+Keyword-based classification (cuda, torch.cuda, chatterbox, gpu, nvidia,
+ollama, video_lab, diffusers) flags a selected test as GPU-involving; such
+tests are listed under `gpu_safety.gpu_tests_detected` and surfaced as a
+deferred check ("real GPU runtime verification ... deferred"). No GPU
+inference, no Chatterbox run, and no video-model run occurred anywhere in
+this phase. No GPU process was killed (none was ever started).
+
+
+15. Database safety
+-----------------------
+Keyword-based classification (sqlite3, .db paths, postgres, sqlalchemy,
+migrations, etc.) flags database-involving tests and reports
+`disposable_data_required: true` for them. A separate production-DB guard
+(`safety.snapshot_production_db` / `verify_production_db`) hashes a
+configured production DB path before and after a run and reports
+`changed_unexpectedly` if the SHA-256 differs - covered directly by
+test_production_db_guard_detects_unexpected_change and
+test_production_db_guard_reports_unchanged. No production database was
+touched during this phase; AutoCorp's own data/autocorp.db was never opened
+by the engine (only the target repository's Python source and test files are
+read).
+
+
+16. JSON contract
+--------------------
+`EngineReport.to_dict()` / `TestPlan.to_dict()` emit exactly the field names
+specified in the mission (schema_version, mode, repository,
+repository_fingerprint, changed_files, selected_tests, selection_reasons,
+commands, results, duration_seconds, deferred_checks, full_suite_required,
+production_approval_allowed, parallelism, gpu_safety, database_safety,
+errors), plus additive fields (passed, failed, exit_code, blocked,
+blocked_reason, compile_result, import_check_results) that do not rename or
+remove any required field. Verified JSON-serializable and schema-stable by
+test_json_schema_has_stable_required_fields and
+test_cli_test_fast_json_output_is_valid_json.
+
+
+17. Fast Pytest Engine focused tests
+----------------------------------------
+tests/test_fast_pytest_engine.py: 54 tests, all against disposable temporary
+Git repositories created and destroyed per test (never AutoCorp's own repo,
+never CloneCast, never Video Lab). Mocking is limited to two isolated
+subprocess-boundary cases (a missing interpreter for import-check failure
+propagation); every "tests actually ran" assertion is backed by a real
+pytest subprocess execution. Result:
+
+  54 passed in 5.86s (.venv/bin/python -m pytest -vv tests/test_fast_pytest_engine.py)
+
+Coverage includes: Python project / pytest-config / CI / README discovery,
+unstaged/staged/untracked/committed-diff/explicit-path/node-id change
+detection, filename/import/feature/dependency-expansion/explicit-profile
+mapping, conservative uncertainty handling, mandatory safety inclusion,
+failed-test prioritization, compile execution (pass and real syntax-error
+fail), subprocess failure propagation, real exit-code propagation from a
+genuinely failing pytest run, FULL running the unmodified strict command,
+timing history persistence, cache invalidation (config/conftest/dependency/
+migration), stale-pass-never-replaces-execution, plan mode running zero
+tests and making zero repository changes, deterministic plans, FAST/FOCUSED
+never granting production approval, FOCUSED requiring a selector and never
+silently becoming FULL, FULL granting approval only on a real pass, FULL
+reporting BLOCKED without a confident strict command, GPU/DB classification,
+safe/unsafe xdist decisions, production-DB guard, and JSON schema stability.
+
+
+18. Guided CloneCast Episode Operator - Part 3 execution
+------------------------------------------------------------
+All commands below were run for real against /home/larry/autocorp_cli.
+
+a) test-plan
+   Command: .venv/bin/python autocorp.py test-plan --repo /home/larry/autocorp_cli
+   Duration: 0.542s (real)
+   Result: identified tests/test_guided_clonecast_episode_operator.py under
+   "Proposed FAST tests" with reasons "matches changed module
+   guided_clonecast_episode.py" and "imports the changed module
+   brains.guided_clonecast_episode" (plus dependency-expansion reasons via
+   autocorp.py). That one file contains the required coverage: episode-build
+   CLI parsing (test_episode_build_parser_registers_repo_option,
+   test_cmd_episode_build_reports_errors), session persistence
+   (test_resume_after_interruption_and_idempotent_session_save), script
+   checksum verification (test_guided_question_order_and_script_preservation),
+   CloneCast command failures (test_clonecast_command_failure_propagates),
+   mastering integration (mastering assertions inside the main workflow
+   test), publishing lock (test_explicit_approval_unlocks_eligibility_but_does_not_publish,
+   test_publishing_commands_are_blocked), and approval behavior
+   (test_approval_requires_completed_audio,
+   test_regenerating_selected_section_does_not_rebuild_approved_sections).
+   No files were changed by this command.
+
+b) test-fast
+   Command: .venv/bin/python autocorp.py test-fast --repo /home/larry/autocorp_cli
+   Duration: 17.7s (real) / 16.8s (engine-reported, includes compile+import+pytest)
+   Selected: 23 test files (283 individual tests)
+   Result: FAST CHECK PASSED - 283 passed, 0 failed. Exit code 0.
+   "Full production verification still required" printed.
+   full_suite_required=true, production_approval_allowed=false (confirmed
+   in JSON).
+
+c) Direct focused cross-check
+   Command: .venv/bin/python -m pytest -W error -q tests/test_guided_clonecast_episode_operator.py
+   Duration: 0.347s (real)
+   Result: 15 passed, 0 failed, 0 warnings (so -W error raised nothing).
+   Exit code 0.
+
+d) Compile verification
+   Command: .venv/bin/python scripts/verify_compileall.py --repo /home/larry/autocorp_cli
+   Duration: 0.212s (real)
+   Result: "Compiled 185 maintained Python file(s)." Exit code 0.
+
+e) CLI smoke verification
+   Command: .venv/bin/python autocorp.py episode-build --help
+   Duration: 0.172s (real)
+   Result: usage text printed correctly (--repo, --resume, --approve,
+   --reject, --owner, --reason, --regenerate-section). Exit code 0.
+
+No real Chatterbox or video generation was run. The full AutoCorp suite was
+not run directly in this phase (only `--collect-only`, which does not
+execute any test body, was used once to produce the "tests avoided" count
+below).
+
+
+19. Guided Episode Operator review (code-level confirmation)
+------------------------------------------------------------------
+Reviewed brains/guided_clonecast_episode.py and
+tests/test_guided_clonecast_episode_operator.py directly (not just via
+passing tests):
+
+  - AutoCorp calls supported CloneCast CLI commands only, via
+    `python -m clonecast.cli <args>` (CloneCastCLI.run); PUBLISH_COMMANDS
+    are explicitly blocked unless allow_publish=True, and no code path sets
+    allow_publish=True (test_publishing_commands_are_blocked).
+  - No direct production database writes: the module contains no sqlite3,
+    connect_database, UPDATE, or INSERT usage
+    (test_no_direct_production_database_writes greps the source directly).
+  - Source and stored script SHA-256 are compared
+    (script_checksum vs imported_script_checksum,
+    script_preserved_byte_for_byte), and CloneCast's own
+    source_sha256/stored_sha256 from episode-script-import-approved are
+    cross-checked too - a mismatch raises EpisodeBuildError.
+  - The approved script is never rewritten - it is written once to
+    managed_source_dir() and only read afterward; checksums are computed,
+    not scripts patched.
+  - Real CloneCast IDs are required: episode_id, script_id,
+    speech_job_id, audio_job_id, and mastering_job_id are all required
+    from CloneCast's JSON responses, or EpisodeBuildError is raised.
+  - Real audio artifacts are required: raw and mastered files must exist on
+    disk and exceed 1024 bytes (_record_mastering_result), or
+    EpisodeBuildError is raised.
+  - Mastered audio (final_audio) is used for owner review in
+    _print_listening_gate; the raw assembled audio path (raw_audio) is
+    preserved separately in artifact_paths and also printed.
+  - Sessions resume correctly via `--resume SESSION_ID`
+    (load_session + repo-path identity check).
+  - Completed voice sections are preserved: regenerate_section refuses to
+    rebuild a section already in validation_evidence["approved_sections"].
+  - Mastering can retry without rerunning successful TTS:
+    _master_existing_episode only re-invokes episode-audio-master using the
+    already-stored episode_audio_job_id; it never re-calls speech-render.
+  - Publishing is locked by default (owner_approval_status starts
+    "publishing_locked") until owner_approval_status is switched to
+    "publishing_eligible" by approve_for_publishing.
+  - Approval only grants publishing eligibility - approve_for_publishing
+    changes status fields and saves the session; it never invokes any
+    CloneCast publish/publication-* command
+    (test_explicit_approval_unlocks_eligibility_but_does_not_publish
+    asserts "publication" never appears in the recorded commands).
+  - CloneCast failures are reported truthfully: CloneCastCLI.checked()
+    raises EpisodeBuildError including the real stdout/stderr on a nonzero
+    return code (test_clonecast_command_failure_propagates).
+  - No placeholders, fake audio paths, hardcoded success, or silent
+    fallbacks were found in a direct read of the module.
+
+This work was already complete and correct before this phase started; this
+phase's contribution was independent quick-check verification via the new
+engine, not modification.
+
+
+20. Performance measurements (actual, not promised)
+---------------------------------------------------------
+  test-plan (autocorp_cli, self):                0.542s
+  test-fast (autocorp_cli, self):                 17.7s wall / 16.8s engine-reported
+    - tests selected: 23 files / 283 individual tests
+    - tests avoided vs. full suite: 78 files / ~798 individual tests
+      (full suite collected 1081 tests across 101 files via
+      `pytest --collect-only -q`, which does not execute any test)
+  Direct Guided Episode Operator tests (-W error): 0.347s, 15 passed
+  Compile verification (185 files):                0.212s
+  CLI smoke test (episode-build --help):           0.172s
+  Parallelism: not used (pytest-xdist not installed in this venv)
+  Fast Pytest Engine's own focused test suite:      5.86s for 54 tests
+
+No fixed or general speedup percentage is claimed - these are the actual
+numbers from this run, on this machine, for this repository's current size.
+
+
+21. Checks deferred to FULL
+-------------------------------
+  - The remaining 78 test files (~798 tests) not selected by test-fast for
+    this change (listed in the plan's `deferred_to_full`).
+  - Real GPU/CUDA/Chatterbox/video-model inference (never run by FAST or
+    FOCUSED).
+  - Anything requiring the repository's full strict command
+    (`.venv/bin/python -m pytest`, relying on pytest.ini) - not run in this
+    phase, per the mission's instruction not to run the full AutoCorp suite
+    unless a required focused check fails or repository safety rules
+    demand it (neither occurred).
+
+
+22. Known limitations
+-------------------------
+  - Test selection granularity is file-level for FAST/FOCUSED (a whole test
+    file is chosen or not); only explicit --node-id targets a single test
+    function. This is a deliberate simplicity trade-off - pytest's own
+    -vv output still reports and records real per-test results.
+  - Strict-command discovery is heuristic (CI/Makefile/tox/noxfile/README
+    text matching). It was caught mis-detecting "pip install pytest" and a
+    README example string containing the word "pytest" as commands during
+    this phase's own testing and was fixed (see Section 7); other unusual
+    formats could still evade detection, in which case test-full correctly
+    reports BLOCKED rather than guessing.
+  - Parallelism has only been exercised in its "disabled" branch on this
+    machine, since pytest-xdist is not installed here; the "enabled" branch
+    is covered by a focused unit test but not by a real multi-worker run
+    against this repository.
+  - Dependency-expansion mapping is one hop only (tests of direct importers
+    of a changed module), not a full transitive closure, to keep FAST
+    genuinely fast and avoid runaway selection growth on large repositories.
+  - The mandatory-safety-test heuristic (filename contains "safety" or
+    "_gate") is a simple default; repositories with differently-named
+    safety-critical tests should list them explicitly in
+    `.autocorp/test-profile.json`.
+
+
+23. Confirmations
+---------------------
+  - FAST did not grant production approval at any point in this phase
+    (production_approval_allowed was false on every test-fast run; enforced
+    unconditionally by EngineReport.to_dict() for mode != "full").
+  - FOCUSED did not grant production approval at any point in this phase
+    (same mechanism).
+  - The full AutoCorp test suite was intentionally not run directly in this
+    phase (only `--collect-only`, which executes no test, was used once for
+    the performance-measurement count in Section 20).
+  - CloneCast was not modified: `git -C /home/larry/clonecast status --short`
+    produced no output before or after this phase.
+  - Video Lab was not modified: /home/larry/clonecast_video_lab does not
+    exist on this machine, so it could not have been touched.
+  - Nothing was committed in this phase (git status still shows the same
+    modified/untracked files as before, plus the new engine files).
+  - Nothing was pushed in this phase.

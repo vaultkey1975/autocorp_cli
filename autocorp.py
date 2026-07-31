@@ -34,7 +34,8 @@ from core.orchestrator import Session
 from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
-from brains import analyzer, chat, discovery, engine_registry, live_inspector, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from autocorp_testing import reporting as fast_pytest_reporting
+from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -151,6 +152,100 @@ def cmd_memory(args) -> int:
     if not builds and not lessons:
         console.muted("Memory is empty — build something first.")
     return 0
+
+
+def cmd_episode_build(args) -> int:
+    try:
+        if args.approve:
+            session = guided_clonecast_episode.approve_for_publishing(args.approve, owner=args.owner)
+            print("PUBLISHING ELIGIBLE")
+            print("Reason: Owner approved the completed episode")
+            print(f"Session: {session.session_id}")
+            return 0
+        if args.reject:
+            session = guided_clonecast_episode.reject_after_review(args.reject, reason=args.reason)
+            print("PUBLISHING LOCKED")
+            print("Reason: Owner review not completed")
+            print(f"Session: {session.session_id}")
+            return 0
+        if args.regenerate_section:
+            if not args.resume:
+                print("Episode Build Error: --resume is required with --regenerate-section", file=sys.stderr)
+                return 2
+            session = guided_clonecast_episode.regenerate_section(args.resume, args.regenerate_section)
+            print(f"Regeneration recorded for section: {args.regenerate_section}")
+            print(f"Session: {session.session_id}")
+            return 0
+        session = guided_clonecast_episode.run_guided_episode_build(args.repo, resume=args.resume)
+        print(f"Session saved: {guided_clonecast_episode.session_path(session.session_id)}")
+        return 0
+    except guided_clonecast_episode.EpisodeBuildError as exc:
+        print(f"Episode Build Error: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_test_plan(args) -> int:
+    """Fast Pytest Engine: read-only test plan. Never runs tests, never
+    writes to the target repository - see brains/fast_pytest_engine.py."""
+    try:
+        plan = fast_pytest_engine.test_plan(args.repo, feature=getattr(args, "feature", None),
+                                            base_branch=getattr(args, "base_branch", None))
+    except fast_pytest_engine.EngineError as exc:
+        print(f"Test Plan Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(fast_pytest_reporting.to_json(plan))
+    else:
+        print(fast_pytest_reporting.render_plan(plan))
+    return 0
+
+
+def cmd_test_fast(args) -> int:
+    """Fast Pytest Engine: immediate developer feedback. Never grants
+    production approval - see brains/fast_pytest_engine.py."""
+    try:
+        report = fast_pytest_engine.test_fast(args.repo)
+    except fast_pytest_engine.EngineError as exc:
+        print(f"Test Fast Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(fast_pytest_reporting.to_json(report))
+    else:
+        print(fast_pytest_reporting.render_report(report))
+    return report.exit_code
+
+
+def cmd_test_focused(args) -> int:
+    """Fast Pytest Engine: verifies one feature/subsystem. Never grants
+    production approval, never silently becomes FULL."""
+    try:
+        report = fast_pytest_engine.test_focused(args.repo, feature=getattr(args, "feature", None),
+                                                  path=getattr(args, "path", None),
+                                                  node_id=getattr(args, "node_id", None))
+    except fast_pytest_engine.EngineError as exc:
+        print(f"Test Focused Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(fast_pytest_reporting.to_json(report))
+    else:
+        print(fast_pytest_reporting.render_report(report))
+    return report.exit_code
+
+
+def cmd_test_full(args) -> int:
+    """Fast Pytest Engine: the repository's own complete strict
+    verification, run unmodified. The only mode that can contribute to
+    production approval."""
+    try:
+        report = fast_pytest_engine.test_full(args.repo)
+    except fast_pytest_engine.EngineError as exc:
+        print(f"Test Full Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(fast_pytest_reporting.to_json(report))
+    else:
+        print(fast_pytest_reporting.render_report(report))
+    return report.exit_code
 
 
 def _resolve_repo(args, quiet: bool = False) -> str:
@@ -1233,6 +1328,65 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--test", action="store_true",
                     help="required safety mode: never publish externally")
     sp.set_defaults(func=cmd_quick_podcast)
+
+    sp = sub.add_parser("episode-build",
+                        help="guided CloneCast episode operator with review lock")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to CloneCast repository")
+    sp.add_argument("--resume", default=None, metavar="SESSION_ID",
+                    help="resume a saved guided episode session")
+    sp.add_argument("--approve", default=None, metavar="SESSION_ID",
+                    help="record owner approval after listening; does not publish")
+    sp.add_argument("--reject", default=None, metavar="SESSION_ID",
+                    help="record owner rejection and keep publishing locked")
+    sp.add_argument("--owner", default="owner",
+                    help="approval actor recorded in the AutoCorp session")
+    sp.add_argument("--reason", default="",
+                    help="review rejection reason")
+    sp.add_argument("--regenerate-section", default=None, metavar="SECTION_ID",
+                    help="record regeneration of one failed or rejected section")
+    sp.set_defaults(func=cmd_episode_build)
+
+    sp = sub.add_parser("test-plan",
+                        help="Fast Pytest Engine: read-only test plan (runs nothing)")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--feature", default=None,
+                    help="feature/subsystem name to include FOCUSED candidates for")
+    sp.add_argument("--base-branch", default=None, metavar="BRANCH",
+                    help="compare committed changes against this branch")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_test_plan)
+
+    sp = sub.add_parser("test-fast",
+                        help="Fast Pytest Engine: immediate developer feedback "
+                             "(never grants production approval)")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_test_fast)
+
+    sp = sub.add_parser("test-focused",
+                        help="Fast Pytest Engine: verify one feature/subsystem "
+                             "(never grants production approval)")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--feature", default=None, help="feature/subsystem name to verify")
+    sp.add_argument("--path", default=None, metavar="TEST_PATH",
+                    help="explicit test file path, e.g. tests/test_example.py")
+    sp.add_argument("--node-id", default=None, metavar="NODE_ID",
+                    help="explicit pytest node ID, e.g. tests/test_example.py::TestClass::test_case")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_test_focused)
+
+    sp = sub.add_parser("test-full",
+                        help="Fast Pytest Engine: the repository's complete strict "
+                             "verification, run unmodified (only mode that can "
+                             "contribute to production approval)")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    sp.set_defaults(func=cmd_test_full)
 
     return p
 
