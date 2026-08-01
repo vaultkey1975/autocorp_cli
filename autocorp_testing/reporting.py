@@ -66,6 +66,8 @@ def render_report(report: EngineReport) -> str:
     label, tagline = _HEADERS.get(report.mode, (report.mode.upper(), None))
     if report.blocked:
         status = "BLOCKED"
+    elif any("NOT VERIFIED" in e for e in report.errors):
+        status = "NOT VERIFIED"
     elif report.exit_code == 0:
         status = "PASSED"
     else:
@@ -78,11 +80,57 @@ def render_report(report: EngineReport) -> str:
         f"Repository: {report.repository}",
         f"Changed files: {len(report.changed_files)}",
         f"Selected tests: {len(report.selected_tests)}",
+        f"Requested explicit paths: {len(report.requested_paths)}",
+        f"Accepted explicit paths: {len(report.accepted_paths)}",
+        f"Collected tests: {report.collected}",
         f"Passed: {report.passed}",
         f"Failed: {report.failed}",
+        f"Skipped: {report.skipped}",
+        f"Deselected: {report.deselected}",
         f"Duration: {report.duration_seconds:.1f} seconds",
         "",
     ]
+    if report.requested_paths or report.accepted_paths or report.rejected_paths:
+        lines.append("Preflight:")
+        lines.append(f"- Intended selection mode: {report.selection_mode or '(unspecified)'}")
+        if report.requested_paths:
+            lines.append("- Requested explicit paths:")
+            for p in report.requested_paths:
+                lines.append(f"  - {p}")
+        if report.normalized_paths:
+            lines.append("- Normalized paths:")
+            for p in report.normalized_paths:
+                lines.append(f"  - {p}")
+        if report.accepted_paths:
+            lines.append("- Accepted paths:")
+            for p in report.accepted_paths:
+                lines.append(f"  - {p}")
+        if report.duplicate_paths:
+            lines.append("- Duplicate paths removed:")
+            for p in report.duplicate_paths:
+                lines.append(f"  - {p}")
+        if report.rejected_paths:
+            lines.append("- Rejected paths:")
+            for p in report.rejected_paths:
+                lines.append(f"  - {p}")
+        command = report.commands[-1] if report.commands else []
+        lines.append(f"- Final pytest command: {' '.join(command) if command else '(verification did not run)'}")
+        lines.append("")
+    if report.represented_test_files:
+        lines.append("Actually represented test files:")
+        for p in report.represented_test_files:
+            lines.append(f"- {p}")
+        lines.append("")
+    if report.slowest_tests:
+        lines.append("Slowest tests:")
+        for item in report.slowest_tests[:10]:
+            lines.append(f"- {item.get('duration_seconds', 0):.2f}s {item.get('phase')} {item.get('test')}")
+        lines.append("")
+    if report.performance_warnings:
+        lines.append("Performance warnings:")
+        for warning in report.performance_warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
     if report.blocked:
         lines += [f"Blocked reason: {report.blocked_reason}", ""]
     reasons_seen = []

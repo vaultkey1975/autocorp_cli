@@ -131,6 +131,19 @@ class EngineReport:
     compile_result: dict[str, Any] = field(default_factory=dict)
     import_check_results: list[dict[str, Any]] = field(default_factory=list)
     uncertainty_warnings: list[str] = field(default_factory=list)
+    requested_paths: list[str] = field(default_factory=list)
+    normalized_paths: list[str] = field(default_factory=list)
+    accepted_paths: list[str] = field(default_factory=list)
+    rejected_paths: list[str] = field(default_factory=list)
+    duplicate_paths: list[str] = field(default_factory=list)
+    selection_mode: str = ""
+    collected: int = 0
+    skipped: int = 0
+    deselected: int = 0
+    represented_test_files: list[str] = field(default_factory=list)
+    slowest_tests: list[dict[str, Any]] = field(default_factory=list)
+    collection_duration_seconds: float | None = None
+    performance_warnings: list[str] = field(default_factory=list)
 
     def selection_reasons(self) -> dict[str, list[str]]:
         return {t.node_id: list(t.reasons) for t in self.selected_tests}
@@ -162,4 +175,17 @@ class EngineReport:
             "compile_result": self.compile_result,
             "import_check_results": self.import_check_results,
             "uncertainty_warnings": list(self.uncertainty_warnings),
+            "requested_paths": list(self.requested_paths),
+            "normalized_paths": list(self.normalized_paths),
+            "accepted_paths": list(self.accepted_paths),
+            "rejected_paths": list(self.rejected_paths),
+            "duplicate_paths": list(self.duplicate_paths),
+            "selection_mode": self.selection_mode,
+            "collected": self.collected,
+            "skipped": self.skipped,
+            "deselected": self.deselected,
+            "represented_test_files": list(self.represented_test_files),
+            "slowest_tests": list(self.slowest_tests),
+            "collection_duration_seconds": self.collection_duration_seconds,
+            "performance_warnings": list(self.performance_warnings),
         }

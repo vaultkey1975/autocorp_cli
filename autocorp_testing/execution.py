@@ -19,13 +19,10 @@ from typing import Any
 
 from autocorp_testing.schemas import TestResult
 
-_SUMMARY_RE = re.compile(
-    r"(?:(?P<passed>\d+) passed)?"
-    r"(?:.*?(?P<failed>\d+) failed)?"
-    r"(?:.*?(?P<errors>\d+) error)?"
-    r"(?:.*?(?P<skipped>\d+) skipped)?",
-)
+_SUMMARY_RE = re.compile(r"(?P<count>\d+) (?P<kind>passed|failed|errors?|skipped|deselected)\b")
 _ITEM_RE = re.compile(r"^(?P<node>\S+::\S+|\S+\.py)\s+(?P<outcome>PASSED|FAILED|ERROR|SKIPPED)\b")
+_COLLECTED_RE = re.compile(r"\bcollected (?P<count>\d+) item")
+_SLOW_RE = re.compile(r"^(?P<duration>\d+(?:\.\d+)?)s\s+(?P<phase>setup|call|teardown)\s+(?P<node>\S+)")
 
 
 @dataclass
@@ -120,20 +117,44 @@ class PytestRunResult:
     failed: int
     errors: int
     skipped: int
+    deselected: int = 0
+    collected: int = 0
+    slowest_tests: list[dict[str, Any]] = field(default_factory=list)
+    collection_duration_seconds: float | None = None
     per_test: list[TestResult] = field(default_factory=list)
     timed_out: bool = False
 
 
-def _parse_summary(stdout: str) -> tuple[int, int, int, int]:
-    tail = stdout.strip().splitlines()[-1] if stdout.strip() else ""
-    match = _SUMMARY_RE.search(tail)
-    if not match:
-        return 0, 0, 0, 0
-    g = match.groupdict()
-    return (
-        int(g["passed"] or 0), int(g["failed"] or 0),
-        int(g["errors"] or 0), int(g["skipped"] or 0),
-    )
+def _parse_summary(stdout: str) -> tuple[int, int, int, int, int]:
+    lines = [line.strip("= ") for line in stdout.splitlines() if line.strip()]
+    summary = next((line for line in reversed(lines) if re.search(r"\b(passed|failed|errors?|skipped|deselected)\b", line) and " in " in line), "")
+    counts = {"passed": 0, "failed": 0, "error": 0, "errors": 0, "skipped": 0, "deselected": 0}
+    for match in _SUMMARY_RE.finditer(summary):
+        counts[match.group("kind")] = int(match.group("count"))
+    return counts["passed"], counts["failed"], counts["error"] + counts["errors"], counts["skipped"], counts["deselected"]
+
+
+def _parse_collected(stdout: str) -> int:
+    for line in stdout.splitlines():
+        match = _COLLECTED_RE.search(line)
+        if match:
+            return int(match.group("count"))
+    passed, failed, errors, skipped, _ = _parse_summary(stdout)
+    return passed + failed + errors + skipped
+
+
+def _parse_slowest(stdout: str) -> list[dict[str, Any]]:
+    out = []
+    for line in stdout.splitlines():
+        match = _SLOW_RE.match(line.strip())
+        if not match:
+            continue
+        out.append({
+            "duration_seconds": float(match.group("duration")),
+            "phase": match.group("phase"),
+            "test": match.group("node"),
+        })
+    return out
 
 
 def _parse_items(stdout: str, per_test_durations: dict[str, float] | None = None) -> list[TestResult]:
@@ -177,12 +198,14 @@ def run_pytest(
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
     duration = time.perf_counter() - start
-    passed, failed, errors, skipped = _parse_summary(stdout)
+    passed, failed, errors, skipped, deselected = _parse_summary(stdout)
+    collected = _parse_collected(stdout)
     per_test = _parse_items(stdout) if itemized else []
     return PytestRunResult(
         command=args, returncode=returncode, stdout=stdout, stderr=stderr,
         duration_seconds=duration, passed=passed, failed=failed, errors=errors,
-        skipped=skipped, per_test=per_test, timed_out=timed_out,
+        skipped=skipped, deselected=deselected, collected=collected,
+        slowest_tests=_parse_slowest(stdout), per_test=per_test, timed_out=timed_out,
     )
 
 
@@ -199,9 +222,10 @@ def run_strict_full(strict_full_command: list[str], *, cwd: str, timeout: int = 
         stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
     duration = time.perf_counter() - start
-    passed, failed, errors, skipped = _parse_summary(stdout)
+    passed, failed, errors, skipped, deselected = _parse_summary(stdout)
     return PytestRunResult(
         command=strict_full_command, returncode=returncode, stdout=stdout, stderr=stderr,
         duration_seconds=duration, passed=passed, failed=failed, errors=errors,
-        skipped=skipped, per_test=[], timed_out=timed_out,
+        skipped=skipped, deselected=deselected, collected=_parse_collected(stdout),
+        slowest_tests=_parse_slowest(stdout), per_test=[], timed_out=timed_out,
     )

@@ -555,6 +555,152 @@ def test_focused_never_silently_becomes_full(history_data_dir, tmp_path):
     assert len(report.selected_tests) < 3  # not every test file in the repo
 
 
+def test_cli_test_focused_repeated_paths_are_preserved():
+    parser = autocorp.build_parser()
+    args = parser.parse_args([
+        "test-focused", "--repo", "/tmp/repo",
+        "--path", "tests/test_one.py",
+        "--path", "tests/test_two.py",
+    ])
+    assert args.path == ["tests/test_one.py", "tests/test_two.py"]
+
+
+def test_focused_two_repeated_paths_are_preserved_and_run(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_mod_a.py", "tests/test_mod_b.py"])
+    assert report.exit_code == 0
+    assert report.requested_paths == ["tests/test_mod_a.py", "tests/test_mod_b.py"]
+    assert report.accepted_paths == ["tests/test_mod_a.py", "tests/test_mod_b.py"]
+    assert [t.path for t in report.selected_tests] == ["tests/test_mod_a.py", "tests/test_mod_b.py"]
+    assert report.commands[-1][-2:] == ["tests/test_mod_a.py", "tests/test_mod_b.py"]
+    assert report.collected == 2
+    assert report.passed == 2
+    assert report.failed == 0
+    assert set(report.represented_test_files) == {"tests/test_mod_a.py", "tests/test_mod_b.py"}
+
+
+def test_focused_three_repeated_paths_are_preserved(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "tests" / "subfolder").mkdir()
+    (repo / "tests" / "subfolder" / "test_three.py").write_text("def test_three():\n    assert True\n", encoding="utf-8")
+    requested = ["tests/test_mod_a.py", "tests/test_mod_b.py", "tests/subfolder/test_three.py"]
+    report = fast_pytest_engine.test_focused(str(repo), path=requested)
+    assert report.exit_code == 0
+    assert report.accepted_paths == requested
+    assert report.commands[-1][-3:] == requested
+    assert report.collected == 3
+    assert report.passed == 3
+
+
+def test_focused_duplicate_paths_are_deduplicated_and_disclosed(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_mod_a.py", "tests/test_mod_a.py"])
+    assert report.exit_code == 0
+    assert report.requested_paths == ["tests/test_mod_a.py", "tests/test_mod_a.py"]
+    assert report.accepted_paths == ["tests/test_mod_a.py"]
+    assert report.duplicate_paths == ["tests/test_mod_a.py"]
+    rendered = reporting.render_report(report)
+    assert "Requested explicit paths: 2" in rendered
+    assert "Accepted explicit paths: 1" in rendered
+    assert "Duplicate paths removed:" in rendered
+
+
+def test_focused_invalid_explicit_path_fails_without_running(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_missing.py"])
+    assert report.exit_code != 0
+    assert report.blocked is True
+    assert report.rejected_paths == ["tests/test_missing.py"]
+    assert report.commands == []
+    rendered = reporting.render_report(report)
+    assert "verification did not run" in rendered
+    assert "FOCUSED VERIFICATION BLOCKED" in rendered
+
+
+def test_focused_zero_collected_tests_is_not_verified(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "tests" / "test_empty.py").write_text("VALUE = 1\n", encoding="utf-8")
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_empty.py"])
+    assert report.exit_code != 0
+    assert report.collected == 0
+    assert any("NOT VERIFIED" in e for e in report.errors)
+    assert "FOCUSED VERIFICATION NOT VERIFIED" in reporting.render_report(report)
+
+
+def test_focused_result_report_lists_requested_selected_and_command(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_mod_a.py", "tests/test_mod_b.py"])
+    rendered = reporting.render_report(report)
+    assert "Requested explicit paths: 2" in rendered
+    assert "Accepted explicit paths: 2" in rendered
+    assert "Actually represented test files:" in rendered
+    assert "tests/test_mod_a.py" in rendered
+    assert "tests/test_mod_b.py" in rendered
+    assert "Final pytest command:" in rendered
+
+
+def test_focused_history_records_every_selected_path(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_mod_a.py", "tests/test_mod_b.py"])
+    assert report.exit_code == 0
+    assert history.get_entry(str(repo), "tests/test_mod_a.py")["result"] == "passed"
+    assert history.get_entry(str(repo), "tests/test_mod_b.py")["result"] == "passed"
+
+
+def test_focused_one_explicit_path_still_works(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    report = fast_pytest_engine.test_focused(str(repo), path="tests/test_mod_a.py")
+    assert report.exit_code == 0
+    assert report.accepted_paths == ["tests/test_mod_a.py"]
+    assert report.collected == 1
+    assert report.passed == 1
+
+
+def test_planning_with_explicit_path_remains_compatible(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    plan = planning.build_plan(str(repo), explicit_paths=["tests/test_mod_a.py"])
+    assert any(t.path == "tests/test_mod_a.py" for t in plan.focused_tests)
+    assert plan.full_suite_required if hasattr(plan, "full_suite_required") else True
+
+
+def test_focused_slow_test_output_is_captured_and_summarized(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "tests" / "test_slow.py").write_text(
+        "import time\n\n\ndef test_slow():\n    time.sleep(1.1)\n    assert True\n",
+        encoding="utf-8",
+    )
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_slow.py"])
+    assert report.exit_code == 0
+    assert report.slowest_tests
+    assert any("test_slow" in item["test"] for item in report.slowest_tests)
+    assert "Slowest tests:" in reporting.render_report(report)
+
+
+def test_focused_heavy_explicit_test_runs_but_is_labeled(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    heavy = repo / "tests" / "test_publication_media.py"
+    heavy.write_text(
+        "import wave\n\n\ndef test_publication_media_package():\n    assert wave is not None\n",
+        encoding="utf-8",
+    )
+    report = fast_pytest_engine.test_focused(str(repo), path=["tests/test_publication_media.py"])
+    assert report.exit_code == 0
+    assert report.passed == 1
+    assert report.selected_tests[0].classification["media_heavy"] is True
+    assert report.performance_warnings
+
+
+def test_focused_no_path_is_overwritten_by_last_argument(history_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    first = "tests/test_mod_a.py"
+    last = "tests/test_mod_b.py"
+    report = fast_pytest_engine.test_focused(str(repo), path=[first, last])
+    command = report.commands[-1]
+    assert first in command
+    assert last in command
+    assert command.index(first) < command.index(last)
+
+
 def test_full_uses_the_complete_command_and_can_grant_approval(history_data_dir, tmp_path):
     repo = make_repo(tmp_path)
     report = fast_pytest_engine.test_full(str(repo))

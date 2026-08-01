@@ -1372,7 +1372,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", required=True, metavar="PATH",
                     help="absolute path to target repository")
     sp.add_argument("--feature", default=None, help="feature/subsystem name to verify")
-    sp.add_argument("--path", default=None, metavar="TEST_PATH",
+    sp.add_argument("--path", action="append", default=None, metavar="TEST_PATH",
                     help="explicit test file path, e.g. tests/test_example.py")
     sp.add_argument("--node-id", default=None, metavar="NODE_ID",
                     help="explicit pytest node ID, e.g. tests/test_example.py::TestClass::test_case")
