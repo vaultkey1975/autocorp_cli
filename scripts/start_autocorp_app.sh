@@ -4,7 +4,7 @@
 # Resolves the repository root from this script's own location (not the
 # caller's working directory), then runs the launcher through the
 # repository's own virtual environment. Safe to run repeatedly: it will
-# reuse an already-running server instead of starting a duplicate.
+# focus an already-running desktop window instead of starting a duplicate.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,4 +18,4 @@ if [[ ! -x "${PYTHON}" ]]; then
     exit 1
 fi
 
-exec "${PYTHON}" -m app.launcher
+exec "${PYTHON}" -m app.desktop_app

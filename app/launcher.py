@@ -11,6 +11,8 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -19,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import config
+
+_SERVER_PROCESSES: dict[int, subprocess.Popen] = {}
 
 
 @dataclass
@@ -85,6 +89,57 @@ def _write_pid_file(pid: int) -> None:
     Path(config.APP_PID_FILE).write_text(str(pid), encoding="utf-8")
 
 
+def remove_stale_pid_file() -> None:
+    pid = _read_pid_file()
+    if pid is None or not _pid_is_running(pid):
+        Path(config.APP_PID_FILE).unlink(missing_ok=True)
+
+
+def is_port_released(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return False
+    except OSError:
+        return True
+
+
+def stop_server(pid: int | None = None, *, timeout: float = 10.0) -> bool:
+    pid = pid if pid is not None else _read_pid_file()
+    if not pid or not _pid_is_running(pid):
+        Path(config.APP_PID_FILE).unlink(missing_ok=True)
+        return True
+    proc = _SERVER_PROCESSES.get(pid)
+    try:
+        pgid = os.getpgid(pid)
+    except OSError:
+        pgid = None
+    try:
+        if pgid:
+            os.killpg(pgid, signal.SIGTERM)
+        else:
+            os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        Path(config.APP_PID_FILE).unlink(missing_ok=True)
+        return True
+
+    if proc is not None:
+        try:
+            proc.wait(timeout=timeout)
+            _SERVER_PROCESSES.pop(pid, None)
+            Path(config.APP_PID_FILE).unlink(missing_ok=True)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_is_running(pid):
+            Path(config.APP_PID_FILE).unlink(missing_ok=True)
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def start_or_connect(
     *,
     host: str = config.APP_HOST,
@@ -104,9 +159,19 @@ def start_or_connect(
         _log(f"server already running and ready at {url}; reusing it")
         if open_browser:
             webbrowser.open(url)
-        return LaunchResult(started_new_process=False, ready=True, pid=_read_pid_file(), url=url, message="Reused running server.")
+        return LaunchResult(
+            started_new_process=False,
+            ready=True,
+            pid=_read_pid_file(),
+            url=url,
+            message="Reused running server.",
+        )
 
     existing_pid = _read_pid_file()
+    if existing_pid and not _pid_is_running(existing_pid):
+        _log(f"removing stale PID file for non-running pid {existing_pid}")
+        remove_stale_pid_file()
+        existing_pid = None
     if existing_pid and _pid_is_running(existing_pid) and not is_server_ready(host, port):
         # Stale-ish: a process with this PID exists but isn't answering yet,
         # or the PID file is stale from a crashed process. Give it a short
@@ -143,7 +208,11 @@ def start_or_connect(
         message = f"failed to start AutoCorp server process: {exc}"
         _log(f"STARTUP FAILED: {message}")
         return LaunchResult(False, False, None, url, message)
+    finally:
+        stdout_log.close()
+        stderr_log.close()
 
+    _SERVER_PROCESSES[proc.pid] = proc
     _write_pid_file(proc.pid)
     _log(f"server process started with pid {proc.pid}; waiting for readiness")
 
@@ -155,7 +224,11 @@ def start_or_connect(
                 webbrowser.open(url)
             return LaunchResult(True, True, proc.pid, url, "Started AutoCorp and opened the browser.")
         if proc.poll() is not None:
-            message = f"AutoCorp server process exited early with code {proc.returncode}; see {log_dir / 'server.err.log'}"
+            _SERVER_PROCESSES.pop(proc.pid, None)
+            message = (
+                f"AutoCorp server process exited early with code {proc.returncode}; "
+                f"see {log_dir / 'server.err.log'}"
+            )
             _log(f"STARTUP FAILED: {message}")
             return LaunchResult(True, False, proc.pid, url, message)
         time.sleep(0.3)

@@ -211,3 +211,38 @@ def test_delete_failed_session_preserves_shared_files_and_completed_audio(isolat
 
     assert shared_source.exists()
     assert completed_audio.exists()
+
+
+def test_lifecycle_active_detects_running_generation(isolated_data_dir):
+    app = store.AppSession(
+        session_id=store.new_session_id(),
+        clonecast_repo_path="/tmp/clonecast",
+        status="running",
+    )
+    store.save_session(app)
+    client = TestClient(fastapi_app)
+
+    resp = client.get("/api/lifecycle/active")
+
+    assert resp.status_code == 200
+    assert resp.json()["active"] is True
+    assert resp.json()["sessions"][0]["session_id"] == app.session_id
+
+
+def test_lifecycle_cancel_active_preserves_saved_session(isolated_data_dir):
+    app = store.AppSession(
+        session_id=store.new_session_id(),
+        clonecast_repo_path="/tmp/clonecast",
+        status="running",
+    )
+    store.save_session(app)
+    client = TestClient(fastapi_app)
+
+    resp = client.post("/api/lifecycle/cancel-active")
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert store.session_exists(app.session_id)
+    saved = store.load_session(app.session_id)
+    assert saved.status == "failed"
+    assert saved.error["type"] == "cancelled"

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import config
+from app import desktop_lifecycle
 from app import launcher
 
 
@@ -21,6 +22,7 @@ def _free_port() -> int:
 @pytest.fixture
 def isolated_launcher_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "APP_PID_FILE", str(tmp_path / "app.pid"))
+    monkeypatch.setattr(config, "APP_DESKTOP_PID_FILE", str(tmp_path / "desktop.pid"))
     monkeypatch.setattr(config, "APP_LOCK_FILE", str(tmp_path / "app.lock"))
     monkeypatch.setattr(config, "APP_LOG_DIR", str(tmp_path / "logs"))
     return tmp_path
@@ -28,6 +30,8 @@ def isolated_launcher_paths(tmp_path, monkeypatch):
 
 def _kill(pid: int | None) -> None:
     if not pid:
+        return
+    if launcher.stop_server(pid, timeout=5):
         return
     try:
         os.kill(pid, signal.SIGTERM)
@@ -60,6 +64,20 @@ def test_launcher_starts_real_app_waits_for_readiness_then_opens_browser(isolate
         _kill(result.pid)
 
 
+def test_desktop_launch_starts_one_server_without_opening_browser(isolated_launcher_paths, monkeypatch):
+    opened = []
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: opened.append(url))
+    port = _free_port()
+    result = desktop_lifecycle.launch_server(host="127.0.0.1", port=port, readiness_timeout=30)
+    try:
+        assert result.started_new_process is True
+        assert result.ready is True
+        assert launcher.is_server_ready("127.0.0.1", port)
+        assert opened == []
+    finally:
+        _kill(result.pid)
+
+
 def test_second_launch_reuses_running_server_without_duplicate_process(isolated_launcher_paths, monkeypatch):
     monkeypatch.setattr(launcher.webbrowser, "open", lambda url: None)
     port = _free_port()
@@ -74,6 +92,21 @@ def test_second_launch_reuses_running_server_without_duplicate_process(isolated_
         _kill(first.pid)
 
 
+def test_desktop_second_launch_focuses_existing_window_without_duplicate(isolated_launcher_paths, monkeypatch):
+    calls = []
+    monkeypatch.setattr(desktop_lifecycle, "focus_existing_window", lambda: calls.append("focus") or True)
+    monkeypatch.setattr(launcher, "is_server_ready", lambda host, port: True)
+    desktop_lifecycle.write_desktop_pid(os.getpid())
+    Path(config.APP_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.APP_PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
+
+    result = desktop_lifecycle.launch_server(host="127.0.0.1", port=8787)
+
+    assert result.started_new_process is False
+    assert result.ready is True
+    assert calls == ["focus"]
+
+
 def test_stale_pid_file_does_not_block_a_fresh_start(isolated_launcher_paths, monkeypatch):
     monkeypatch.setattr(launcher.webbrowser, "open", lambda url: None)
     Path(config.APP_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +117,56 @@ def test_stale_pid_file_does_not_block_a_fresh_start(isolated_launcher_paths, mo
         assert result.ready is True
     finally:
         _kill(result.pid)
+
+
+def test_desktop_close_stops_server_and_releases_port(isolated_launcher_paths, monkeypatch):
+    monkeypatch.setattr(launcher.webbrowser, "open", lambda url: None)
+    port = _free_port()
+    launch = desktop_lifecycle.launch_server(host="127.0.0.1", port=port, readiness_timeout=30)
+    assert launch.ready
+
+    result = desktop_lifecycle.shutdown_desktop(host="127.0.0.1", port=port, pid=launch.pid)
+
+    assert result.final_result == "shutdown complete"
+    assert result.port_released is True
+    assert not Path(config.APP_PID_FILE).exists()
+    assert not Path(config.APP_DESKTOP_PID_FILE).exists()
+
+
+def test_child_process_cleanup_is_requested_with_server_pid(isolated_launcher_paths, monkeypatch):
+    Path(config.APP_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.APP_PID_FILE).write_text("12345", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(
+        desktop_lifecycle,
+        "active_generation_status",
+        lambda host, port: {"active": False, "sessions": []},
+    )
+    monkeypatch.setattr(desktop_lifecycle, "wait_for_port_release", lambda host, port: True)
+
+    result = desktop_lifecycle.shutdown_desktop(terminate=lambda pid: seen.append(pid) or "terminated")
+
+    assert seen == [12345]
+    assert result.child_cleanup_result == "terminated"
+
+
+def test_gpu_reservation_cleanup_is_recorded(isolated_launcher_paths, monkeypatch):
+    class Reservation:
+        def to_dict(self):
+            return {"ok": True, "stage": "AutoCorp desktop shutdown (release)"}
+
+    monkeypatch.setattr(
+        desktop_lifecycle,
+        "active_generation_status",
+        lambda host, port: {"active": False, "sessions": []},
+    )
+    monkeypatch.setattr(desktop_lifecycle, "wait_for_port_release", lambda host, port: True)
+    monkeypatch.setattr(desktop_lifecycle.gpu_guard, "release_stage", lambda *a, **k: Reservation())
+
+    result = desktop_lifecycle.shutdown_desktop(pid=None, terminate=lambda pid: "no running server process")
+
+    assert result.gpu_release_result["ok"] is True
+    assert "release" in result.gpu_release_result["stage"]
 
 
 def test_startup_failure_writes_log_and_returns_user_visible_message(isolated_launcher_paths, monkeypatch):
@@ -115,12 +198,23 @@ def test_desktop_entry_uses_absolute_exec_and_icon_paths():
     assert Path(icon_path).is_absolute()
     assert Path(exec_path).is_file()
     assert Path(icon_path).is_file()
+    assert "Terminal=false" in content
 
 
 def test_start_script_resolves_repo_root_from_its_own_location_not_cwd():
     content = Path(config.BASE_DIR, "scripts", "start_autocorp_app.sh").read_text(encoding="utf-8")
     assert "BASH_SOURCE" in content
     assert ".venv/bin/python" in content
+    assert "-m app.desktop_app" in content
+    assert "-m app.launcher" not in content
+
+
+def test_desktop_wrapper_warns_before_closing_active_generation():
+    content = Path(config.BASE_DIR, "app", "desktop_app.py").read_text(encoding="utf-8")
+    assert "active_generation_status" in content
+    assert "Keep AutoCorp open" in content
+    assert "Cancel active job and close" in content
+    assert "shutdown_desktop(cancel_active=cancel" in content
 
 
 def test_installer_is_idempotent_and_requires_no_sudo():

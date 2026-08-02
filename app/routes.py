@@ -71,6 +71,30 @@ def api_status() -> dict:
     return system_status.build_status_report(active_sessions=active)
 
 
+@router.get("/api/lifecycle/active")
+def api_lifecycle_active() -> dict:
+    sessions = [
+        _session_summary(s)
+        for s in controller.list_sessions()
+        if s.status == "running"
+    ]
+    return {"active": bool(sessions), "sessions": sessions}
+
+
+@router.post("/api/lifecycle/cancel-active")
+def api_lifecycle_cancel_active() -> dict:
+    results = []
+    for app in controller.list_sessions():
+        if app.status != "running":
+            continue
+        try:
+            cancelled = controller.cancel_session(app.session_id)
+            results.append({"session_id": app.session_id, "status": cancelled.status, "ok": True})
+        except Exception as exc:
+            results.append({"session_id": app.session_id, "status": "error", "ok": False, "error": str(exc)})
+    return {"cancelled": results, "ok": all(item["ok"] for item in results)}
+
+
 @router.get("/api/sessions")
 def api_list_sessions() -> list[dict]:
     return [_session_summary(s) for s in controller.list_sessions()]
