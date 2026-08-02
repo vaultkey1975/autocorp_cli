@@ -172,6 +172,16 @@ CHATTERBOX_GPU_NAME_SUBSTRING = os.environ.get("AUTOCORP_CHATTERBOX_GPU", "RTX 4
 CHATTERBOX_REQUIRED_VRAM_MB = int(os.environ.get("AUTOCORP_CHATTERBOX_REQUIRED_MB", "8512"))
 GPU_GUARD_MAX_WAIT_SECONDS = int(os.environ.get("AUTOCORP_GPU_GUARD_MAX_WAIT", "20"))
 
+# Long-form Chatterbox renders can legitimately run far longer than the
+# general CloneCast CLI timeout. AutoCorp sizes the speech-render deadline from
+# the approved script and requested episode length, and emits periodic
+# heartbeat progress while the CloneCast process is still alive.
+CLONECAST_SPEECH_TIMEOUT_MIN_SECONDS = int(os.environ.get("AUTOCORP_SPEECH_TIMEOUT_MIN_SECONDS", "3600"))
+CLONECAST_SPEECH_TIMEOUT_PER_TARGET_SECOND = float(os.environ.get("AUTOCORP_SPEECH_TIMEOUT_PER_TARGET_SECOND", "8"))
+CLONECAST_SPEECH_TIMEOUT_PER_SCRIPT_WORD = float(os.environ.get("AUTOCORP_SPEECH_TIMEOUT_PER_SCRIPT_WORD", "4"))
+CLONECAST_SPEECH_TIMEOUT_STARTUP_GRACE_SECONDS = int(os.environ.get("AUTOCORP_SPEECH_TIMEOUT_STARTUP_GRACE_SECONDS", "900"))
+CLONECAST_SPEECH_HEARTBEAT_SECONDS = int(os.environ.get("AUTOCORP_SPEECH_HEARTBEAT_SECONDS", "60"))
+
 
 def app_sessions_dir() -> str:
     return os.path.join(DATA_DIR, APP_SESSIONS_DIRNAME)

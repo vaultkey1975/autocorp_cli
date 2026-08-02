@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -241,7 +242,14 @@ class CloneCastCLI:
         env["PYTHONPATH"] = str(self.repo / "src") + os.pathsep + env.get("PYTHONPATH", "")
         return env
 
-    def run(self, args: list[str], *, input_text: str | None = None, allow_publish: bool = False) -> CloneCastResult:
+    def run(
+        self,
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        allow_publish: bool = False,
+        timeout: int | float | None = None,
+    ) -> CloneCastResult:
         if any(arg in PUBLISH_COMMANDS for arg in args) and not allow_publish:
             raise EpisodeBuildError("AutoCorp blocked a publishing command; publishing requires a separate explicit command")
         command = [sys.executable, "-m", "clonecast.cli", *args]
@@ -252,7 +260,7 @@ class CloneCastCLI:
             input=input_text,
             text=True,
             capture_output=True,
-            timeout=self.timeout,
+            timeout=self.timeout if timeout is None else timeout,
         )
         parsed = None
         if completed.stdout.strip():
@@ -262,8 +270,93 @@ class CloneCastCLI:
                 parsed = None
         return CloneCastResult(command, completed.returncode, completed.stdout, completed.stderr, parsed)
 
-    def checked(self, args: list[str], *, input_text: str | None = None) -> CloneCastResult:
-        result = self.run(args, input_text=input_text)
+    def checked(
+        self,
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        timeout: int | float | None = None,
+    ) -> CloneCastResult:
+        result = self.run(args, input_text=input_text, timeout=timeout)
+        if result.returncode != 0:
+            raise EpisodeBuildError(
+                "CloneCast command failed: "
+                + " ".join(args)
+                + f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+            )
+        return result
+
+    def checked_monitored(
+        self,
+        args: list[str],
+        *,
+        timeout: int,
+        heartbeat_interval: int,
+        heartbeat: Callable[[int], None],
+    ) -> CloneCastResult:
+        """Run a long CloneCast command with periodic liveness heartbeats.
+
+        ``subprocess.run(..., timeout=...)`` is intentionally avoided here: it
+        gives no chance to prove progress while Chatterbox is still rendering.
+        A live child process is treated as healthy until the computed deadline
+        expires or it exits with a real failure.
+        """
+        if not hasattr(self, "runner"):
+            return self.checked(args)
+        if self.runner is not subprocess.run:
+            return self.checked(args, timeout=timeout)
+        if any(arg in PUBLISH_COMMANDS for arg in args):
+            raise EpisodeBuildError("AutoCorp blocked a publishing command; publishing requires a separate explicit command")
+
+        command = [sys.executable, "-m", "clonecast.cli", *args]
+        started = time.monotonic()
+        deadline = started + timeout
+        next_heartbeat = started
+        proc = subprocess.Popen(
+            command,
+            cwd=str(self.repo),
+            env=self.base_env(),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = ""
+        stderr = ""
+        try:
+            while True:
+                now = time.monotonic()
+                if now >= next_heartbeat and proc.poll() is None:
+                    heartbeat(int(now - started))
+                    next_heartbeat = now + max(1, heartbeat_interval)
+                remaining = deadline - now
+                if remaining <= 0:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise EpisodeBuildError(
+                        "CloneCast command timed out during "
+                        + " ".join(args)
+                        + f" after {timeout}s. The worker process was stopped; verify GPU memory before retrying.\n"
+                        + f"stdout:\n{stdout}\nstderr:\n{stderr}"
+                    )
+                wait_for = min(max(0.05, remaining), max(1, heartbeat_interval))
+                try:
+                    stdout, stderr = proc.communicate(timeout=wait_for)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except Exception:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+            raise
+
+        parsed = None
+        if stdout.strip():
+            try:
+                parsed = json.loads(stdout)
+            except json.JSONDecodeError:
+                parsed = None
+        result = CloneCastResult(command, proc.returncode, stdout, stderr, parsed)
         if result.returncode != 0:
             raise EpisodeBuildError(
                 "CloneCast command failed: "
@@ -556,6 +649,104 @@ def _master_existing_episode(session: EpisodeSession, cli: CloneCastCLI) -> None
     save_session(session)
 
 
+def _script_word_count(session: EpisodeSession) -> int:
+    script_path = session.artifact_paths.get("managed_script")
+    if not script_path:
+        return 0
+    path = Path(str(script_path))
+    if not path.is_file():
+        return 0
+    try:
+        return len(re.findall(r"\b[\w']+\b", path.read_text(encoding="utf-8")))
+    except UnicodeDecodeError:
+        return 0
+
+
+def calculate_speech_render_timeout(session: EpisodeSession) -> int:
+    target_seconds = int(session.requested_duration_seconds or 0)
+    script_words = _script_word_count(session)
+    sized = max(
+        float(config.CLONECAST_SPEECH_TIMEOUT_MIN_SECONDS),
+        target_seconds * float(config.CLONECAST_SPEECH_TIMEOUT_PER_TARGET_SECOND),
+        script_words * float(config.CLONECAST_SPEECH_TIMEOUT_PER_SCRIPT_WORD),
+    )
+    return int(round(sized + float(config.CLONECAST_SPEECH_TIMEOUT_STARTUP_GRACE_SECONDS)))
+
+
+def _record_speech_failure_cleanup(session: EpisodeSession, cli: CloneCastCLI) -> None:
+    cleanup: dict[str, Any] = {
+        "attempted": True,
+        "checked_at": _now(),
+        "worker_stop_requested": "delegated_to_clonecast_speech_render_failure_path",
+        "vram_release_confirmed": False,
+    }
+    try:
+        result = cli.checked(["speech-provider-check"])
+        _record_command(session, result)
+        payload = _require_json(result, "speech-provider-check")
+        cleanup["provider_check"] = payload
+        preflight = payload.get("preflight") if isinstance(payload, dict) else None
+        if isinstance(preflight, dict):
+            may_begin = preflight.get("may_begin")
+            free_vram = preflight.get("free_vram_mib")
+            cleanup["free_vram_mib"] = free_vram
+            cleanup["vram_release_confirmed"] = may_begin is not False
+    except Exception as exc:  # cleanup evidence must never hide the real render error
+        cleanup["error"] = str(exc)
+    session.validation_evidence["speech_failure_cleanup"] = cleanup
+    save_session(session)
+
+
+def _render_speech(
+    session: EpisodeSession,
+    cli: CloneCastCLI,
+    *,
+    script_id: str,
+    output: Callable[[str], None],
+) -> CloneCastResult:
+    timeout = calculate_speech_render_timeout(session)
+    heartbeat_interval = max(1, int(config.CLONECAST_SPEECH_HEARTBEAT_SECONDS))
+    session.validation_evidence["speech_render_timeout"] = {
+        "timeout_seconds": timeout,
+        "target_duration_seconds": session.requested_duration_seconds,
+        "script_word_count": _script_word_count(session),
+        "heartbeat_interval_seconds": heartbeat_interval,
+        "previous_fixed_timeout_seconds": getattr(cli, "timeout", 1800),
+    }
+    session.failed_stage = None
+    session.completed_stage = "speech_rendering"
+    save_session(session)
+    output("Audio generation started")
+
+    def heartbeat(elapsed_seconds: int) -> None:
+        session.validation_evidence["speech_render_heartbeat"] = {
+            "stage": "speech-render",
+            "status": "running",
+            "elapsed_seconds": elapsed_seconds,
+            "updated_at": _now(),
+        }
+        save_session(session)
+        output(f"Audio generation still running ({elapsed_seconds}s elapsed)")
+
+    try:
+        return cli.checked_monitored(
+            [
+                "speech-render",
+                "--script-id",
+                script_id,
+                "--idempotency-key",
+                f"{session.session_id}:speech-render",
+            ],
+            timeout=timeout,
+            heartbeat_interval=heartbeat_interval,
+            heartbeat=heartbeat,
+        )
+    except EpisodeBuildError as exc:
+        _fail_session(session, "speech_render", str(exc))
+        _record_speech_failure_cleanup(session, cli)
+        raise
+
+
 def run_guided_episode_build(
     repo: str,
     *,
@@ -803,14 +994,7 @@ def run_guided_episode_build(
     session.completed_stage = "speech_provider_preflight"
     save_session(session)
 
-    speech_result = cli.checked([
-        "speech-render",
-        "--script-id",
-        import_payload["script_id"],
-        "--idempotency-key",
-        f"{session.session_id}:speech-render",
-    ])
-    output("Audio generation started")
+    speech_result = _render_speech(session, cli, script_id=import_payload["script_id"], output=output)
     _record_command(session, speech_result)
     speech_payload = _require_json(speech_result, "speech-render")
     speech_job = speech_payload.get("job", {})

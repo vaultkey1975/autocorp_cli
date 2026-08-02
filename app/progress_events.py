@@ -25,7 +25,10 @@ LISTENING_GATE_MARKER = "EPISODE READY FOR OWNER REVIEW"
 
 def classify_output_line(line: str) -> tuple[str | None, str | None]:
     """Return (event_name, friendly_text) for a known line, else (None, None)."""
-    hit = KNOWN_EVENTS.get(line.strip())
+    text = line.strip()
+    if text.startswith("Audio generation still running"):
+        return "audio_generation_heartbeat", text + "."
+    hit = KNOWN_EVENTS.get(text)
     if hit:
         return hit
     return None, None

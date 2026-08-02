@@ -341,6 +341,170 @@ def test_retry_reuses_existing_episode_and_does_not_create_duplicate(session_dat
     assert not any(call[0] == "episode-script-import-approved" for call in fake.calls)
 
 
+def test_15_minute_speech_render_timeout_exceeds_old_fixed_timeout(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "long-script.txt"
+    script.write_text("word " * 3000, encoding="utf-8")
+    session = episode.EpisodeSession(session_id="session_timeout_calc", clonecast_repo_path=str(repo.resolve()))
+    session.requested_duration_seconds = 900
+    session.artifact_paths["managed_script"] = str(script)
+    episode.save_session(session)
+
+    timeout = episode.calculate_speech_render_timeout(session)
+
+    assert timeout > 1800
+    assert session.requested_duration_seconds == 900
+
+
+def _write_sleeping_clonecast_cli(repo: Path, *, sleep_seconds: float) -> None:
+    (repo / "src" / "clonecast" / "cli.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "import time",
+                f"time.sleep({sleep_seconds!r})",
+                "if sys.argv[1:] and sys.argv[1] == 'speech-render':",
+                "    print(json.dumps({'job': {'job_id': 'speech_cli'}, 'segments': []}))",
+                "else:",
+                "    print('{}')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_healthy_long_running_worker_emits_heartbeat_and_completes(tmp_path):
+    repo = _repo(tmp_path)
+    _write_sleeping_clonecast_cli(repo, sleep_seconds=1.2)
+    cli = episode.CloneCastCLI(repo)
+    heartbeats = []
+
+    result = cli.checked_monitored(
+        ["speech-render", "--script-id", "script_1"],
+        timeout=5,
+        heartbeat_interval=1,
+        heartbeat=heartbeats.append,
+    )
+
+    assert result.json_data["job"]["job_id"] == "speech_cli"
+    assert heartbeats
+
+
+def test_real_worker_timeout_kills_process_and_reports_failure(tmp_path):
+    repo = _repo(tmp_path)
+    _write_sleeping_clonecast_cli(repo, sleep_seconds=5)
+    cli = episode.CloneCastCLI(repo)
+
+    with pytest.raises(episode.EpisodeBuildError, match="timed out during speech-render"):
+        cli.checked_monitored(
+            ["speech-render", "--script-id", "script_1"],
+            timeout=1,
+            heartbeat_interval=1,
+            heartbeat=lambda _: None,
+        )
+
+
+class SpeechFailureCleanupCloneCast(FakeCloneCast):
+    def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+        self.calls.append(args)
+        heartbeat(heartbeat_interval)
+        raise episode.EpisodeBuildError("Chatterbox lifecycle worker response timed out")
+
+
+def test_speech_failure_records_cleanup_and_vram_release(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    session = episode.EpisodeSession(session_id="session_cleanup", clonecast_repo_path=str(repo.resolve()))
+    session.requested_duration_seconds = 900
+    session.artifact_paths["managed_script"] = str(script)
+    episode.save_session(session)
+    fake = SpeechFailureCleanupCloneCast(repo)
+
+    with pytest.raises(episode.EpisodeBuildError, match="worker response timed out"):
+        episode._render_speech(session, fake, script_id="script_1", output=lambda _: None)
+
+    saved = episode.load_session("session_cleanup")
+    assert saved.failed_stage == "speech_render"
+    assert saved.validation_evidence["speech_render_heartbeat"]["status"] == "running"
+    cleanup = saved.validation_evidence["speech_failure_cleanup"]
+    assert cleanup["attempted"] is True
+    assert cleanup["vram_release_confirmed"] is True
+
+
+def test_resume_after_speech_timeout_preserves_inputs_and_retries_from_speech(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved script body.\n", encoding="utf-8")
+    failures_remaining = {"count": 1}
+    instances = []
+
+    class OneTimeoutThenSuccess(FakeCloneCast):
+        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+            self.calls.append(args)
+            if failures_remaining["count"]:
+                failures_remaining["count"] -= 1
+                heartbeat(heartbeat_interval)
+                raise episode.EpisodeBuildError("Chatterbox lifecycle worker response timed out")
+            return self.checked(args)
+
+    def factory(path):
+        fake = OneTimeoutThenSuccess(path)
+        instances.append(fake)
+        return fake
+
+    ask = _inputs([
+        "YES",
+        "studio_1",
+        "15m",
+        "yes",
+        "research body",
+        "yes",
+        str(script),
+        "Elias Voss",
+        "voice_d33f7035117f4055b1d46eb150234d6a",
+        "no",
+        "audio",
+        "yes",
+    ])
+    with pytest.raises(episode.EpisodeBuildError, match="worker response timed out"):
+        episode.run_guided_episode_build(str(repo), input_func=ask, output=lambda _: None, clonecast_factory=factory)
+
+    saved_path = next((session_data_dir / episode.SESSION_DIRNAME).glob("acce_*.json"))
+    failed = episode.load_session(saved_path.stem)
+    assert failed.failed_stage == "speech_render"
+    assert failed.selected_studio_show == "studio_1"
+    assert failed.requested_duration_seconds == 900
+    assert failed.clonecast_episode_identifiers["research_id"] == "research_1"
+    assert failed.script_preserved_byte_for_byte is True
+    assert failed.selected_host == "Elias Voss"
+    assert failed.selected_voices["host"] == "voice_d33f7035117f4055b1d46eb150234d6a"
+
+    ask_resume = _inputs(["YES", "yes", "no", "save"])
+    completed = episode.run_guided_episode_build(
+        str(repo),
+        resume=failed.session_id,
+        input_func=ask_resume,
+        output=lambda _: None,
+        clonecast_factory=factory,
+    )
+
+    assert completed.completed_stage == "listening_gate"
+    assert completed.failed_stage is None
+    assert completed.selected_studio_show == "studio_1"
+    assert completed.requested_duration_seconds == 900
+    assert completed.clonecast_episode_identifiers["research_id"] == "research_1"
+    assert completed.script_preserved_byte_for_byte is True
+    assert completed.selected_host == "Elias Voss"
+    assert completed.selected_voices["host"] == "voice_d33f7035117f4055b1d46eb150234d6a"
+    second_calls = instances[-1].calls
+    assert not any(call[0] == "episode-create" for call in second_calls)
+    assert not any(call[0] == "episode-script-import-approved" for call in second_calls)
+    assert any(call[0] == "speech-render" for call in second_calls)
+
+
 def test_voice_profile_id_is_passed_and_host_name_is_not_used(session_data_dir, tmp_path):
     repo = _repo(tmp_path)
     script = tmp_path / "script.txt"
