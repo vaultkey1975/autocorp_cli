@@ -18,4 +18,7 @@ if [[ ! -x "${PYTHON}" ]]; then
     exit 1
 fi
 
+export QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-gpu-compositing"
+export QT_QUICK_BACKEND=software
+
 exec "${PYTHON}" -m app.desktop_app

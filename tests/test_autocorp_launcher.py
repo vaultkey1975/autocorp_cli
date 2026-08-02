@@ -207,6 +207,8 @@ def test_start_script_resolves_repo_root_from_its_own_location_not_cwd():
     assert ".venv/bin/python" in content
     assert "-m app.desktop_app" in content
     assert "-m app.launcher" not in content
+    assert 'export QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-gpu-compositing"' in content
+    assert "export QT_QUICK_BACKEND=software" in content
 
 
 def test_desktop_wrapper_warns_before_closing_active_generation():
