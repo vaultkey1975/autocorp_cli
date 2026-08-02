@@ -15,6 +15,7 @@ from tests._fake_clonecast import FakeCloneCastCLI, make_repo
 @pytest.fixture
 def isolated_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "GPU_GUARD_ENABLED", False)
     return tmp_path
 
 

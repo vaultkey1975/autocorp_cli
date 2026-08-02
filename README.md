@@ -229,6 +229,35 @@ tail -f data/autocorp_app_logs/launcher.log data/autocorp_app_logs/server.err.lo
 kill "$(cat data/autocorp_app.pid)"
 ```
 
+### GPU / Ollama coordination policy (permanent)
+
+Ollama is optional and off by default for production: nothing on the
+research or approved-script path (`app/file_service.py`,
+`app/clonecast_client.py`, `app/session_store.py`, the guided operator
+itself) ever calls a local model to write, rewrite, or summarize research or
+scripts — enforced by a structural regression test, not just convention.
+
+Before the real Chatterbox audio stage, `app/gpu_guard.py` verifies actual
+free VRAM on the configured GPU (`config.CHATTERBOX_GPU_NAME_SUBSTRING`,
+default "RTX 4060 Ti"). If there isn't enough, and Ollama is holding VRAM it
+doesn't currently need, the guard asks Ollama's own local API/CLI
+(`ollama stop <model>`) to unload that model — this only unloads the model's
+weights through Ollama's already-running daemon; it never stops the Ollama
+service and never requires sudo. It then re-measures real free VRAM before
+declaring success; if headroom still isn't there, generation does not start
+— the session is preserved with a clear, resumable error and exactly which
+process is holding VRAM (from `nvidia-smi`), never a silent fallback to
+another device or a faked pass. Every reservation/release is logged to
+`data/autocorp_app_logs/gpu_reservations.jsonl` and shown in the status
+panel (`GET /api/status` → `gpu_resource_manager`). Disable with
+`AUTOCORP_GPU_GUARD=0` if needed.
+
+Video/lip-sync/upscaling coordination is intentionally not implemented:
+those generation modes don't exist in any AutoCorp phase yet, so there is
+nothing real to reserve a GPU for. `app/gpu_guard.py`'s `reserve_for_stage`/
+`release_stage` API is generic enough to extend to a future generation
+stage without rework when one actually exists.
+
 ### Sessions, Resume, and research acceptance
 
 Every guided episode is an `AppSession` (chat transcript + upload

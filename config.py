@@ -158,6 +158,20 @@ APP_LOG_DIR = os.path.join(DATA_DIR, "autocorp_app_logs")
 APP_PID_FILE = os.path.join(DATA_DIR, "autocorp_app.pid")
 APP_LOCK_FILE = os.path.join(DATA_DIR, "autocorp_app.lock")
 
+# --------------------------------------------------------------------------- #
+# GPU / Ollama coordination policy (permanent production rule)
+# --------------------------------------------------------------------------- #
+# Ollama is optional and disabled by default for the CloneCast production
+# path: research and approved scripts are never written or rewritten by any
+# local model (see app/gpu_guard.py and app/chat_controller.py). Before the
+# real Chatterbox audio stage, AutoCorp verifies actual free VRAM and, only
+# if necessary, asks Ollama's own API/CLI to unload its model - it never
+# stops the Ollama service and never requires sudo.
+GPU_GUARD_ENABLED = os.environ.get("AUTOCORP_GPU_GUARD", "1") != "0"
+CHATTERBOX_GPU_NAME_SUBSTRING = os.environ.get("AUTOCORP_CHATTERBOX_GPU", "RTX 4060 Ti")
+CHATTERBOX_REQUIRED_VRAM_MB = int(os.environ.get("AUTOCORP_CHATTERBOX_REQUIRED_MB", "8512"))
+GPU_GUARD_MAX_WAIT_SECONDS = int(os.environ.get("AUTOCORP_GPU_GUARD_MAX_WAIT", "20"))
+
 
 def app_sessions_dir() -> str:
     return os.path.join(DATA_DIR, APP_SESSIONS_DIRNAME)

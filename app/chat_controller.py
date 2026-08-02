@@ -32,6 +32,7 @@ from typing import Any
 import config
 from app import clonecast_client as cc
 from app import file_service
+from app import gpu_guard
 from app import progress_events
 from app import session_store as store
 from brains import guided_clonecast_episode as episode
@@ -552,6 +553,8 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> st
     answer = handle.answer_queue.get()
     if answer is _CANCELLED:
         raise _CancelledSignal()
+    if kind == "start_generation" and str(answer).strip().lower() in {"yes", "y"}:
+        _run_gpu_guard(app_session_id, handle)
     return answer
 
 
@@ -648,6 +651,36 @@ def _handle_output(app_session_id: str, handle: EngineHandle, line: str) -> None
         handle.updated_event.set()
 
 
+def _run_gpu_guard(app_session_id: str, handle: EngineHandle) -> None:
+    """Real, honest GPU headroom check before the Chatterbox audio stage.
+    Never fakes a pass: verifies actual free VRAM, unloads Ollama through its
+    own API/CLI only if that VRAM is actually needed, and stops the workflow
+    (preserving the session) rather than silently proceeding or falling back
+    to another device if headroom still cannot be verified afterward."""
+    if not config.GPU_GUARD_ENABLED:
+        return
+
+    def emit(event: str, text: str) -> None:
+        app = store.load_session(app_session_id)
+        _log_progress(app, event, text)
+        store.save_session(app)
+        handle.updated_event.set()
+
+    reservation = gpu_guard.reserve_for_stage(
+        "Chatterbox audio generation",
+        required_mb=config.CHATTERBOX_REQUIRED_VRAM_MB,
+        gpu_name_substring=config.CHATTERBOX_GPU_NAME_SUBSTRING,
+        output=emit,
+        max_wait_seconds=config.GPU_GUARD_MAX_WAIT_SECONDS,
+    )
+    if not reservation.ok:
+        raise episode.EpisodeBuildError(
+            "Audio generation stopped because the GPU ran out of memory. "
+            "No publishing occurred. You can safely resume or regenerate. "
+            f"Detail: {reservation.failure_reason}"
+        )
+
+
 def _append_listening_gate_message(app: store.AppSession) -> None:
     if not app.episode_session_id:
         return
@@ -655,6 +688,12 @@ def _append_listening_gate_message(app: store.AppSession) -> None:
         ep = episode.load_session(app.episode_session_id)
     except episode.EpisodeBuildError:
         return
+    if config.GPU_GUARD_ENABLED:
+        gpu_guard.release_stage(
+            "Chatterbox audio generation",
+            gpu_name_substring=config.CHATTERBOX_GPU_NAME_SUBSTRING,
+            output=lambda event, text: _log_progress(app, event, text),
+        )
     final_audio = ep.artifact_paths.get("final_audio")
     text = (
         f"Episode ready for review.\n"

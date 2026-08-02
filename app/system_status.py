@@ -14,6 +14,7 @@ from typing import Any
 
 import config
 from app import clonecast_client as cc
+from app import gpu_guard
 from brains import guided_clonecast_episode as episode
 
 
@@ -144,4 +145,15 @@ def build_status_report(repo_path: str | None = None, *, active_sessions: int = 
         "local_app_address": f"http://{config.APP_HOST}:{config.APP_PORT}",
         "desktop_launcher": _desktop_launcher_status(),
         "publishing_lock_status": "locked",
+        "gpu_resource_manager": _gpu_resource_manager_status(),
+    }
+
+
+def _gpu_resource_manager_status() -> dict[str, Any]:
+    last = gpu_guard.last_reservation()
+    ollama_loaded = gpu_guard.list_ollama_loaded_models()
+    return {
+        "enabled": config.GPU_GUARD_ENABLED,
+        "ollama_loaded_models": ollama_loaded,
+        "last_reservation": last,
     }

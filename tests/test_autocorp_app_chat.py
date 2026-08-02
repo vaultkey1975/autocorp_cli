@@ -19,6 +19,11 @@ from tests._fake_clonecast import (
 def isolated_data_dir(tmp_path, monkeypatch):
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", str(data))
+    # These tests exercise the guided workflow end-to-end with a fake
+    # CloneCast CLI; the real-GPU coordination guard has its own dedicated
+    # tests in test_autocorp_app_gpu_guard.py and is disabled here so this
+    # file stays fast and independent of the machine's actual GPU state.
+    monkeypatch.setattr(config, "GPU_GUARD_ENABLED", False)
     return data
 
 
