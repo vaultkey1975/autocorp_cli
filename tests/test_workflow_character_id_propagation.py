@@ -1,4 +1,6 @@
 from brains import workflow_test
+import argparse
+import autocorp
 import sqlite3
 import subprocess
 import wave
@@ -86,6 +88,12 @@ def test_approved_voice_profile_lookup_prefers_larry_without_creating_voice(tmp_
     conn.close()
 
     assert workflow_test._find_approved_voice_profile(str(db_path)) == "voice_larry"
+
+
+def test_extract_json_accepts_pretty_printed_cli_payload():
+    payload = workflow_test._extract_json('{\n  "script_id": "script_123",\n  "status": "approved"\n}\n')
+
+    assert payload == {"script_id": "script_123", "status": "approved"}
 
 
 def test_active_radio_audio_preset_lookup_prefers_clean_studio(tmp_path):
@@ -290,6 +298,75 @@ def test_startup_failure_returns_structured_report_and_cleans_up(tmp_path):
     assert report.cleanup_attempted is True
     assert report.cleanup_removed is True
     assert report.repository_unchanged is True
+
+
+def test_approved_script_mode_dispatches_without_starting_web_server(monkeypatch, tmp_path):
+    _init_clonecast_like_repo(tmp_path)
+    captured = {}
+
+    def fake_approved(**kwargs):
+        captured.update(kwargs)
+        report = kwargs["report"]
+        report.overall_status = "DISPOSABLE_WORKFLOW_COMPLETE"
+        workflow_test._finalize(report, kwargs["prod_db"], kwargs["t0"], kwargs["disp"], kwargs["disp_db"])
+        return report
+
+    monkeypatch.setattr(workflow_test, "_run_approved_script_workflow", fake_approved)
+
+    report = workflow_test.run_workflow_test(str(tmp_path), workflow_mode="approved-script-production")
+
+    assert report.workflow_mode == "approved-script-production"
+    assert captured["env"]["CLONECAST_DB_PATH"].startswith(captured["disp"])
+    assert report.cleanup_attempted is True
+    assert report.cleanup_removed is True
+
+
+def test_workflow_test_cli_approved_script_flag_selects_mode(monkeypatch, tmp_path):
+    selected = {}
+
+    class DummyReport:
+        repo_path = str(tmp_path)
+        disposable_root = "/tmp/acwf-test"
+        production_db_path = str(tmp_path / "db" / "cloneshow.db")
+        workflow_mode = "approved-script-production"
+        overall_status = "DISPOSABLE_WORKFLOW_COMPLETE"
+        success = True
+        failure_reason = ""
+        workflow_stage = "OWNER_LISTENING_GATE_ENFORCED"
+        duration = 0.1
+        cleanup_attempted = True
+        cleanup_removed = True
+        cleanup_error = ""
+        repository_unchanged = True
+        verification_summary = "database=PASS; cleanup=REMOVED; repository_unchanged=yes"
+        recommended_next_action = "Review the generated report and keep production credentials disabled."
+        stages = []
+        artifacts = []
+        database_verification = workflow_test.DatabaseVerification(checked=True, integrity_check="ok", integrity_ok=True, foreign_keys_ok=True)
+        include_publishing = False
+        publishing_readiness = "NOT_RUN"
+        production_db_before = production_db_after = "sha"
+        production_db_size_before = production_db_size_after = 1
+        production_db_mtime_before = production_db_mtime_after = 1.0
+        production_db_sidecars_before = production_db_sidecars_after = {}
+        clonecast_git_status_before = clonecast_git_status_after = ""
+        first_failure = ""
+        ollama_disabled = True
+        ollama_generation_calls = 0
+        script_preservation = {}
+        gpu_reservation_evidence = {}
+
+    def fake_run(repo_root, port=8000, include_publishing=False, workflow_mode="conversation-production"):
+        selected["workflow_mode"] = workflow_mode
+        return DummyReport()
+
+    monkeypatch.setattr(autocorp, "_resolve_repo", lambda _args: str(tmp_path))
+    monkeypatch.setattr(autocorp.workflow_test, "run_workflow_test", fake_run)
+
+    rc = autocorp.cmd_workflow_test(argparse.Namespace(repo=str(tmp_path), disposable=True, approved_script=True, workflow="conversation-production"))
+
+    assert rc == 0
+    assert selected["workflow_mode"] == "approved-script-production"
 
 
 def test_publish_validation_records_structured_block_when_workflow_cannot_run(tmp_path):

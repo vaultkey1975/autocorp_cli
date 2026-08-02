@@ -112,7 +112,15 @@ class WorkflowTestReport:
         self.repo_path = self.disposable_root = self.production_db_path = ""
         self.production_db_before = self.production_db_after = ""
         self.production_db_size_before = self.production_db_size_after = 0
+        self.production_db_mtime_before = self.production_db_mtime_after = 0.0
+        self.production_db_sidecars_before = {}
+        self.production_db_sidecars_after = {}
         self.clonecast_git_status_before = self.clonecast_git_status_after = ""
+        self.workflow_mode = "conversation-production"
+        self.ollama_disabled = False
+        self.ollama_generation_calls = 0
+        self.script_preservation = {}
+        self.gpu_reservation_evidence = {}
         self.audio_artifact = AudioArtifactRecord()
         self.artifacts: list[AudioArtifactRecord] = []
         self.database_verification = DatabaseVerification()
@@ -145,6 +153,21 @@ def _sha256_file(p: str) -> str:
             for c in iter(lambda: f.read(65536), b""): h.update(c)
         return h.hexdigest()
     except OSError: return ""
+
+
+def _file_state(path: str) -> dict:
+    if not os.path.exists(path):
+        return {"exists": False, "size": 0, "sha256": "", "mtime": 0.0}
+    return {
+        "exists": True,
+        "size": os.path.getsize(path),
+        "sha256": _sha256_file(path) if os.path.isfile(path) else "",
+        "mtime": os.path.getmtime(path),
+    }
+
+
+def _db_sidecar_state(db_path: str) -> dict:
+    return {suffix: _file_state(db_path + suffix) for suffix in ("", "-wal", "-shm")}
 
 
 def _port_listening(host: str, port: int) -> bool:
@@ -520,11 +543,376 @@ def _clonecast_env(repo_path: str, disp: str, disp_db: str) -> dict:
     env["CLONECAST_RADIO_RELEASE_PACKAGE_DIR"] = os.path.join(disp, "runtime", "radio_release_packages")
     env["CLONECAST_RADIO_PUBLICATION_DIR"] = os.path.join(disp, "runtime", "radio_publications")
     env["CLONECAST_BRANDING_DIR"] = os.path.join(disp, "runtime", "branding")
+    env["CLONECAST_GPU_RESOURCE_STATE_DIR"] = os.path.join(disp, "runtime", "gpu_resource_manager")
     env["CLONECAST_SPEECH_RUNTIME_PYTHON"] = os.path.join(repo_path, ".venv-chatterbox", "bin", "python")
     env["CLONECAST_SPEECH_MODEL_CACHE_DIR"] = os.path.join(repo_path, "runtime", "models", "huggingface")
     env["PATH"] = os.path.join(repo_path, ".venv", "bin") + ":" + env.get("PATH", "")
     env.pop("DEEPSEEK_API_KEY", None)
     return env
+
+
+def _extract_json(stdout: str) -> dict:
+    try:
+        payload = json.loads(stdout or "{}")
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+    for line in reversed((stdout or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _run_clonecast_cli(
+    *,
+    venv: str,
+    repo_path: str,
+    env: dict,
+    args: list[str],
+    timeout: int,
+    poll_gpu_state_dir: str | None = None,
+) -> tuple[subprocess.CompletedProcess, dict]:
+    gpu_trace = {"observed_states": [], "last_release_result": None}
+    cmd = [venv, "-m", "clonecast.cli", *args]
+    if not poll_gpu_state_dir:
+        proc = subprocess.run(cmd, cwd=repo_path, env=env, text=True, capture_output=True, timeout=timeout)
+        return proc, gpu_trace
+
+    state_path = os.path.join(poll_gpu_state_dir, "reservation.json")
+    release_path = os.path.join(poll_gpu_state_dir, "last_release.json")
+    proc_live = subprocess.Popen(cmd, cwd=repo_path, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.time() + timeout
+    seen = set()
+    try:
+        while proc_live.poll() is None:
+            if time.time() > deadline:
+                proc_live.kill()
+                stdout, stderr = proc_live.communicate()
+                return subprocess.CompletedProcess(cmd, 124, stdout, stderr + "\nTIMEOUT"), gpu_trace
+            try:
+                state = json.loads(open(state_path, encoding="utf-8").read())
+                key = (
+                    state.get("reservation_id"),
+                    state.get("stage"),
+                    state.get("owner_id"),
+                    state.get("gpu_index"),
+                    state.get("free_vram_mb"),
+                )
+                if key not in seen:
+                    seen.add(key)
+                    gpu_trace["observed_states"].append(state)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
+            time.sleep(0.1)
+        stdout, stderr = proc_live.communicate()
+    finally:
+        if proc_live.poll() is None:
+            proc_live.kill()
+            proc_live.communicate()
+    try:
+        gpu_trace["last_release_result"] = json.loads(open(release_path, encoding="utf-8").read())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return subprocess.CompletedProcess(cmd, proc_live.returncode, stdout, stderr), gpu_trace
+
+
+def _create_disposable_episode_via_service(
+    *, venv: str, repo_path: str, env: dict, disp: str, disp_db: str
+) -> tuple[StageRecord, str]:
+    s = StageRecord(number=15, stage="APPROVED_SCRIPT_EPISODE_AND_RESEARCH_IMPORT",
+                    method="service", route="ResearchService.ingest_one + EpisodeService.create")
+    research_dir = os.path.join(disp, "inputs")
+    os.makedirs(research_dir, exist_ok=True)
+    research_path = os.path.join(research_dir, "approved-script-research.txt")
+    body = (
+        "Title: AutoCorp Approved Script Production\n"
+        "Source URL: https://example.com/autocorp-approved-script-production\n"
+        "Source Name: AutoCorp Deterministic Approved Research\n"
+        "Published At: 2026-08-01T00:00:00Z\n"
+        "Collected At: 2026-08-01T00:00:00Z\n"
+        "Tags: autocorp, approved-script, disposable\n"
+        "External ID: autocorp-approved-script-production\n\n"
+        "Deterministic research used only to prove approved-script production without local text generation.\n"
+    )
+    with open(research_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    code = (
+        "import json; "
+        "from clonecast.config import load_settings; from clonecast.db import connect_database; "
+        "from clonecast.research_service import ResearchService; from clonecast.episode_service import EpisodeService; "
+        "settings=load_settings(); conn=connect_database(settings.db_path); "
+        "out=ResearchService(conn, settings).ingest_one(%r); "
+        "assert out.status == 'accepted', out; "
+        "ep=EpisodeService(conn).create([out.research_id], 'AutoCorp Approved Script Production', 'autocorp-approved-script-production'); "
+        "print(json.dumps({'research_id': out.research_id, 'episode_id': ep.episode_id})); conn.close()"
+    ) % research_path
+    proc = subprocess.run([venv, "-c", code], cwd=repo_path, env=env, text=True, capture_output=True, timeout=60)
+    s.response_code = proc.returncode
+    s.response_body = (proc.stdout + proc.stderr)[:4000]
+    if proc.returncode != 0:
+        s.status = "FAIL"; s.failure_reason = s.response_body; s.failure_ownership = "CLONECAST_WORKFLOW_PRECONDITION"
+        return s, ""
+    payload = _extract_json(proc.stdout)
+    episode_id = payload.get("episode_id", "")
+    if not _db_record_exists(disp_db, "episodes", "episode_id", episode_id):
+        s.status = "FAIL"; s.failure_reason = "Created episode row not found in disposable DB"; s.failure_ownership = "CLONECAST_APPLICATION_DEFECT"
+    else:
+        s.status = "PASS"; s.extracted_ids = payload
+        s.evidence = [f"episode_id={episode_id}", f"research_id={payload.get('research_id', '')}", f"research_path={research_path}"]
+    return s, episode_id
+
+
+def _run_approved_script_workflow(
+    *,
+    repo_path: str,
+    venv: str,
+    disp: str,
+    disp_db: str,
+    env: dict,
+    report: WorkflowTestReport,
+    prod_db: str,
+    t0: float,
+) -> WorkflowTestReport:
+    env["CLONECAST_OLLAMA_ENABLED"] = "false"
+    env["CLONECAST_OLLAMA_ENDPOINT"] = "http://127.0.0.1:9/autocorp-must-not-be-called"
+    report.ollama_disabled = True
+
+    def fail(stage: StageRecord) -> WorkflowTestReport:
+        report.stages.append(stage)
+        report.first_failure = stage.failure_reason
+        report.overall_status = "STAGE_FAILED"
+        _finalize(report, prod_db, t0, disp, disp_db)
+        return report
+
+    s = StageRecord(number=2, stage="OLLAMA_DISABLED_APPROVED_SCRIPT_MODE", status="PASS",
+                    evidence=["CLONECAST_OLLAMA_ENABLED=false",
+                              "Approved-script production path does not require Ollama.",
+                              "Conversation generation stages are not applicable in this workflow mode."])
+    report.stages.append(s)
+
+    s, episode_id = _create_disposable_episode_via_service(venv=venv, repo_path=repo_path, env=env, disp=disp, disp_db=disp_db)
+    if s.status != "PASS":
+        return fail(s)
+    report.stages.append(s)
+
+    script_text = (
+        "AutoCorp approved script verification begins now.\n"
+        "This owner-approved text must remain byte-for-byte identical from import through production.\n"
+        "CloneCast should render these exact words with Chatterbox Turbo, assemble real audio, and stop before publishing.\n"
+        "No local language model may rewrite, summarize, expand, shorten, clean, or otherwise alter this script.\n"
+    )
+    script_path = os.path.join(disp, "inputs", "approved-production-script.txt")
+    raw = script_text.encode("utf-8")
+    with open(script_path, "wb") as f:
+        f.write(raw)
+    original_sha = hashlib.sha256(raw).hexdigest()
+    report.script_preservation = {"source_path": script_path, "original_size_bytes": len(raw), "original_sha256": original_sha}
+    report.stages.append(StageRecord(
+        number=16, stage="APPROVED_SCRIPT_ORIGINAL_RECORDED", status="PASS",
+        evidence=[f"path={script_path}", f"bytes={len(raw)}", f"sha256={original_sha}", f"text={script_text!r}"],
+    ))
+
+    proc, _ = _run_clonecast_cli(
+        venv=venv, repo_path=repo_path, env=env,
+        args=["episode-script-import-approved", "--episode-id", episode_id, "--script-file", script_path,
+              "--idempotency-key", "autocorp-approved-script-import"],
+        timeout=120,
+    )
+    payload = _extract_json(proc.stdout)
+    if proc.returncode != 0 or not payload.get("script_id"):
+        return fail(StageRecord(number=17, stage="APPROVED_SCRIPT_IMPORT", status="FAIL",
+                                response_code=proc.returncode, response_body=(proc.stdout + proc.stderr)[:4000],
+                                failure_reason="Approved script import failed",
+                                failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    script_id = payload["script_id"]
+    import_row = _db_one(disp_db, "SELECT * FROM approved_script_imports WHERE script_id=?", (script_id,))
+    stored_path = import_row.get("managed_path", "")
+    stored_raw = open(stored_path, "rb").read() if stored_path and os.path.isfile(stored_path) else b""
+    stored_sha = hashlib.sha256(stored_raw).hexdigest() if stored_raw else ""
+    report.script_preservation.update({"script_id": script_id, "stored_path": stored_path, "stored_size_bytes": len(stored_raw), "stored_sha256": stored_sha})
+    if stored_raw != raw or import_row.get("source_sha256") != original_sha or import_row.get("stored_sha256") != original_sha:
+        return fail(StageRecord(number=17, stage="APPROVED_SCRIPT_IMPORT", status="FAIL",
+                                failure_reason="Approved script import did not preserve source bytes",
+                                failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=17, stage="APPROVED_SCRIPT_IMPORT", status="PASS",
+                                     evidence=[f"script_id={script_id}", f"stored_path={stored_path}",
+                                               f"source_sha256={original_sha}", f"stored_sha256={stored_sha}"],
+                                     extracted_ids={"script_id": script_id}))
+
+    segment_rows = _db_all(disp_db, "SELECT text FROM script_segments WHERE script_id=? ORDER BY order_index", (script_id,))
+    segment_text = "".join(row["text"] for row in segment_rows)
+    final_sha = hashlib.sha256(segment_text.encode("utf-8")).hexdigest()
+    report.script_preservation.update({"production_text_sha256": final_sha, "segment_count": len(segment_rows)})
+    if final_sha != original_sha or segment_text != script_text:
+        return fail(StageRecord(number=18, stage="SCRIPT_PRESERVATION_VERIFY", status="FAIL",
+                                failure_reason="Production-used script text is not checksum-equivalent to original",
+                                failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=18, stage="SCRIPT_PRESERVATION_VERIFY", status="PASS",
+                                     evidence=[f"original_sha256={original_sha}", f"production_text_sha256={final_sha}",
+                                               f"segments={len(segment_rows)}",
+                                               "No rewrite/summarize/expand/shorten/clean transform detected."]))
+
+    generation_rows = _db_all(disp_db, "SELECT * FROM ai_conversation_generations")
+    report.ollama_generation_calls = len(generation_rows)
+    report.stages.append(StageRecord(number=19, stage="DIALOGUE_GENERATION_NOT_APPLICABLE", status="NOT_APPLICABLE",
+                                     failure_reason="approved-script-production uses owner-approved text and never calls /generate-dialogue",
+                                     evidence=["machine_reason=OLLAMA_ONLY_STAGE_NOT_APPLICABLE"]))
+    if generation_rows:
+        return fail(StageRecord(number=20, stage="OLLAMA_GENERATION_CALL_ABSENCE", status="FAIL",
+                                failure_reason=f"Unexpected ai_conversation_generations rows: {len(generation_rows)}",
+                                failure_ownership="AUTOCORP_WORKFLOW_ENGINE_DEFECT"))
+    report.stages.append(StageRecord(number=20, stage="OLLAMA_GENERATION_CALL_ABSENCE", status="PASS",
+                                     evidence=["ai_conversation_generations rows=0", "No Ollama text generation endpoint was called."]))
+
+    voice_profile_id = _find_approved_voice_profile(disp_db)
+    if not voice_profile_id:
+        return fail(StageRecord(number=21, stage="APPROVED_VOICE_PROFILE_SELECT", status="FAIL",
+                                failure_reason="No approved voice profile found in disposable DB",
+                                failure_ownership="CLONECAST_WORKFLOW_PRECONDITION"))
+    proc, _ = _run_clonecast_cli(
+        venv=venv, repo_path=repo_path, env=env,
+        args=["script-voice-assign", "--script-id", script_id, "--speaker", "Host", "--voice-profile-id", voice_profile_id],
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return fail(StageRecord(number=21, stage="APPROVED_SCRIPT_VOICE_ASSIGN", status="FAIL",
+                                response_code=proc.returncode, response_body=(proc.stdout + proc.stderr)[:4000],
+                                failure_reason="Voice assignment failed",
+                                failure_ownership="CLONECAST_WORKFLOW_PRECONDITION"))
+    report.stages.append(StageRecord(number=21, stage="APPROVED_SCRIPT_VOICE_ASSIGN", status="PASS",
+                                     evidence=[f"voice_profile_id={voice_profile_id}", "speaker=Host"]))
+
+    gpu_dir = env["CLONECAST_GPU_RESOURCE_STATE_DIR"]
+    diag_code = (
+        "import json; from clonecast.config import load_settings; "
+        "from clonecast.gpu_resource_manager import build_gpu_resource_manager; "
+        "print(json.dumps(build_gpu_resource_manager(load_settings()).diagnostics(), sort_keys=True))"
+    )
+    diag_proc = subprocess.run([venv, "-c", diag_code], cwd=repo_path, env=env, text=True, capture_output=True, timeout=30)
+    pre_diag = _extract_json(diag_proc.stdout)
+    incompatible = pre_diag.get("loaded_managed_models", [])
+    if incompatible:
+        return fail(StageRecord(number=22, stage="GPU_PREFLIGHT_NO_INCOMPATIBLE_MODEL", status="FAIL",
+                                failure_reason=f"Incompatible managed model resident before Chatterbox: {incompatible}",
+                                failure_ownership="CLONECAST_WORKFLOW_PRECONDITION"))
+    detected = pre_diag.get("detected_gpus", [])
+    report.stages.append(StageRecord(number=22, stage="GPU_PREFLIGHT_NO_INCOMPATIBLE_MODEL", status="PASS",
+                                     evidence=[f"loaded_managed_models={incompatible}", f"detected_gpus={detected}"]))
+
+    proc, gpu_trace = _run_clonecast_cli(
+        venv=venv, repo_path=repo_path, env=env,
+        args=["speech-render", "--script-id", script_id, "--idempotency-key", "autocorp-approved-script-speech"],
+        timeout=1800,
+        poll_gpu_state_dir=gpu_dir,
+    )
+    speech_payload = _extract_json(proc.stdout)
+    if proc.returncode != 0 or not speech_payload.get("job"):
+        return fail(StageRecord(number=23, stage="CHATTERBOX_VOICE_GENERATION", status="FAIL",
+                                response_code=proc.returncode, response_body=(proc.stdout + proc.stderr)[:4000],
+                                failure_reason="Chatterbox speech render failed",
+                                failure_ownership=_classify_job_error(proc.stdout + proc.stderr)))
+    speech_job = speech_payload["job"]
+    speech_job_id = speech_job["job_id"]
+    report.gpu_reservation_evidence = gpu_trace
+    report.gpu_reservation_evidence["speech_job"] = {
+        "job_id": speech_job_id,
+        "gpu_name": speech_job.get("gpu_name"),
+        "gpu_index": speech_job.get("gpu_index"),
+        "provider": speech_job.get("provider"),
+        "model_name": speech_job.get("model_name"),
+    }
+    observed = gpu_trace.get("observed_states") or []
+    last_release = gpu_trace.get("last_release_result") or {}
+    release_reservation = last_release.get("reservation", {})
+    if not observed and not release_reservation:
+        return fail(StageRecord(number=24, stage="GPU_RESOURCE_MANAGER_RESERVATION_VERIFY", status="FAIL",
+                                failure_reason="No GPUModelResourceManager reservation evidence captured",
+                                failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=23, stage="CHATTERBOX_VOICE_GENERATION", status="PASS",
+                                     evidence=[f"speech_job_id={speech_job_id}", f"segments={len(speech_payload.get('segments', []))}",
+                                               f"gpu_name={speech_job.get('gpu_name')}", f"gpu_index={speech_job.get('gpu_index')}"]))
+    report.stages.append(StageRecord(number=24, stage="GPU_RESOURCE_MANAGER_RESERVATION_VERIFY", status="PASS",
+                                     evidence=[f"observed_transitions={[s.get('stage') for s in observed]}",
+                                               f"reservation_owner={release_reservation.get('owner_id')}",
+                                               f"reservation_id={release_reservation.get('reservation_id')}",
+                                               f"requested_vram_mb={release_reservation.get('requested_vram_mb')}",
+                                               f"free_vram_before_mb={release_reservation.get('free_vram_mb')}",
+                                               f"safety_reserve_mb={release_reservation.get('safety_reserve_mb')}",
+                                               f"gpu={release_reservation.get('gpu_name')} index={release_reservation.get('gpu_index')}",
+                                               f"release_event={last_release.get('event')}"]))
+
+    speech_assets = _db_all(
+        disp_db,
+        "SELECT output_path, sha256, order_index FROM speech_render_segments WHERE job_id=? ORDER BY order_index",
+        (speech_job_id,),
+    )
+    for row in speech_assets:
+        artifact = _verify_artifact(f"approved_script_speech_wav[{row.get('order_index')}]", row["output_path"], row.get("sha256") or "")
+        report.artifacts.append(artifact)
+        if artifact.verify_error or artifact.duration_seconds <= 0:
+            return fail(StageRecord(number=25, stage="SPEECH_ARTIFACT_FFPROBE_VERIFY", status="FAIL",
+                                    failure_reason=f"Speech WAV verification failed: {artifact.path} {artifact.verify_error}",
+                                    failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=25, stage="SPEECH_ARTIFACT_FFPROBE_VERIFY", status="PASS",
+                                     evidence=[f"speech_wavs={len(speech_assets)}", "All Chatterbox WAVs ffprobe-valid with SHA-256."]))
+
+    proc, _ = _run_clonecast_cli(
+        venv=venv, repo_path=repo_path, env=env,
+        args=["episode-audio-assemble", "--script-id", script_id, "--speech-job-id", speech_job_id,
+              "--idempotency-key", "autocorp-approved-script-episode-audio"],
+        timeout=600,
+    )
+    audio_payload = _extract_json(proc.stdout)
+    audio_job = audio_payload.get("job") or {}
+    audio_job_id = audio_job.get("job_id", "")
+    if proc.returncode != 0 or not audio_job_id:
+        return fail(StageRecord(number=26, stage="APPROVED_SCRIPT_AUDIO_ASSEMBLY", status="FAIL",
+                                response_code=proc.returncode, response_body=(proc.stdout + proc.stderr)[:4000],
+                                failure_reason="Episode audio assembly failed",
+                                failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=26, stage="APPROVED_SCRIPT_AUDIO_ASSEMBLY", status="PASS",
+                                     evidence=[f"episode_audio_job_id={audio_job_id}"]))
+
+    outputs = _db_all(disp_db, "SELECT * FROM episode_audio_outputs WHERE job_id=? ORDER BY output_type", (audio_job_id,))
+    audio_outputs = [row for row in outputs if row.get("output_type") in {"wav", "mp3"}]
+    for row in audio_outputs:
+        artifact = _verify_artifact(f"approved_script_episode_{row['output_type']}", row["path"], row.get("sha256") or "")
+        report.artifacts.append(artifact)
+        if row["output_type"] == "mp3":
+            report.audio_artifact = artifact
+        if artifact.verify_error or artifact.duration_seconds <= 0:
+            return fail(StageRecord(number=27, stage="FINAL_AUDIO_ARTIFACT_VERIFY", status="FAIL",
+                                    failure_reason=f"Audio output verification failed: {artifact.path} {artifact.verify_error}",
+                                    failure_ownership="CLONECAST_APPLICATION_DEFECT"))
+    report.stages.append(StageRecord(number=27, stage="FINAL_AUDIO_ARTIFACT_VERIFY", status="PASS",
+                                     evidence=[f"audio_outputs={len(audio_outputs)}",
+                                               *[f"{a.kind}: path={a.path} duration={a.duration_seconds} size={a.size_bytes} codec={a.codec} sha256={a.sha256}" for a in report.artifacts if a.kind.startswith("approved_script_episode_")]]))
+
+    publication_rows = _db_all(disp_db, "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%publication%'")
+    published_count = 0
+    for row in publication_rows:
+        table = row.get("name")
+        try:
+            published_count += int(_db_one(disp_db, f"SELECT COUNT(*) AS count FROM {table}").get("count") or 0)
+        except Exception:
+            pass
+    report.stages.append(StageRecord(number=28, stage="OWNER_LISTENING_GATE_ENFORCED", status="PASS",
+                                     evidence=["No publish command executed.",
+                                               "Workflow stops after listenable audio artifact verification.",
+                                               f"publication_rows_created={published_count}"]))
+
+    report.overall_status = "DISPOSABLE_WORKFLOW_COMPLETE"
+    report.first_failure = ""
+    _finalize(report, prod_db, t0, disp, disp_db)
+    return report
 
 
 def _inside(path: str, root: str) -> bool:
@@ -687,7 +1075,12 @@ def _check_external_publishing_dependencies() -> list:
     return statuses
 
 
-def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool = False) -> WorkflowTestReport:
+def run_workflow_test(
+    repo_path: str,
+    port: int = 8000,
+    include_publishing: bool = False,
+    workflow_mode: str = "conversation-production",
+) -> WorkflowTestReport:
     repo_path = os.path.abspath(repo_path)
     t0 = time.time()
     disp = None
@@ -696,6 +1089,7 @@ def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool
     report = WorkflowTestReport()
     report.repo_path = repo_path
     report.include_publishing = include_publishing
+    report.workflow_mode = workflow_mode
     prod_db = os.path.join(repo_path, "db", "cloneshow.db")
     report.production_db_path = prod_db
     try:
@@ -707,6 +1101,8 @@ def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool
     if os.path.isfile(prod_db):
         report.production_db_before = _sha256_file(prod_db)
         report.production_db_size_before = os.path.getsize(prod_db)
+        report.production_db_mtime_before = os.path.getmtime(prod_db)
+    report.production_db_sidecars_before = _db_sidecar_state(prod_db)
 
     try:
         git_state = scanner._git_info(repo_path)[1]
@@ -810,6 +1206,30 @@ def run_workflow_test(repo_path: str, port: int = 8000, include_publishing: bool
             if not _port_listening("127.0.0.1", alt): port = alt; break
 
     env = _clonecast_env(repo_path, disp, disp_db)
+
+    if workflow_mode == "approved-script-production":
+        return _run_approved_script_workflow(
+            repo_path=repo_path,
+            venv=venv,
+            disp=disp,
+            disp_db=disp_db,
+            env=env,
+            report=report,
+            prod_db=prod_db,
+            t0=t0,
+        )
+    if workflow_mode not in {"conversation-production"}:
+        s = StageRecord(
+            number=1,
+            stage="WORKFLOW_MODE_VALIDATE",
+            status="FAIL",
+            failure_reason=f"Unknown workflow mode: {workflow_mode}",
+            failure_ownership="AUTOCORP_REQUEST_CONSTRUCTION_DEFECT",
+        )
+        report.stages.append(s)
+        report.overall_status = "STAGE_FAILED"
+        report.first_failure = s.failure_reason
+        _finalize(report, prod_db, t0, disp, disp_db); return report
 
     args = [venv, "-m", "uvicorn", "clonecast.web_app:create_app", "--factory", "--host", "127.0.0.1", f"--port={port}"]
     try:
@@ -1813,6 +2233,8 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
     if os.path.isfile(prod_db):
         report.production_db_after = _sha256_file(prod_db)
         report.production_db_size_after = os.path.getsize(prod_db)
+        report.production_db_mtime_after = os.path.getmtime(prod_db)
+    report.production_db_sidecars_after = _db_sidecar_state(prod_db)
     if report.repo_path:
         try:
             report.clonecast_git_status_after = subprocess.run(
@@ -1841,7 +2263,7 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
             report.cleanup_removed = False
             report.cleanup_error = str(exc)
 
-    if report.production_db_before != report.production_db_after:
+    if report.production_db_before != report.production_db_after or report.production_db_sidecars_before != report.production_db_sidecars_after:
         report.overall_status = "PRODUCTION_DATABASE_ACCESS_DETECTED"
     if report.clonecast_git_status_before != report.clonecast_git_status_after:
         report.overall_status = "CLONECAST_WORKTREE_CHANGED"
@@ -1850,6 +2272,7 @@ def _finalize(report, prod_db, t0, disp=None, disp_db=None):
     report.duration = time.time() - t0
     report.repository_unchanged = (
         report.production_db_before == report.production_db_after
+        and report.production_db_sidecars_before == report.production_db_sidecars_after
         and report.clonecast_git_status_before == report.clonecast_git_status_after
     )
 

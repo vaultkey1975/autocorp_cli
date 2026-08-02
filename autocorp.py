@@ -769,6 +769,7 @@ def _render_workflow_report(report) -> str:
     p(f"Repository:       {report.repo_path}")
     p(f"Disposable Root:  {report.disposable_root}")
     p(f"Production DB:    {report.production_db_path}")
+    p(f"Workflow Mode:    {getattr(report, 'workflow_mode', 'conversation-production')}")
     p(f"Overall Status:   {report.overall_status}")
     p(f"Success:          {'Yes' if getattr(report, 'success', False) else 'No'}")
     p(f"Failure Reason:   {getattr(report, 'failure_reason', '') or '(none)'}")
@@ -789,10 +790,11 @@ def _render_workflow_report(report) -> str:
     p("----------------")
     pass_count = sum(1 for s in report.stages if s.status == "PASS")
     fail_count = sum(1 for s in report.stages if s.status == "FAIL")
-    p(f"  {pass_count} passed, {fail_count} failed, {len(report.stages)} total")
+    na_count = sum(1 for s in report.stages if s.status == "NOT_APPLICABLE")
+    p(f"  {pass_count} passed, {fail_count} failed, {na_count} not-applicable, {len(report.stages)} total")
     p("")
     for s in report.stages:
-        tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[SKIP]"
+        tag = "[PASS]" if s.status == "PASS" else "[FAIL]" if s.status == "FAIL" else "[N/A]" if s.status == "NOT_APPLICABLE" else "[SKIP]"
         p(f"  {tag} Stage {s.number}: {s.stage}  ({s.duration:.1f}s)")
         if s.route:
             p(f"       Route: {s.method} {s.route}")
@@ -827,6 +829,44 @@ def _render_workflow_report(report) -> str:
         p(f"First Failure: {report.first_failure}")
     else:
         p("First Failure: (none)")
+
+    if getattr(report, "workflow_mode", "") == "approved-script-production":
+        p("")
+        p("Approved Script Preservation")
+        p("-----------------------------")
+        sp = getattr(report, "script_preservation", {}) or {}
+        p(f"  Source path:              {sp.get('source_path', '(not recorded)')}")
+        p(f"  Original bytes:           {sp.get('original_size_bytes', '(not recorded)')}")
+        p(f"  Original SHA-256:         {sp.get('original_sha256', '(not recorded)')}")
+        p(f"  Stored path:              {sp.get('stored_path', '(not recorded)')}")
+        p(f"  Stored bytes:             {sp.get('stored_size_bytes', '(not recorded)')}")
+        p(f"  Stored SHA-256:           {sp.get('stored_sha256', '(not recorded)')}")
+        p(f"  Production text SHA-256:  {sp.get('production_text_sha256', '(not recorded)')}")
+        p(f"  Segment count:            {sp.get('segment_count', '(not recorded)')}")
+        preserved = sp.get("original_sha256") and sp.get("original_sha256") == sp.get("stored_sha256") == sp.get("production_text_sha256")
+        p(f"  Preservation result:      {'PASS' if preserved else 'NOT VERIFIED'}")
+        p("")
+        p("Ollama Proof")
+        p("------------")
+        p(f"  CLONECAST_OLLAMA_ENABLED=false: {'Yes' if getattr(report, 'ollama_disabled', False) else 'No'}")
+        p(f"  Ollama generation calls:        {getattr(report, 'ollama_generation_calls', '(not recorded)')}")
+        p("")
+        p("GPU Reservation Evidence")
+        p("-------------------------")
+        gpu = getattr(report, "gpu_reservation_evidence", {}) or {}
+        speech_job = gpu.get("speech_job", {})
+        p(f"  Speech job:              {speech_job.get('job_id', '(not recorded)')}")
+        p(f"  Speech provider/model:   {speech_job.get('provider', '(not recorded)')} / {speech_job.get('model_name', '(not recorded)')}")
+        p(f"  Selected GPU:            {speech_job.get('gpu_name', '(not recorded)')} index={speech_job.get('gpu_index', '(not recorded)')}")
+        observed = gpu.get("observed_states", []) or []
+        p(f"  Observed transitions:    {[s.get('stage') for s in observed]}")
+        release = (gpu.get("last_release_result") or {}).get("reservation", {})
+        p(f"  Reservation ID:          {release.get('reservation_id', '(not recorded)')}")
+        p(f"  Owner/job ID:            {release.get('owner_id', '(not recorded)')}")
+        p(f"  Requested VRAM MiB:      {release.get('requested_vram_mb', '(not recorded)')}")
+        p(f"  Free VRAM before MiB:    {release.get('free_vram_mb', '(not recorded)')}")
+        p(f"  Safety reserve MiB:      {release.get('safety_reserve_mb', '(not recorded)')}")
+        p(f"  Release result:          {(gpu.get('last_release_result') or {}).get('event', '(not recorded)')}")
 
     p("")
     p("Artifact Table")
@@ -922,6 +962,11 @@ def _render_workflow_report(report) -> str:
     if report.production_db_size_before:
         p(f"  DB size before: {report.production_db_size_before}")
         p(f"  DB size after:  {report.production_db_size_after}")
+        p(f"  DB mtime before: {getattr(report, 'production_db_mtime_before', 0.0)}")
+        p(f"  DB mtime after:  {getattr(report, 'production_db_mtime_after', 0.0)}")
+    if getattr(report, "production_db_sidecars_before", None) is not None:
+        p(f"  DB/WAL/SHM before: {getattr(report, 'production_db_sidecars_before', {})}")
+        p(f"  DB/WAL/SHM after:  {getattr(report, 'production_db_sidecars_after', {})}")
     git_ok = report.clonecast_git_status_before == report.clonecast_git_status_after
     p(f"  CloneCast Git unchanged: {'Yes' if git_ok else 'NO - WORKTREE CHANGED'}")
     if not git_ok:
@@ -963,7 +1008,10 @@ def cmd_workflow_test(args) -> int:
         return 1
 
     repo_root = _resolve_repo(args)
-    report = workflow_test.run_workflow_test(repo_root, port=8000)
+    workflow_mode = getattr(args, "workflow", "conversation-production")
+    if getattr(args, "approved_script", False):
+        workflow_mode = "approved-script-production"
+    report = workflow_test.run_workflow_test(repo_root, port=8000, workflow_mode=workflow_mode)
 
     text = _render_workflow_report(report)
     print(text)
@@ -1253,6 +1301,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="absolute path to target repository")
     sp.add_argument("--disposable", action="store_true",
                     help="REQUIRED: enable disposable isolation (refuses without it)")
+    sp.add_argument("--approved-script", action="store_true",
+                    help="run approved-script production workflow with Ollama disabled")
+    sp.add_argument("--workflow", default="conversation-production",
+                    choices=("conversation-production", "approved-script-production"),
+                    help="workflow mode to run (default: conversation-production)")
     sp.set_defaults(func=cmd_workflow_test)
 
     sp = sub.add_parser("publish-test",
