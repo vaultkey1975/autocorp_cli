@@ -23,6 +23,7 @@ def _free_port() -> int:
 def isolated_launcher_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "APP_PID_FILE", str(tmp_path / "app.pid"))
     monkeypatch.setattr(config, "APP_DESKTOP_PID_FILE", str(tmp_path / "desktop.pid"))
+    monkeypatch.setattr(config, "APP_DESKTOP_FOCUS_FILE", str(tmp_path / "focus.request"))
     monkeypatch.setattr(config, "APP_LOCK_FILE", str(tmp_path / "app.lock"))
     monkeypatch.setattr(config, "APP_LOG_DIR", str(tmp_path / "logs"))
     return tmp_path
@@ -105,6 +106,45 @@ def test_desktop_second_launch_focuses_existing_window_without_duplicate(isolate
     assert result.started_new_process is False
     assert result.ready is True
     assert calls == ["focus"]
+
+
+def test_focus_existing_window_restores_minimized_window_and_raises(isolated_launcher_paths, monkeypatch):
+    commands = []
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(desktop_lifecycle.shutil, "which", lambda name: "/usr/bin/wmctrl")
+    monkeypatch.setattr(
+        desktop_lifecycle.subprocess,
+        "run",
+        lambda command, check, timeout: commands.append(command) or Result(),
+    )
+
+    assert desktop_lifecycle.focus_existing_window()
+
+    assert [command[1:] for command in commands] == [
+        ["-r", "AutoCorp", "-b", "remove,hidden"],
+        ["-r", "AutoCorp", "-b", "remove,shaded"],
+        ["-R", "AutoCorp"],
+        ["-a", "AutoCorp"],
+    ]
+
+
+def test_focus_existing_window_writes_wayland_fallback_request(isolated_launcher_paths, monkeypatch):
+    monkeypatch.setattr(desktop_lifecycle.shutil, "which", lambda name: None)
+
+    assert desktop_lifecycle.focus_existing_window() is False
+
+    assert Path(config.APP_DESKTOP_FOCUS_FILE).is_file()
+
+
+def test_first_desktop_launch_schedules_qt_focus_after_window_show():
+    content = Path(config.BASE_DIR, "app", "desktop_app.py").read_text(encoding="utf-8")
+    assert "QTimer.singleShot(250, window.bring_to_front)" in content
+    assert "self.showNormal()" in content
+    assert "self.raise_()" in content
+    assert "self.activateWindow()" in content
 
 
 def test_stale_pid_file_does_not_block_a_fresh_start(isolated_launcher_paths, monkeypatch):

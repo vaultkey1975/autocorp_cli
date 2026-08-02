@@ -11,7 +11,7 @@ from app import desktop_lifecycle as lifecycle
 
 def run() -> int:
     try:
-        from PySide6.QtCore import QUrl
+        from PySide6.QtCore import QTimer, QUrl
         from PySide6.QtGui import QIcon
         from PySide6.QtWebEngineWidgets import QWebEngineView
         from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
@@ -36,11 +36,28 @@ def run() -> int:
         def __init__(self) -> None:
             super().__init__()
             self._closing = False
+            self._last_focus_request = None
             self.setWindowTitle("AutoCorp")
             self.resize(1280, 860)
             view = QWebEngineView(self)
             view.setUrl(QUrl(result.url))
             self.setCentralWidget(view)
+            self._focus_timer = QTimer(self)
+            self._focus_timer.timeout.connect(self._apply_pending_focus_request)
+            self._focus_timer.start(500)
+
+        def bring_to_front(self) -> None:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+            lifecycle.focus_existing_window(write_request=False)
+            lifecycle.log("desktop window focus requested")
+
+        def _apply_pending_focus_request(self) -> None:
+            value = lifecycle.consume_focus_request(self._last_focus_request)
+            if value != self._last_focus_request:
+                self._last_focus_request = value
+                self.bring_to_front()
 
         def closeEvent(self, event) -> None:  # noqa: N802 - Qt API name
             if self._closing:
@@ -70,6 +87,7 @@ def run() -> int:
     window = AutoCorpWindow()
     window.show()
     lifecycle.log("desktop window opened")
+    QTimer.singleShot(250, window.bring_to_front)
     return app.exec()
 
 

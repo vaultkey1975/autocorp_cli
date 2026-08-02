@@ -157,6 +157,7 @@ APP_UPLOAD_MAX_BYTES = int(os.environ.get("AUTOCORP_APP_UPLOAD_MAX_BYTES", str(2
 APP_LOG_DIR = os.path.join(DATA_DIR, "autocorp_app_logs")
 APP_PID_FILE = os.path.join(DATA_DIR, "autocorp_app.pid")
 APP_DESKTOP_PID_FILE = os.path.join(DATA_DIR, "autocorp_desktop.pid")
+APP_DESKTOP_FOCUS_FILE = os.path.join(DATA_DIR, "autocorp_desktop_focus.request")
 APP_LOCK_FILE = os.path.join(DATA_DIR, "autocorp_app.lock")
 
 # --------------------------------------------------------------------------- #

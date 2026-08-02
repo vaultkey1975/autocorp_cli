@@ -63,7 +63,12 @@ def write_desktop_pid(pid: int | None = None) -> None:
 
 def remove_state_files() -> bool:
     ok = True
-    for filename in (config.APP_PID_FILE, config.APP_DESKTOP_PID_FILE, config.APP_LOCK_FILE):
+    for filename in (
+        config.APP_PID_FILE,
+        config.APP_DESKTOP_PID_FILE,
+        config.APP_DESKTOP_FOCUS_FILE,
+        config.APP_LOCK_FILE,
+    ):
         try:
             Path(filename).unlink(missing_ok=True)
         except OSError:
@@ -76,19 +81,58 @@ def desktop_instance_running() -> bool:
     return bool(pid and launcher._pid_is_running(pid))
 
 
-def focus_existing_window() -> bool:
-    """Best-effort focus for the already-open desktop window."""
+def focus_request_file() -> Path:
+    return Path(config.APP_DESKTOP_FOCUS_FILE)
+
+
+def request_window_focus() -> None:
+    path = focus_request_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(time.time()), encoding="utf-8")
+    log("desktop focus request file written")
+
+
+def consume_focus_request(last_seen: str | None) -> str | None:
+    path = focus_request_file()
+    if not path.is_file():
+        return last_seen
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return last_seen
+    if value and value != last_seen:
+        return value
+    return last_seen
+
+
+def focus_existing_window(title: str = "AutoCorp", *, write_request: bool = True) -> bool:
+    """Best-effort focus for the already-open desktop window.
+
+    On X11, ``wmctrl`` can restore a minimized window and activate it. On
+    Wayland or when the compositor denies focus stealing, the running Qt app
+    also polls ``APP_DESKTOP_FOCUS_FILE`` and raises itself from inside its own
+    process.
+    """
+    if write_request:
+        request_window_focus()
     tool = shutil.which("wmctrl")
     if not tool:
         log("desktop focus requested; wmctrl unavailable")
         return False
     try:
-        subprocess.run([tool, "-a", "AutoCorp"], check=False, timeout=2)
+        commands = [
+            [tool, "-r", title, "-b", "remove,hidden"],
+            [tool, "-r", title, "-b", "remove,shaded"],
+            [tool, "-R", title],
+            [tool, "-a", title],
+        ]
+        results = [subprocess.run(command, check=False, timeout=2) for command in commands]
     except (OSError, subprocess.SubprocessError):
         log("desktop focus requested; wmctrl failed")
         return False
-    log("desktop focus requested")
-    return True
+    ok = any(result.returncode == 0 for result in results)
+    log(f"desktop focus requested via wmctrl; ok={ok}")
+    return ok
 
 
 def launch_server(
