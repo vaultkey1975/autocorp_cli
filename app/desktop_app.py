@@ -28,6 +28,10 @@ def run() -> int:
         return 1
 
     app = QApplication(sys.argv)
+    app.setApplicationName("AutoCorp")
+    app.setApplicationDisplayName("AutoCorp")
+    app.setDesktopFileName("autocorp")
+    app.setQuitOnLastWindowClosed(False)
     icon_path = os.path.join(config.BASE_DIR, "desktop", "autocorp.png")
     app.setWindowIcon(QIcon(icon_path))
     lifecycle.write_desktop_pid()
@@ -83,12 +87,16 @@ def run() -> int:
             lifecycle.shutdown_desktop(cancel_active=cancel, pid=result.pid)
             self._closing = True
             event.accept()
+            QTimer.singleShot(0, app.quit)
 
     window = AutoCorpWindow()
     window.show()
     lifecycle.log("desktop window opened")
     QTimer.singleShot(250, window.bring_to_front)
-    return app.exec()
+    app.aboutToQuit.connect(lambda: lifecycle.log("desktop app event loop exiting"))
+    exit_code = app.exec()
+    lifecycle.log(f"desktop app exited with code {exit_code}")
+    return exit_code
 
 
 def main() -> int:

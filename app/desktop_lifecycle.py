@@ -30,6 +30,7 @@ class ShutdownResult:
     cancellation_requested: bool
     cancellation_result: dict[str, Any] | None
     child_cleanup_result: str
+    desktop_cleanup_result: str
     gpu_release_result: dict[str, Any] | None
     port_released: bool
     pid_files_removed: bool
@@ -223,6 +224,33 @@ def _terminate_process_group(pid: int | None, *, timeout: float) -> str:
     return "killed after grace period"
 
 
+def _terminate_desktop_process(pid: int | None, *, timeout: float = 5.0) -> str:
+    if not pid:
+        return "no desktop process recorded"
+    if pid == os.getpid():
+        return "current desktop process will quit"
+    if not launcher._pid_is_running(pid):
+        return "no running desktop process"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "terminated"
+    except OSError as exc:
+        return f"terminate failed: {exc}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not launcher._pid_is_running(pid):
+            return "terminated"
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "terminated after grace period"
+    except OSError as exc:
+        return f"kill failed: {exc}"
+    return "killed after grace period"
+
+
 def shutdown_desktop(
     *,
     host: str = config.APP_HOST,
@@ -251,10 +279,13 @@ def shutdown_desktop(
     log(f"GPU release result {json.dumps(gpu_result, sort_keys=True, default=str)}")
 
     server_pid = pid if pid is not None else launcher._read_pid_file()
+    desktop_pid = read_desktop_pid()
     cleanup = terminate(server_pid) if terminate else _terminate_process_group(server_pid, timeout=10.0)
     log(f"child-process cleanup {cleanup}")
     released = wait_for_port_release(host, port)
     log(f"port release result {released}")
+    desktop_cleanup = _terminate_desktop_process(desktop_pid)
+    log(f"desktop process cleanup {desktop_cleanup}")
     removed = remove_state_files()
     final = "shutdown complete" if released and removed else "shutdown incomplete"
     log(f"final shutdown result {final}")
@@ -263,6 +294,7 @@ def shutdown_desktop(
         cancellation_requested=bool(active and cancel_active),
         cancellation_result=cancellation,
         child_cleanup_result=cleanup,
+        desktop_cleanup_result=desktop_cleanup,
         gpu_release_result=gpu_result,
         port_released=released,
         pid_files_removed=removed,

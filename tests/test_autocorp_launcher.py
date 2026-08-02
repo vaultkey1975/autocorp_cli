@@ -1,6 +1,7 @@
 import os
 import signal
 import socket
+import subprocess
 import time
 from pathlib import Path
 
@@ -190,6 +191,29 @@ def test_child_process_cleanup_is_requested_with_server_pid(isolated_launcher_pa
     assert result.child_cleanup_result == "terminated"
 
 
+def test_external_shutdown_cleans_recorded_desktop_process(isolated_launcher_paths, monkeypatch):
+    Path(config.APP_DESKTOP_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
+    Path(config.APP_DESKTOP_PID_FILE).write_text("67890", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(
+        desktop_lifecycle,
+        "active_generation_status",
+        lambda host, port: {"active": False, "sessions": []},
+    )
+    monkeypatch.setattr(desktop_lifecycle, "wait_for_port_release", lambda host, port: True)
+    monkeypatch.setattr(
+        desktop_lifecycle,
+        "_terminate_desktop_process",
+        lambda pid: seen.append(pid) or "terminated",
+    )
+
+    result = desktop_lifecycle.shutdown_desktop(pid=None, terminate=lambda pid: "no running server process")
+
+    assert seen == [67890]
+    assert result.desktop_cleanup_result == "terminated"
+    assert not Path(config.APP_DESKTOP_PID_FILE).exists()
+
+
 def test_gpu_reservation_cleanup_is_recorded(isolated_launcher_paths, monkeypatch):
     class Reservation:
         def to_dict(self):
@@ -232,13 +256,16 @@ def test_desktop_entry_uses_absolute_exec_and_icon_paths():
     content = Path(config.BASE_DIR, "desktop", "autocorp.desktop").read_text(encoding="utf-8")
     exec_line = next(line for line in content.splitlines() if line.startswith("Exec="))
     icon_line = next(line for line in content.splitlines() if line.startswith("Icon="))
+    path_line = next(line for line in content.splitlines() if line.startswith("Path="))
     exec_path = exec_line.split("=", 1)[1]
     icon_path = icon_line.split("=", 1)[1]
     assert Path(exec_path).is_absolute()
     assert Path(icon_path).is_absolute()
     assert Path(exec_path).is_file()
     assert Path(icon_path).is_file()
+    assert Path(path_line.split("=", 1)[1]).resolve() == Path(config.BASE_DIR)
     assert "Terminal=false" in content
+    assert "StartupWMClass=AutoCorp" in content
 
 
 def test_start_script_resolves_repo_root_from_its_own_location_not_cwd():
@@ -249,6 +276,19 @@ def test_start_script_resolves_repo_root_from_its_own_location_not_cwd():
     assert "-m app.launcher" not in content
     assert 'export QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-gpu-compositing"' in content
     assert "export QT_QUICK_BACKEND=software" in content
+    assert "desktop-launch.log" in content
+    assert 'setsid "${PYTHON}" -m app.desktop_app >> "${DESKTOP_LOG}" 2>&1 &' in content
+    assert "desktop wrapper launched with pid" in content
+
+
+def test_desktop_app_identifies_as_autocorp():
+    content = Path(config.BASE_DIR, "app", "desktop_app.py").read_text(encoding="utf-8")
+    assert 'app.setApplicationName("AutoCorp")' in content
+    assert 'app.setApplicationDisplayName("AutoCorp")' in content
+    assert 'app.setDesktopFileName("autocorp")' in content
+    assert "app.setQuitOnLastWindowClosed(False)" in content
+    assert 'self.setWindowTitle("AutoCorp")' in content
+    assert "QTimer.singleShot(0, app.quit)" in content
 
 
 def test_desktop_wrapper_warns_before_closing_active_generation():
@@ -262,3 +302,46 @@ def test_desktop_wrapper_warns_before_closing_active_generation():
 def test_installer_is_idempotent_and_requires_no_sudo():
     content = Path(config.BASE_DIR, "scripts", "install_autocorp_desktop.sh").read_text(encoding="utf-8")
     assert "sudo " not in content and not content.strip().startswith("sudo")
+    assert "desktop/autocorp.desktop" in content
+    assert "gio set" in content
+    assert "metadata::trusted true" in content
+    assert "update-desktop-database" in content
+    assert "xdg-desktop-menu forceupdate" in content
+
+
+def test_installer_writes_identical_executable_desktop_files_and_removes_stale_duplicates(tmp_path):
+    home = tmp_path / "home"
+    desktop = home / "Desktop"
+    apps = home / ".local" / "share" / "applications"
+    desktop.mkdir(parents=True)
+    apps.mkdir(parents=True)
+    stale = apps / "old-autocorp.desktop"
+    stale.write_text(
+        "[Desktop Entry]\nType=Application\nName=AutoCorp\nExec=/tmp/old-autocorp\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["XDG_DATA_HOME"] = str(tmp_path / "sandbox-xdg")
+    env["PATH"] = "/usr/bin:/bin"
+    result = subprocess.run(
+        [str(Path(config.BASE_DIR, "scripts", "install_autocorp_desktop.sh"))],
+        cwd=config.BASE_DIR,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    installed_app = apps / "autocorp.desktop"
+    installed_desktop = desktop / "autocorp.desktop"
+    sandbox_app = Path(env["XDG_DATA_HOME"]) / "applications" / "autocorp.desktop"
+    template = Path(config.BASE_DIR, "desktop", "autocorp.desktop").read_text(encoding="utf-8")
+    assert installed_app.read_text(encoding="utf-8") == template
+    assert installed_desktop.read_text(encoding="utf-8") == template
+    assert os.access(installed_app, os.X_OK)
+    assert os.access(installed_desktop, os.X_OK)
+    assert not stale.exists()
+    assert not sandbox_app.exists()
+    assert "AutoCorp desktop launcher installed." in result.stdout
