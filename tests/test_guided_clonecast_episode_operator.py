@@ -22,6 +22,9 @@ class FakeCloneCast(episode.CloneCastCLI):
     def __init__(self, repo: Path):
         self.repo = repo
         self.calls = []
+        self.research_states = {"research_1": "accepted"}
+        self.duplicate_of = {}
+        self.created_episodes = 0
 
     def validate_repo(self):
         episode.CloneCastCLI(self.repo).validate_repo()
@@ -36,7 +39,23 @@ class FakeCloneCast(episode.CloneCastCLI):
         if args and args[0] == "research-ingest":
             data = [{"status": "accepted", "research_id": "research_1"}]
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "[]", "", data)
+        if args and args[0] == "research-show":
+            research_id = args[1]
+            data = {
+                "research_id": research_id,
+                "lifecycle_state": self.research_states.get(research_id, "accepted"),
+                "duplicate_of_research_id": self.duplicate_of.get(research_id),
+                "content_hash": "c" * 64,
+                "current_path": str(self.repo / "research.txt"),
+            }
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
+        if args and args[0] == "research-recover":
+            research_id = args[args.index("--research-id") + 1]
+            self.research_states[research_id] = "accepted"
+            data = [{"status": "accepted", "research_id": research_id}]
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "[]", "", data)
         if args and args[0] == "episode-create":
+            self.created_episodes += 1
             data = {"episode_id": "episode_1", "idempotent": False}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
         if args and args[0] == "episode-script-import-approved":
@@ -102,6 +121,8 @@ class FakeCloneCast(episode.CloneCastCLI):
         return {
             "radio-studio-list",
             "research-ingest",
+            "research-show",
+            "research-recover",
             "episode-create",
             "episode-script-import-approved",
             "script-voice-assign",
@@ -112,6 +133,32 @@ class FakeCloneCast(episode.CloneCastCLI):
             "episode-audio-validate",
             "episode-audio-master",
         }
+
+
+class DuplicateResearchCloneCast(FakeCloneCast):
+    def __init__(self, repo: Path):
+        super().__init__(repo)
+        self.research_states = {"research_new": "duplicate", "research_existing": "accepted"}
+        self.duplicate_of = {"research_new": "research_existing"}
+
+    def checked(self, args, *, input_text=None):
+        if args and args[0] == "research-ingest":
+            self.calls.append(args)
+            data = [{"status": "duplicate", "research_id": "research_new", "duplicate_of_research_id": "research_existing"}]
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "[]", "", data)
+        return super().checked(args, input_text=input_text)
+
+
+class FailingAcceptanceCloneCast(FakeCloneCast):
+    def __init__(self, repo: Path):
+        super().__init__(repo)
+        self.research_states = {"research_processing": "processing"}
+
+    def checked(self, args, *, input_text=None):
+        if args and args[0] == "research-recover":
+            self.calls.append(args)
+            raise episode.EpisodeBuildError("CloneCast command failed: research-recover\nstdout:\n[]\nstderr:\nrecover failed")
+        return super().checked(args, input_text=input_text)
 
 
 def _inputs(values):
@@ -148,6 +195,11 @@ def test_duration_parsing():
         episode.parse_duration("soon")
 
 
+def test_studio_input_normalizes_id_display_name():
+    assert episode.normalize_studio_show("studio_1: Studio One") == "studio_1"
+    assert episode.normalize_studio_show("studio_1") == "studio_1"
+
+
 def test_guided_question_order_and_script_preservation(session_data_dir, tmp_path):
     repo = _repo(tmp_path)
     script = tmp_path / "script.txt"
@@ -162,6 +214,7 @@ def test_guided_question_order_and_script_preservation(session_data_dir, tmp_pat
     assert session.imported_script_checksum == session.script_checksum
     assert session.script_preserved_byte_for_byte is True
     assert session.clonecast_episode_identifiers["episode_id"] == "episode_1"
+    assert session.clonecast_episode_identifiers["research_id"] == "research_1"
     assert session.clonecast_episode_identifiers["script_id"] == "script_1"
     assert session.artifact_paths["raw_audio"].endswith("episode.mp3")
     assert session.artifact_paths["final_audio"].endswith("episode.mastered.mp3")
@@ -180,6 +233,137 @@ def test_guided_question_order_and_script_preservation(session_data_dir, tmp_pat
         "Provide research by file path, @file, or pasted text: ",
         "Do you have a final approved script",
     ]
+    assert "Research imported" in out
+    assert "Research validated" in out
+    assert "Research accepted" in out
+    assert "Approved script imported" in out
+    assert "Voice assigned" in out
+    assert "Audio generation started" in out
+
+
+def test_newly_imported_research_is_accepted_before_episode_create(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    fake = FakeCloneCast(repo)
+    ask = _inputs(["YES", "studio_1", "10m", "yes", "research body", "yes", str(script), "Elias Voss", "voice_d33f7035117f4055b1d46eb150234d6a", "no", "audio", "yes", "no", "save"])
+    session = episode.run_guided_episode_build(str(repo), input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    calls = [call[0] for call in fake.calls]
+    assert calls.index("research-ingest") < calls.index("research-show") < calls.index("episode-create")
+    assert session.validation_evidence["accepted_research"]["lifecycle_state"] == "accepted"
+
+
+def test_already_accepted_research_is_reused_on_resume(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    session = episode.EpisodeSession(session_id="session_accepted", clonecast_repo_path=str(repo.resolve()))
+    session.selected_studio_show = "studio_1"
+    session.requested_duration_seconds = 600
+    session.research_source = {"kind": "pasted_text", "sha256": "r"}
+    session.clonecast_episode_identifiers["research_id"] = "research_1"
+    episode.save_session(session)
+    fake = FakeCloneCast(repo)
+    ask = _inputs(["YES", "yes", "Host: Approved.", "Elias Voss", "voice_d33f7035117f4055b1d46eb150234d6a", "no", "audio", "no"])
+    completed = episode.run_guided_episode_build(str(repo), resume="session_accepted", input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    assert ["research-ingest"] not in fake.calls
+    assert completed.clonecast_episode_identifiers["research_id"] == "research_1"
+
+
+def test_duplicate_research_resolves_to_existing_accepted_item(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    fake = DuplicateResearchCloneCast(repo)
+    ask = _inputs(["YES", "studio_1", "10m", "yes", "research body", "yes", str(script), "Elias Voss", "voice_d33f7035117f4055b1d46eb150234d6a", "no", "audio", "yes", "no", "save"])
+    session = episode.run_guided_episode_build(str(repo), input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    assert session.clonecast_episode_identifiers["imported_research_id"] == "research_new"
+    assert session.clonecast_episode_identifiers["research_id"] == "research_existing"
+    create = next(call for call in fake.calls if call[0] == "episode-create")
+    assert create[create.index("--research-id") + 1] == "research_existing"
+
+
+def test_failed_acceptance_preserves_resumable_state(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    session = episode.EpisodeSession(session_id="session_fail", clonecast_repo_path=str(repo.resolve()))
+    session.selected_studio_show = "studio_1"
+    session.requested_duration_seconds = 600
+    session.research_source = {"kind": "file", "path": str(tmp_path / "research.txt"), "sha256": "r"}
+    session.clonecast_episode_identifiers["imported_research_id"] = "research_processing"
+    session.script_source = {"kind": "file", "path": str(script)}
+    session.script_checksum = episode.checksum_file(script)
+    session.imported_script_checksum = session.script_checksum
+    session.script_preserved_byte_for_byte = True
+    session.selected_host = "Elias Voss"
+    session.selected_voices = {"host": "voice_d33f7035117f4055b1d46eb150234d6a"}
+    session.guests_or_callers = "no"
+    session.media_mode = "audio-only"
+    episode.save_session(session)
+    fake = FailingAcceptanceCloneCast(repo)
+    ask = _inputs(["YES"])
+    with pytest.raises(episode.EpisodeBuildError, match="research-recover"):
+        episode.run_guided_episode_build(str(repo), resume="session_fail", input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    saved = episode.load_session("session_fail")
+    assert saved.failed_stage == "research_acceptance"
+    assert saved.selected_host == "Elias Voss"
+    assert saved.selected_voices["host"] == "voice_d33f7035117f4055b1d46eb150234d6a"
+    assert saved.script_checksum == episode.checksum_file(script)
+    assert not any(call[0] == "episode-create" for call in fake.calls)
+
+
+def test_retry_reuses_existing_episode_and_does_not_create_duplicate(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    managed = session_data_dir / "managed-script.txt"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_bytes(script.read_bytes())
+    session = episode.EpisodeSession(session_id="session_retry", clonecast_repo_path=str(repo.resolve()))
+    session.selected_studio_show = "studio_1"
+    session.requested_duration_seconds = 600
+    session.research_source = {"kind": "pasted_text", "sha256": "r"}
+    session.clonecast_episode_identifiers.update({"research_id": "research_1", "episode_id": "episode_existing", "script_id": "script_1"})
+    session.script_source = {"kind": "file", "path": str(script)}
+    session.script_checksum = episode.checksum_file(script)
+    session.imported_script_checksum = session.script_checksum
+    session.script_preserved_byte_for_byte = True
+    session.artifact_paths["managed_script"] = str(managed)
+    session.selected_host = "Elias Voss"
+    session.selected_voices = {"host": "voice_d33f7035117f4055b1d46eb150234d6a"}
+    session.guests_or_callers = "no"
+    session.media_mode = "audio-only"
+    episode.save_session(session)
+    fake = FakeCloneCast(repo)
+    ask = _inputs(["YES", "yes", "no", "save"])
+    completed = episode.run_guided_episode_build(str(repo), resume="session_retry", input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    assert completed.clonecast_episode_identifiers["episode_id"] == "episode_existing"
+    assert not any(call[0] == "episode-create" for call in fake.calls)
+    assert not any(call[0] == "episode-script-import-approved" for call in fake.calls)
+
+
+def test_voice_profile_id_is_passed_and_host_name_is_not_used(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    fake = FakeCloneCast(repo)
+    ask = _inputs(["YES", "studio_1: Studio One", "10m", "yes", "research body", "yes", str(script), "Elias Voss", "voice_d33f7035117f4055b1d46eb150234d6a", "no", "audio", "yes", "no", "save"])
+    session = episode.run_guided_episode_build(str(repo), input_func=ask, output=lambda _: None, clonecast_factory=lambda _: fake)
+    assign = next(call for call in fake.calls if call[0] == "script-voice-assign")
+    assert assign[assign.index("--voice-profile-id") + 1] == "voice_d33f7035117f4055b1d46eb150234d6a"
+    assert "Elias Voss" not in assign
+    create = next(call for call in fake.calls if call[0] == "episode-create")
+    assert create[create.index("--title") + 1] == "studio_1 Guided Episode"
+    assert session.guests_or_callers == "no"
+    assert session.owner_approval_status == "publishing_locked"
+
+
+def test_host_display_name_cannot_be_voice_profile_id(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    ask = _inputs(["YES", "studio_1", "10m", "yes", "research body", "yes", str(script), "Elias Voss", "Elias Voss"])
+    with pytest.raises(episode.EpisodeBuildError, match="host display name"):
+        episode.run_guided_episode_build(str(repo), input_func=ask, output=lambda _: None, clonecast_factory=FakeCloneCast)
 
 
 def test_missing_research_blocks_before_generation(session_data_dir, tmp_path):

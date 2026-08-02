@@ -156,6 +156,19 @@ def checksum_file(path: Path) -> str:
     return checksum_bytes(path.read_bytes())
 
 
+def normalize_studio_show(value: str) -> str:
+    text = (value or "").strip()
+    if ":" in text:
+        text = text.split(":", 1)[0].strip()
+    return text
+
+
+def _fail_session(session: EpisodeSession, stage: str, message: str) -> None:
+    session.failed_stage = stage
+    session.warnings.append(f"{stage}: {message}")
+    save_session(session)
+
+
 def clonecast_research_document(source: dict[str, Any], data: bytes) -> bytes:
     try:
         body = data.decode("utf-8")
@@ -365,6 +378,114 @@ def _require_json(result: CloneCastResult, stage: str) -> Any:
     return result.json_data
 
 
+def _require_mapping(value: Any, stage: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise EpisodeBuildError(f"CloneCast returned unexpected JSON for {stage}")
+    return value
+
+
+def _show_research(session: EpisodeSession, cli: CloneCastCLI, research_id: str) -> dict[str, Any]:
+    result = cli.checked(["research-show", research_id])
+    _record_command(session, result)
+    return _require_mapping(_require_json(result, "research-show"), "research-show")
+
+
+def _recover_research(session: EpisodeSession, cli: CloneCastCLI, research_id: str) -> dict[str, Any]:
+    result = cli.checked(["research-recover", "--research-id", research_id])
+    _record_command(session, result)
+    payload = _require_json(result, "research-recover")
+    if not isinstance(payload, list) or not payload:
+        raise EpisodeBuildError("CloneCast did not return a research recovery outcome")
+    first = payload[0]
+    if not isinstance(first, dict):
+        raise EpisodeBuildError("CloneCast returned unexpected JSON for research-recover")
+    return first
+
+
+def _canonical_research_id_from_import(outcome: dict[str, Any]) -> str:
+    status = outcome.get("status")
+    if status == "duplicate":
+        duplicate_of = outcome.get("duplicate_of_research_id")
+        if not duplicate_of:
+            raise EpisodeBuildError("CloneCast reported duplicate research without duplicate_of_research_id")
+        return str(duplicate_of)
+    research_id = outcome.get("research_id")
+    if not research_id:
+        raise EpisodeBuildError("CloneCast did not return a research_id")
+    return str(research_id)
+
+
+def _ensure_research_accepted(
+    session: EpisodeSession,
+    cli: CloneCastCLI,
+    output: Callable[[str], None],
+    *,
+    research_path: Path | None = None,
+) -> str:
+    stage = "research_acceptance"
+    try:
+        imported_id = session.clonecast_episode_identifiers.get("imported_research_id")
+        accepted_id = session.clonecast_episode_identifiers.get("research_id")
+        candidate_id = accepted_id or imported_id
+        if not candidate_id:
+            if research_path is None:
+                saved_path = session.artifact_paths.get("managed_research")
+                research_path = Path(str(saved_path)) if saved_path else None
+            if research_path is None or not research_path.is_file():
+                raise EpisodeBuildError("resume cannot continue research acceptance because the managed research file is missing")
+            result = cli.checked(["research-ingest", str(research_path)])
+            _record_command(session, result)
+            payload = _require_json(result, "research-ingest")
+            if not isinstance(payload, list) or not payload:
+                raise EpisodeBuildError("CloneCast did not return a research ingestion outcome")
+            outcome = payload[0]
+            if not isinstance(outcome, dict):
+                raise EpisodeBuildError("CloneCast returned unexpected JSON for research-ingest")
+            session.research_import_status = str(outcome.get("status") or "")
+            if outcome.get("research_id"):
+                session.clonecast_episode_identifiers["imported_research_id"] = str(outcome["research_id"])
+            candidate_id = _canonical_research_id_from_import(outcome)
+            output("Research imported")
+            session.completed_stage = "research_imported"
+            save_session(session)
+
+        record = _show_research(session, cli, candidate_id)
+        output("Research validated")
+        state = record.get("lifecycle_state") or record.get("status")
+        if state == "duplicate":
+            duplicate_of = record.get("duplicate_of_research_id")
+            if not duplicate_of:
+                raise EpisodeBuildError(f"research item is duplicate without canonical accepted item: {candidate_id}")
+            candidate_id = str(duplicate_of)
+            record = _show_research(session, cli, candidate_id)
+            state = record.get("lifecycle_state") or record.get("status")
+        if state != "accepted":
+            recovery = _recover_research(session, cli, candidate_id)
+            session.research_import_status = str(recovery.get("status") or state or "")
+            if recovery.get("status") == "duplicate" and recovery.get("duplicate_of_research_id"):
+                candidate_id = str(recovery["duplicate_of_research_id"])
+            record = _show_research(session, cli, candidate_id)
+            state = record.get("lifecycle_state") or record.get("status")
+        if state != "accepted":
+            raise EpisodeBuildError(f"research acceptance failed for {candidate_id}; final state is {state or 'unknown'}")
+        session.clonecast_episode_identifiers["research_id"] = candidate_id
+        session.research_import_status = "accepted"
+        session.validation_evidence["accepted_research"] = {
+            "research_id": candidate_id,
+            "lifecycle_state": state,
+            "content_hash": record.get("content_hash"),
+            "current_path": record.get("current_path"),
+        }
+        session.failed_stage = None
+        session.completed_stage = "research_accepted"
+        save_session(session)
+        output("Research accepted")
+        return candidate_id
+    except EpisodeBuildError as exc:
+        _fail_session(session, stage, str(exc))
+        raise
+
+
 def _find_output(outputs: list[dict[str, Any]], output_type: str) -> dict[str, Any]:
     for item in outputs:
         if item.get("output_type") == output_type:
@@ -496,6 +617,9 @@ def run_guided_episode_build(
             return regenerate_section(session.session_id, section)
         return session
 
+    if "research-show" not in commands or "research-recover" not in commands:
+        raise EpisodeBuildError("CloneCast compatibility blocker; missing supported commands: research-show, research-recover")
+
     if "radio-studio-list" in commands:
         studios = cli.checked(["radio-studio-list"])
         _record_command(session, studios)
@@ -503,59 +627,66 @@ def run_guided_episode_build(
             output("Available CloneCast studios/shows:")
             for item in studios.json_data:
                 output(f"- {item.get('studio_id')}: {item.get('display_name', item.get('stable_name', 'Untitled'))}")
-    session.selected_studio_show = _prompt("Which CloneCast show/studio should be used? ", input_func)
+    if not session.selected_studio_show:
+        session.selected_studio_show = normalize_studio_show(_prompt("Which CloneCast show/studio should be used? ", input_func))
+    else:
+        session.selected_studio_show = normalize_studio_show(session.selected_studio_show)
     if not session.selected_studio_show:
         raise EpisodeBuildError("studio/show is required")
     session.completed_stage = "studio_selected"
     save_session(session)
 
-    session.requested_duration_seconds = parse_duration(_prompt("How long should the podcast be? ", input_func))
+    if session.requested_duration_seconds is None:
+        session.requested_duration_seconds = parse_duration(_prompt("How long should the podcast be? ", input_func))
     session.completed_stage = "duration_selected"
     save_session(session)
 
-    has_research = _prompt("Do you have research? [yes/no] ", input_func).lower()
-    if has_research not in {"yes", "y"}:
-        raise EpisodeBuildError("research is required before generation can start")
-    research_source, research_bytes = read_source(_prompt("Provide research by file path, @file, or pasted text: ", input_func), label="research")
-    session.research_source = research_source | {"sha256": checksum_bytes(research_bytes)}
-    managed_source_dir().mkdir(parents=True, exist_ok=True)
-    temp_research = managed_source_dir() / f"{session.session_id}-research.json"
-    temp_research.write_bytes(clonecast_research_document(research_source, research_bytes))
-    result = cli.checked(["research-ingest", str(temp_research)])
-    _record_command(session, result)
-    session.research_import_status = "accepted"
-    if isinstance(result.json_data, list) and result.json_data:
-        item = result.json_data[0]
-        session.research_import_status = item.get("status")
-        rid = item.get("research_id") or item.get("duplicate_of_research_id")
-        if rid:
-            session.clonecast_episode_identifiers["research_id"] = rid
-    session.completed_stage = "research_imported"
-    save_session(session)
+    temp_research = None
+    if not session.clonecast_episode_identifiers.get("research_id") or session.failed_stage == "research_acceptance":
+        if not session.research_source:
+            has_research = _prompt("Do you have research? [yes/no] ", input_func).lower()
+            if has_research not in {"yes", "y"}:
+                raise EpisodeBuildError("research is required before generation can start")
+            research_source, research_bytes = read_source(_prompt("Provide research by file path, @file, or pasted text: ", input_func), label="research")
+            session.research_source = research_source | {"sha256": checksum_bytes(research_bytes)}
+            managed_source_dir().mkdir(parents=True, exist_ok=True)
+            temp_research = managed_source_dir() / f"{session.session_id}-research.json"
+            temp_research.write_bytes(clonecast_research_document(research_source, research_bytes))
+            session.artifact_paths["managed_research"] = str(temp_research)
+            save_session(session)
+        _ensure_research_accepted(session, cli, output, research_path=temp_research)
 
-    has_script = _prompt("Do you have a final approved script? [yes/no] ", input_func).lower()
-    if has_script not in {"yes", "y"}:
-        raise EpisodeBuildError("a final approved script is required for this guided operator")
-    script_source, script_bytes = read_source(_prompt("Provide approved script by file path, @file, or pasted text: ", input_func), label="approved script")
-    session.script_source = script_source
-    session.script_checksum = checksum_bytes(script_bytes)
-    managed_source_dir().mkdir(parents=True, exist_ok=True)
     temp_script = managed_source_dir() / f"{session.session_id}-approved-script.txt"
-    temp_script.write_bytes(script_bytes)
-    session.imported_script_checksum = checksum_file(temp_script)
-    session.script_preserved_byte_for_byte = session.script_checksum == session.imported_script_checksum
     if not session.script_preserved_byte_for_byte:
-        raise EpisodeBuildError("approved script checksum changed during AutoCorp import")
-    session.completed_stage = "approved_script_preserved"
-    save_session(session)
+        has_script = _prompt("Do you have a final approved script? [yes/no] ", input_func).lower()
+        if has_script not in {"yes", "y"}:
+            raise EpisodeBuildError("a final approved script is required for this guided operator")
+        script_source, script_bytes = read_source(_prompt("Provide approved script by file path, @file, or pasted text: ", input_func), label="approved script")
+        session.script_source = script_source
+        session.script_checksum = checksum_bytes(script_bytes)
+        managed_source_dir().mkdir(parents=True, exist_ok=True)
+        temp_script.write_bytes(script_bytes)
+        session.artifact_paths["managed_script"] = str(temp_script)
+        session.imported_script_checksum = checksum_file(temp_script)
+        session.script_preserved_byte_for_byte = session.script_checksum == session.imported_script_checksum
+        if not session.script_preserved_byte_for_byte:
+            raise EpisodeBuildError("approved script checksum changed during AutoCorp import")
+        session.completed_stage = "approved_script_preserved"
+        save_session(session)
+    elif not temp_script.is_file() and session.artifact_paths.get("managed_script"):
+        temp_script = Path(str(session.artifact_paths["managed_script"]))
 
-    session.selected_host = _prompt("Which host should be used? ", input_func)
-    voice = _prompt("Which host voice/profile should be used? ", input_func)
+    if not session.selected_host:
+        session.selected_host = _prompt("Which host should be used? ", input_func)
+    voice = session.selected_voices.get("host") or _prompt("Which host voice/profile should be used? ", input_func)
     if not session.selected_host or not voice:
         raise EpisodeBuildError("host and voice are required")
+    if voice == session.selected_host:
+        raise EpisodeBuildError("host display name cannot be used as a voice profile ID")
     session.selected_voices = {"host": voice}
-    session.guests_or_callers = _prompt("Are guests or callers required? Describe them or say no: ", input_func)
-    media = _prompt("Audio-only or video? [audio/video] ", input_func).lower()
+    if session.guests_or_callers is None:
+        session.guests_or_callers = _prompt("Are guests or callers required? Describe them or say no: ", input_func)
+    media = session.media_mode or _prompt("Audio-only or video? [audio/video] ", input_func).lower()
     if media not in {"audio", "audio-only", "video"}:
         raise EpisodeBuildError("media choice must be audio or video")
     session.media_mode = "video" if media == "video" else "audio-only"
@@ -588,50 +719,65 @@ def run_guided_episode_build(
     research_id = session.clonecast_episode_identifiers.get("research_id")
     if not research_id:
         raise EpisodeBuildError("accepted research_id was not returned by CloneCast")
-    episode_result = cli.checked([
-        "episode-create",
-        "--research-id",
-        research_id,
-        "--title",
-        f"{session.selected_studio_show} Guided Episode",
-        "--idempotency-key",
-        f"{session.session_id}:episode-create",
-    ])
-    _record_command(session, episode_result)
-    episode_payload = _require_json(episode_result, "episode-create")
-    episode_id = episode_payload.get("episode_id")
+    _ensure_research_accepted(session, cli, output)
+    episode_id = session.clonecast_episode_identifiers.get("episode_id")
     if not episode_id:
-        raise EpisodeBuildError("CloneCast did not return an episode_id")
-    session.clonecast_episode_identifiers["episode_id"] = episode_id
-    session.completed_stage = "episode_created"
-    save_session(session)
+        episode_result = cli.checked([
+            "episode-create",
+            "--research-id",
+            session.clonecast_episode_identifiers["research_id"],
+            "--title",
+            f"{session.selected_studio_show} Guided Episode",
+            "--idempotency-key",
+            f"{session.session_id}:episode-create",
+        ])
+        _record_command(session, episode_result)
+        episode_payload = _require_json(episode_result, "episode-create")
+        episode_id = episode_payload.get("episode_id")
+        if not episode_id:
+            raise EpisodeBuildError("CloneCast did not return an episode_id")
+        session.clonecast_episode_identifiers["episode_id"] = episode_id
+        session.completed_stage = "episode_created"
+        save_session(session)
 
-    import_result = cli.checked([
-        "episode-script-import-approved",
-        "--episode-id",
-        episode_id,
-        "--script-file",
-        str(temp_script),
-        "--idempotency-key",
-        f"{session.session_id}:approved-script-import",
-        "--default-speaker",
-        "Host",
-    ])
-    _record_command(session, import_result)
-    import_payload = _require_json(import_result, "episode-script-import-approved")
-    if not import_payload.get("preserved_byte_for_byte"):
-        raise EpisodeBuildError("CloneCast did not prove approved script byte preservation")
-    if not import_payload.get("voice_ready"):
-        raise EpisodeBuildError("CloneCast did not report the imported script as voice-ready")
-    session.clonecast_episode_identifiers["script_id"] = import_payload["script_id"]
-    session.script_checksum = import_payload["source_sha256"]
-    session.imported_script_checksum = import_payload["stored_sha256"]
-    session.script_preserved_byte_for_byte = import_payload["source_sha256"] == import_payload["stored_sha256"]
-    if not session.script_preserved_byte_for_byte:
-        raise EpisodeBuildError("CloneCast source and stored approved script checksums differ")
-    session.validation_evidence["script_import"] = import_payload
-    session.completed_stage = "approved_script_imported"
-    save_session(session)
+    script_id = session.clonecast_episode_identifiers.get("script_id")
+    if script_id:
+        import_payload = {
+            "episode_id": episode_id,
+            "script_id": script_id,
+            "source_sha256": session.script_checksum,
+            "stored_sha256": session.imported_script_checksum,
+            "preserved_byte_for_byte": session.script_preserved_byte_for_byte,
+            "voice_ready": True,
+        }
+    else:
+        import_result = cli.checked([
+            "episode-script-import-approved",
+            "--episode-id",
+            episode_id,
+            "--script-file",
+            str(temp_script),
+            "--idempotency-key",
+            f"{session.session_id}:approved-script-import",
+            "--default-speaker",
+            "Host",
+        ])
+        _record_command(session, import_result)
+        import_payload = _require_mapping(_require_json(import_result, "episode-script-import-approved"), "episode-script-import-approved")
+        if not import_payload.get("preserved_byte_for_byte"):
+            raise EpisodeBuildError("CloneCast did not prove approved script byte preservation")
+        if not import_payload.get("voice_ready"):
+            raise EpisodeBuildError("CloneCast did not report the imported script as voice-ready")
+        session.clonecast_episode_identifiers["script_id"] = import_payload["script_id"]
+        session.script_checksum = import_payload["source_sha256"]
+        session.imported_script_checksum = import_payload["stored_sha256"]
+        session.script_preserved_byte_for_byte = import_payload["source_sha256"] == import_payload["stored_sha256"]
+        if not session.script_preserved_byte_for_byte:
+            raise EpisodeBuildError("CloneCast source and stored approved script checksums differ")
+        session.validation_evidence["script_import"] = import_payload
+        session.completed_stage = "approved_script_imported"
+        save_session(session)
+        output("Approved script imported")
 
     assign_result = cli.checked([
         "script-voice-assign",
@@ -645,6 +791,7 @@ def run_guided_episode_build(
     _record_command(session, assign_result)
     session.completed_stage = "voice_assigned"
     save_session(session)
+    output("Voice assigned")
 
     provider_check = cli.checked(["speech-provider-check"])
     _record_command(session, provider_check)
@@ -663,6 +810,7 @@ def run_guided_episode_build(
         "--idempotency-key",
         f"{session.session_id}:speech-render",
     ])
+    output("Audio generation started")
     _record_command(session, speech_result)
     speech_payload = _require_json(speech_result, "speech-render")
     speech_job = speech_payload.get("job", {})
