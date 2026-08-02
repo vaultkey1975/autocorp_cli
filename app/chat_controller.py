@@ -50,7 +50,7 @@ class EngineHandle:
     thread: threading.Thread | None = None
     answer_queue: "queue.Queue[Any]" = field(default_factory=queue.Queue)
     updated_event: threading.Event = field(default_factory=threading.Event)
-    pending_values: dict[str, str] = field(default_factory=dict)
+    pending_values: dict[str, Any] = field(default_factory=dict)
     studios: list[cc.Studio] = field(default_factory=list)
     voices: list[cc.VoiceProfile] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -102,9 +102,7 @@ def classify_prompt(prompt: str) -> str:
     return "freeform"
 
 
-_DURATION_RE = re.compile(
-    r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b|hours?|hrs?|h\b)", re.IGNORECASE
-)
+_DURATION_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(seconds?|secs?|s\b|minutes?|mins?|m\b|hours?|hrs?|h\b)", re.IGNORECASE)
 
 
 def extract_prefill(message: str, studios: list[cc.Studio]) -> dict[str, str]:
@@ -166,7 +164,9 @@ def start_session(
         app.error = {
             "type": "clonecast_unavailable",
             "step": "startup",
-            "safe_message": "CloneCast is not available at the configured path. Open Settings to choose the correct folder.",
+            "safe_message": (
+                "CloneCast is not available at the configured path. Open Settings to choose the correct folder."
+            ),
             "technical_message": str(exc),
             "retry_safe": True,
         }
@@ -199,9 +199,7 @@ def start_session(
     except episode.EpisodeBuildError:
         handle.voices = []
     _register(handle)
-    thread = threading.Thread(
-        target=_worker, args=(session_id, repo_path, None, clonecast_cli_factory), daemon=True
-    )
+    thread = threading.Thread(target=_worker, args=(session_id, repo_path, None, clonecast_cli_factory), daemon=True)
     handle.thread = thread
     thread.start()
     _wait_for_update(handle, session_id, timeout=25)
@@ -223,6 +221,8 @@ def resume_session(app_session_id: str, *, clonecast_cli_factory: Any | None = N
         handle.voices = client.list_voices()
     except episode.EpisodeBuildError:
         pass
+    if _recover_saved_pasted_research(app):
+        app = store.load_session(app_session_id)
     app.status = "running"
     app.error = None
     app.add_message(store.ChatMessage(role="system", kind="text", text="Resuming from the last completed step."))
@@ -349,22 +349,17 @@ def _interpret_answer(
             if not record:
                 raise ChatControllerError("uploaded file not found for this session")
             record.consumed = True
-            handle.pending_values[f"{kind}_value"] = record.managed_path
+            handle.pending_values[f"{kind}_value"] = {
+                "source_type": "uploaded_file",
+                "upload_id": record.upload_id,
+                "path": record.managed_path,
+                "original_filename": record.original_filename,
+                "managed_sha256": record.managed_sha256,
+                "size_bytes": record.size_bytes,
+            }
             return f"Added {record.original_filename}", "yes"
         if text:
-            # Never hand raw pasted text to the guided operator as the raw
-            # prompt answer: it treats a non-"@" answer as a candidate
-            # filesystem path first (Path(value).exists()), and a long
-            # paragraph with no separators becomes one oversized path
-            # component, which can raise OSError: [Errno 36] File name too
-            # long instead of cleanly falling through to "not a path". Write
-            # it to a short, safely-named managed file and hand back that
-            # real path instead.
-            try:
-                managed_path = file_service.save_pasted_text(app.session_id, kind, text)
-            except file_service.FileServiceError as exc:
-                raise ChatControllerError(str(exc)) from exc
-            handle.pending_values[f"{kind}_value"] = managed_path
+            handle.pending_values[f"{kind}_value"] = {"source_type": "pasted_text", "text": str(text)}
             return "(pasted text provided)", "yes"
         raise ChatControllerError("provide a file upload_id or pasted text")
 
@@ -425,6 +420,67 @@ def unlock_voice_advanced(app_session_id: str) -> store.AppSession:
     return app
 
 
+def _recover_saved_pasted_research(app: store.AppSession) -> bool:
+    if not app.episode_session_id:
+        return False
+    try:
+        ep = episode.load_session(app.episode_session_id)
+    except episode.EpisodeBuildError:
+        return False
+    if ep.research_source or ep.clonecast_episode_identifiers.get("research_id"):
+        return False
+    text = _extract_failed_pasted_research(app)
+    if text is None:
+        return False
+    data = text.encode("utf-8")
+    ep.research_source = {
+        "kind": "pasted_text",
+        "source_type": "pasted_text",
+        "text": text,
+        "sha256": episode.checksum_bytes(data),
+        "length_bytes": len(data),
+        "recovered_from": "saved_app_session_error_detail",
+    }
+    ep.failed_stage = "research_acceptance"
+    ep.validation_evidence["research_source"] = {
+        "source_type": "pasted_text",
+        "sha256": ep.research_source["sha256"],
+        "length_bytes": len(data),
+        "recovered_from": "saved_app_session_error_detail",
+    }
+    episode.save_session(ep)
+    app.add_message(
+        store.ChatMessage(
+            role="system",
+            kind="text",
+            text="Recovered the originally pasted research from saved session data.",
+        )
+    )
+    store.save_session(app)
+    return True
+
+
+def _extract_failed_pasted_research(app: store.AppSession) -> str | None:
+    for msg in reversed(app.messages):
+        detail = msg.technical_detail or ""
+        match = re.search(r"File name too long: '(.+)'\Z", detail, re.DOTALL)
+        if match:
+            return match.group(1)
+    for index, msg in enumerate(app.messages):
+        if (
+            msg.role == "assistant"
+            and msg.kind == "question"
+            and msg.input_kind == "file_or_text"
+            and "research" in msg.text.lower()
+        ):
+            for candidate in app.messages[index + 1 :]:
+                if candidate.role == "user" and candidate.kind == "text" and candidate.text != "(pasted text provided)":
+                    return candidate.text
+                if candidate.role == "assistant" and candidate.kind == "question":
+                    break
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Worker thread
 # --------------------------------------------------------------------------- #
@@ -439,7 +495,7 @@ def _worker(
     handle = _get_handle(app_session_id)
     assert handle is not None
 
-    def input_func(prompt: str) -> str:
+    def input_func(prompt: str) -> Any:
         return _resolve_input(app_session_id, handle, prompt)
 
     def output_func(line: str) -> None:
@@ -466,7 +522,7 @@ def _worker(
     except Exception as exc:  # error boundary: never lose the session on an unhandled exception
         _on_worker_error(
             app_session_id,
-            "AutoCorp hit an unexpected internal error. Your session was saved.",
+            "AutoCorp hit an unexpected internal error.",
             technical=f"{type(exc).__name__}: {exc}",
             retry_safe=True,
         )
@@ -479,7 +535,7 @@ class _CancelledSignal(RuntimeError):
     pass
 
 
-def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> str:
+def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> Any:
     kind = classify_prompt(prompt)
     app = store.load_session(app_session_id)
 
@@ -498,21 +554,7 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> st
         return "YES"
 
     if kind == "research_provide":
-        value = handle.pending_values.pop("research_value")
-        if Path(value).suffix.lower() == ".pdf":
-            # PDF text extraction is not implemented yet. Raw PDF bytes must
-            # never be handed to the operator, which would attempt to decode
-            # them as UTF-8 research text - fail clearly here, the single
-            # choke point both the auto-resolved-upload path and the
-            # answered-question path funnel through, rather than letting the
-            # operator's generic UTF-8 decode error surface instead. The
-            # source upload was already marked consumed by whichever path
-            # got us here, so a follow-up .txt upload or pasted text on
-            # Resume is picked up instead of this same PDF again.
-            raise episode.EpisodeBuildError(
-                "PDF text extraction is not yet supported. Please paste the research text or upload a .txt file instead."
-            )
-        return value
+        return handle.pending_values.pop("research_value")
 
     if kind == "script_provide":
         return handle.pending_values.pop("script_value")
@@ -524,7 +566,14 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> st
         unconsumed = next((u for u in app.uploads if u.kind == "research" and not u.consumed), None)
         if unconsumed:
             unconsumed.consumed = True
-            handle.pending_values["research_value"] = unconsumed.managed_path
+            handle.pending_values["research_value"] = {
+                "source_type": "uploaded_file",
+                "upload_id": unconsumed.upload_id,
+                "path": unconsumed.managed_path,
+                "original_filename": unconsumed.original_filename,
+                "managed_sha256": unconsumed.managed_sha256,
+                "size_bytes": unconsumed.size_bytes,
+            }
             store.save_session(app)
             return "yes"
 
@@ -532,7 +581,14 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> st
         unconsumed = next((u for u in app.uploads if u.kind == "script" and not u.consumed), None)
         if unconsumed:
             unconsumed.consumed = True
-            handle.pending_values["script_value"] = unconsumed.managed_path
+            handle.pending_values["script_value"] = {
+                "source_type": "uploaded_file",
+                "upload_id": unconsumed.upload_id,
+                "path": unconsumed.managed_path,
+                "original_filename": unconsumed.original_filename,
+                "managed_sha256": unconsumed.managed_sha256,
+                "size_bytes": unconsumed.size_bytes,
+            }
             store.save_session(app)
             return "yes"
 
@@ -644,7 +700,10 @@ def _build_question(kind: str, prompt: str, app: store.AppSession, handle: Engin
             "field": "start_generation",
             "text": "Everything is set. Start generation now?",
             "input_kind": "buttons",
-            "options": [{"label": "Start Generation", "value": "yes"}, {"label": "Not yet — save for later", "value": "no"}],
+            "options": [
+                {"label": "Start Generation", "value": "yes"},
+                {"label": "Not yet — save for later", "value": "no"},
+            ],
         }
     if kind == "listening_gate_action":
         return {
@@ -659,7 +718,11 @@ def _build_question(kind: str, prompt: str, app: store.AppSession, handle: Engin
             ],
         }
     if kind == "regenerate_section_id":
-        return {"field": "regenerate_section_id", "text": "Which section ID should be regenerated?", "input_kind": "text"}
+        return {
+            "field": "regenerate_section_id",
+            "text": "Which section ID should be regenerated?",
+            "input_kind": "text",
+        }
     return {"field": "freeform", "text": prompt, "input_kind": "text"}
 
 
@@ -751,7 +814,11 @@ def _on_worker_success(app_session_id: str, ep_session: episode.EpisodeSession) 
         app.add_message(store.ChatMessage(role="assistant", kind="text", text="Rejected. Publishing remains locked."))
     elif ep_session.completed_stage == "saved_before_generation":
         app.status = "completed"
-        app.add_message(store.ChatMessage(role="assistant", kind="text", text="Saved. You can resume any time before generation starts."))
+        app.add_message(
+            store.ChatMessage(
+                role="assistant", kind="text", text="Saved. You can resume any time before generation starts."
+            )
+        )
     else:
         app.status = "completed"
         app.add_message(store.ChatMessage(role="assistant", kind="text", text="Saved."))

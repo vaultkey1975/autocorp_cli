@@ -176,7 +176,7 @@ def clonecast_research_document(source: dict[str, Any], data: bytes) -> bytes:
     except UnicodeDecodeError as exc:
         raise EpisodeBuildError("research must be valid UTF-8 for CloneCast ingestion") from exc
     title = "AutoCorp Guided Research"
-    if source.get("kind") == "file" and source.get("path"):
+    if source.get("source_type") == "uploaded_file" and source.get("path"):
         title = f"AutoCorp Guided Research: {Path(str(source['path'])).name}"
     payload = {
         "title": title,
@@ -187,11 +187,20 @@ def clonecast_research_document(source: dict[str, Any], data: bytes) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8")
 
 
+def materialize_pasted_research(session: EpisodeSession, source: dict[str, Any], data: bytes) -> Path:
+    managed_source_dir().mkdir(parents=True, exist_ok=True)
+    target = managed_source_dir() / f"{session.session_id}-research.json"
+    target.write_bytes(clonecast_research_document(source, data))
+    return target
+
+
 def parse_duration(value: str) -> int:
     text = (value or "").strip().lower()
     if not text:
         raise ValueError("duration is required")
-    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?", text)
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?", text
+    )
     if not match:
         raise ValueError("duration must look like 600s, 10m, or 1h")
     amount = float(match.group(1))
@@ -203,28 +212,89 @@ def parse_duration(value: str) -> int:
     return seconds
 
 
-def read_source(value: str, *, label: str) -> tuple[dict[str, Any], bytes]:
-    raw = value or ""
+def _read_uploaded_source(source: dict[str, Any], *, label: str) -> tuple[dict[str, Any], bytes]:
+    raw_path = source.get("path")
+    if not raw_path:
+        raise EpisodeBuildError(f"{label} uploaded file path is missing")
+    path = Path(str(raw_path)).expanduser().resolve()
+    if not path.is_file():
+        raise EpisodeBuildError(f"{label} file does not exist: {path}")
+    data = path.read_bytes()
+    if not data.strip():
+        raise EpisodeBuildError(f"{label} file is empty: {path}")
+    metadata = {
+        "kind": "file",
+        "source_type": "uploaded_file",
+        "path": str(path),
+        "sha256": checksum_bytes(data),
+    }
+    for key in ("upload_id", "original_filename", "size_bytes", "managed_sha256"):
+        if key in source:
+            metadata[key] = source[key]
+    return metadata, data
+
+
+def _read_pasted_source(source: dict[str, Any], *, label: str) -> tuple[dict[str, Any], bytes]:
+    text = source.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise EpisodeBuildError(f"{label} text is required")
+    data = text.encode("utf-8")
+    checksum = checksum_bytes(data)
+    return {
+        "kind": "pasted_text",
+        "source_type": "pasted_text",
+        "text": text,
+        "sha256": checksum,
+        "length_bytes": len(data),
+    }, data
+
+
+def _raw_input_existing_path(raw: str) -> Path | None:
+    path = Path(raw).expanduser()
+    try:
+        return path if path.exists() else None
+    except OSError:
+        return None
+
+
+def read_source(value: Any, *, label: str) -> tuple[dict[str, Any], bytes]:
+    if isinstance(value, dict):
+        source_type = value.get("source_type")
+        if source_type == "pasted_text":
+            return _read_pasted_source(value, label=label)
+        if source_type == "uploaded_file":
+            return _read_uploaded_source(value, label=label)
+        raise EpisodeBuildError(f"{label} input source type is missing or unsupported")
+
+    raw = str(value or "")
     if raw.startswith("@"):
         path = Path(raw[1:]).expanduser().resolve()
     else:
-        path = Path(raw).expanduser()
-    if raw.startswith("@") or (raw and path.exists()):
+        path = _raw_input_existing_path(raw)
+    if raw.startswith("@") or path is not None:
         path = path.resolve()
         if not path.is_file():
             raise EpisodeBuildError(f"{label} file does not exist: {path}")
         data = path.read_bytes()
         if not data.strip():
             raise EpisodeBuildError(f"{label} file is empty: {path}")
-        return {"kind": "file", "path": str(path)}, data
+        return {"kind": "file", "source_type": "uploaded_file", "path": str(path), "sha256": checksum_bytes(data)}, data
     data = raw.encode("utf-8")
     if not data.strip():
         raise EpisodeBuildError(f"{label} text is required")
-    return {"kind": "pasted_text", "sha256": checksum_bytes(data)}, data
+    return {
+        "kind": "pasted_text",
+        "source_type": "pasted_text",
+        "text": raw,
+        "sha256": checksum_bytes(data),
+        "length_bytes": len(data),
+    }, data
 
 
 class CloneCastCLI:
-    def __init__(self, repo: Path, *, runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, timeout: int = 1800):
+    def __init__(
+        self, repo: Path, *, runner: Callable[..., subprocess.CompletedProcess[str]] | None = None, timeout: int = 1800
+    ):
         self.repo = repo.expanduser().resolve()
         self.runner = runner or subprocess.run
         self.timeout = timeout
@@ -251,7 +321,9 @@ class CloneCastCLI:
         timeout: int | float | None = None,
     ) -> CloneCastResult:
         if any(arg in PUBLISH_COMMANDS for arg in args) and not allow_publish:
-            raise EpisodeBuildError("AutoCorp blocked a publishing command; publishing requires a separate explicit command")
+            raise EpisodeBuildError(
+                "AutoCorp blocked a publishing command; publishing requires a separate explicit command"
+            )
         command = [sys.executable, "-m", "clonecast.cli", *args]
         completed = self.runner(
             command,
@@ -280,9 +352,7 @@ class CloneCastCLI:
         result = self.run(args, input_text=input_text, timeout=timeout)
         if result.returncode != 0:
             raise EpisodeBuildError(
-                "CloneCast command failed: "
-                + " ".join(args)
-                + f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                "CloneCast command failed: " + " ".join(args) + f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         return result
 
@@ -306,7 +376,9 @@ class CloneCastCLI:
         if self.runner is not subprocess.run:
             return self.checked(args, timeout=timeout)
         if any(arg in PUBLISH_COMMANDS for arg in args):
-            raise EpisodeBuildError("AutoCorp blocked a publishing command; publishing requires a separate explicit command")
+            raise EpisodeBuildError(
+                "AutoCorp blocked a publishing command; publishing requires a separate explicit command"
+            )
 
         command = [sys.executable, "-m", "clonecast.cli", *args]
         started = time.monotonic()
@@ -359,9 +431,7 @@ class CloneCastCLI:
         result = CloneCastResult(command, proc.returncode, stdout, stderr, parsed)
         if result.returncode != 0:
             raise EpisodeBuildError(
-                "CloneCast command failed: "
-                + " ".join(args)
-                + f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                "CloneCast command failed: " + " ".join(args) + f"\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         return result
 
@@ -420,15 +490,17 @@ def _ensure_voice_assigned(
             "AutoCorp will not overwrite an existing CloneCast voice assignment silently."
         )
 
-    assign_result = cli.checked([
-        "script-voice-assign",
-        "--script-id",
-        script_id,
-        "--speaker",
-        speaker,
-        "--voice-profile-id",
-        voice_profile_id,
-    ])
+    assign_result = cli.checked(
+        [
+            "script-voice-assign",
+            "--script-id",
+            script_id,
+            "--speaker",
+            speaker,
+            "--voice-profile-id",
+            voice_profile_id,
+        ]
+    )
     _record_command(session, assign_result)
     session.validation_evidence["voice_assignment"] = {
         "status": "created",
@@ -439,8 +511,9 @@ def _ensure_voice_assigned(
     save_session(session)
 
 
-def _prompt(prompt: str, input_func: Callable[[str], str]) -> str:
-    return input_func(prompt).strip()
+def _prompt(prompt: str, input_func: Callable[[str], Any]) -> Any:
+    value = input_func(prompt)
+    return value.strip() if isinstance(value, str) else value
 
 
 def approve_for_publishing(session_id: str, *, owner: str = "owner") -> EpisodeSession:
@@ -453,7 +526,11 @@ def approve_for_publishing(session_id: str, *, owner: str = "owner") -> EpisodeS
     session.review_status = "approved"
     session.owner_approval_status = "publishing_eligible"
     session.publishing_lock_reason = PUBLISHING_ELIGIBLE_REASON
-    session.validation_evidence["owner_approval"] = {"owner": owner, "approved_at": _now(), "final_audio": str(final_audio)}
+    session.validation_evidence["owner_approval"] = {
+        "owner": owner,
+        "approved_at": _now(),
+        "final_audio": str(final_audio),
+    }
     session.completed_stage = "owner_approved"
     save_session(session)
     return session
@@ -480,7 +557,9 @@ def regenerate_section(session_id: str, section_id: str) -> EpisodeSession:
     rejected = set(session.validation_evidence.get("rejected_sections", []))
     if section_id not in failed and section_id not in rejected:
         raise EpisodeBuildError("only failed or rejected sections can be regenerated")
-    session.validation_evidence.setdefault("regeneration_requests", []).append({"section_id": section_id, "requested_at": _now()})
+    session.validation_evidence.setdefault("regeneration_requests", []).append(
+        {"section_id": section_id, "requested_at": _now()}
+    )
     session.completed_stage = "section_regeneration_requested"
     save_session(session)
     return session
@@ -581,8 +660,23 @@ def _ensure_research_accepted(
             if research_path is None:
                 saved_path = session.artifact_paths.get("managed_research")
                 research_path = Path(str(saved_path)) if saved_path else None
+            if (research_path is None or not research_path.is_file()) and session.research_source.get(
+                "source_type"
+            ) == "pasted_text":
+                research_source, research_bytes = _read_pasted_source(session.research_source, label="research")
+                research_path = materialize_pasted_research(session, research_source, research_bytes)
+                session.research_source = research_source
+                session.artifact_paths["managed_research"] = str(research_path)
+                session.validation_evidence["research_source"] = {
+                    "source_type": "pasted_text",
+                    "sha256": research_source["sha256"],
+                    "length_bytes": len(research_bytes),
+                }
+                save_session(session)
             if research_path is None or not research_path.is_file():
-                raise EpisodeBuildError("resume cannot continue research acceptance because the managed research file is missing")
+                raise EpisodeBuildError(
+                    "resume cannot continue research acceptance because the managed research file is missing"
+                )
             result = cli.checked(["research-ingest", str(research_path)])
             _record_command(session, result)
             payload = _require_json(result, "research-ingest")
@@ -617,7 +711,9 @@ def _ensure_research_accepted(
             record = _show_research(session, cli, candidate_id)
             state = record.get("lifecycle_state") or record.get("status")
         if state != "accepted":
-            raise EpisodeBuildError(f"research acceptance failed for {candidate_id}; final state is {state or 'unknown'}")
+            raise EpisodeBuildError(
+                f"research acceptance failed for {candidate_id}; final state is {state or 'unknown'}"
+            )
         session.clonecast_episode_identifiers["research_id"] = candidate_id
         session.research_import_status = "accepted"
         session.validation_evidence["accepted_research"] = {
@@ -686,20 +782,24 @@ def _record_mastering_result(session: EpisodeSession, payload: dict[str, Any]) -
     session.validation_evidence["output_lra_lu"] = measurements.get("output_lra_lu", job.get("output_lra_lu"))
     session.validation_evidence["mastering_status"] = job.get("status")
     session.validation_evidence["mastering_validation"] = validation
-    session.validation_evidence["mastering_retry_count"] = int(session.validation_evidence.get("mastering_retry_count", 0))
+    session.validation_evidence["mastering_retry_count"] = int(
+        session.validation_evidence.get("mastering_retry_count", 0)
+    )
 
 
 def _master_existing_episode(session: EpisodeSession, cli: CloneCastCLI) -> None:
     audio_job_id = session.clonecast_episode_identifiers.get("episode_audio_job_id")
     if not audio_job_id:
         raise EpisodeBuildError("resume cannot master because episode_audio_job_id is missing")
-    result = cli.checked([
-        "episode-audio-master",
-        "--episode-audio-job-id",
-        audio_job_id,
-        "--idempotency-key",
-        f"{session.session_id}:episode-audio-master:{session.validation_evidence.get('mastering_retry_count', 0)}",
-    ])
+    result = cli.checked(
+        [
+            "episode-audio-master",
+            "--episode-audio-job-id",
+            audio_job_id,
+            "--idempotency-key",
+            f"{session.session_id}:episode-audio-master:{session.validation_evidence.get('mastering_retry_count', 0)}",
+        ]
+    )
     _record_command(session, result)
     _record_mastering_result(session, _require_json(result, "episode-audio-master"))
     session.completed_stage = "episode_mastered"
@@ -808,7 +908,7 @@ def run_guided_episode_build(
     repo: str,
     *,
     resume: str | None = None,
-    input_func: Callable[[str], str] = input,
+    input_func: Callable[[str], Any] = input,
     output: Callable[[str], None] = print,
     clonecast_factory: Callable[[Path], CloneCastCLI] | None = None,
 ) -> EpisodeSession:
@@ -820,7 +920,9 @@ def run_guided_episode_build(
         if Path(session.clonecast_repo_path).resolve() != Path(repo).expanduser().resolve():
             raise EpisodeBuildError("resume session belongs to a different CloneCast repository")
     else:
-        session = EpisodeSession(session_id=f"acce_{uuid.uuid4().hex}", clonecast_repo_path=str(Path(repo).expanduser().resolve()))
+        session = EpisodeSession(
+            session_id=f"acce_{uuid.uuid4().hex}", clonecast_repo_path=str(Path(repo).expanduser().resolve())
+        )
         save_session(session)
 
     confirmation = _prompt(f"Confirm CloneCast target {session.clonecast_repo_path} by typing YES: ", input_func)
@@ -837,7 +939,11 @@ def run_guided_episode_build(
     session.completed_stage = "clonecast_discovered"
     save_session(session)
 
-    if resume and session.clonecast_episode_identifiers.get("episode_audio_job_id") and session.validation_evidence.get("mastering_status") != "completed":
+    if (
+        resume
+        and session.clonecast_episode_identifiers.get("episode_audio_job_id")
+        and session.validation_evidence.get("mastering_status") != "completed"
+    ):
         if "episode-audio-master" not in commands:
             raise EpisodeBuildError("CloneCast compatibility blocker; missing supported command: episode-audio-master")
         _master_existing_episode(session, cli)
@@ -866,7 +972,9 @@ def run_guided_episode_build(
         return session
 
     if "research-show" not in commands or "research-recover" not in commands:
-        raise EpisodeBuildError("CloneCast compatibility blocker; missing supported commands: research-show, research-recover")
+        raise EpisodeBuildError(
+            "CloneCast compatibility blocker; missing supported commands: research-show, research-recover"
+        )
 
     if "radio-studio-list" in commands:
         studios = cli.checked(["radio-studio-list"])
@@ -876,7 +984,9 @@ def run_guided_episode_build(
             for item in studios.json_data:
                 output(f"- {item.get('studio_id')}: {item.get('display_name', item.get('stable_name', 'Untitled'))}")
     if not session.selected_studio_show:
-        session.selected_studio_show = normalize_studio_show(_prompt("Which CloneCast show/studio should be used? ", input_func))
+        session.selected_studio_show = normalize_studio_show(
+            _prompt("Which CloneCast show/studio should be used? ", input_func)
+        )
     else:
         session.selected_studio_show = normalize_studio_show(session.selected_studio_show)
     if not session.selected_studio_show:
@@ -895,12 +1005,20 @@ def run_guided_episode_build(
             has_research = _prompt("Do you have research? [yes/no] ", input_func).lower()
             if has_research not in {"yes", "y"}:
                 raise EpisodeBuildError("research is required before generation can start")
-            research_source, research_bytes = read_source(_prompt("Provide research by file path, @file, or pasted text: ", input_func), label="research")
-            session.research_source = research_source | {"sha256": checksum_bytes(research_bytes)}
-            managed_source_dir().mkdir(parents=True, exist_ok=True)
-            temp_research = managed_source_dir() / f"{session.session_id}-research.json"
-            temp_research.write_bytes(clonecast_research_document(research_source, research_bytes))
+            research_source, research_bytes = read_source(
+                _prompt("Provide research by file path, @file, or pasted text: ", input_func), label="research"
+            )
+            session.research_source = research_source
+            if research_source.get("source_type") == "pasted_text":
+                temp_research = materialize_pasted_research(session, research_source, research_bytes)
+            else:
+                temp_research = Path(str(research_source["path"]))
             session.artifact_paths["managed_research"] = str(temp_research)
+            session.validation_evidence["research_source"] = {
+                "source_type": research_source.get("source_type"),
+                "sha256": research_source.get("sha256"),
+                "length_bytes": len(research_bytes),
+            }
             save_session(session)
         _ensure_research_accepted(session, cli, output, research_path=temp_research)
 
@@ -909,7 +1027,10 @@ def run_guided_episode_build(
         has_script = _prompt("Do you have a final approved script? [yes/no] ", input_func).lower()
         if has_script not in {"yes", "y"}:
             raise EpisodeBuildError("a final approved script is required for this guided operator")
-        script_source, script_bytes = read_source(_prompt("Provide approved script by file path, @file, or pasted text: ", input_func), label="approved script")
+        script_source, script_bytes = read_source(
+            _prompt("Provide approved script by file path, @file, or pasted text: ", input_func),
+            label="approved script",
+        )
         session.script_source = script_source
         session.script_checksum = checksum_bytes(script_bytes)
         managed_source_dir().mkdir(parents=True, exist_ok=True)
@@ -971,15 +1092,17 @@ def run_guided_episode_build(
     _ensure_research_accepted(session, cli, output)
     episode_id = session.clonecast_episode_identifiers.get("episode_id")
     if not episode_id:
-        episode_result = cli.checked([
-            "episode-create",
-            "--research-id",
-            session.clonecast_episode_identifiers["research_id"],
-            "--title",
-            f"{session.selected_studio_show} Guided Episode",
-            "--idempotency-key",
-            f"{session.session_id}:episode-create",
-        ])
+        episode_result = cli.checked(
+            [
+                "episode-create",
+                "--research-id",
+                session.clonecast_episode_identifiers["research_id"],
+                "--title",
+                f"{session.selected_studio_show} Guided Episode",
+                "--idempotency-key",
+                f"{session.session_id}:episode-create",
+            ]
+        )
         _record_command(session, episode_result)
         episode_payload = _require_json(episode_result, "episode-create")
         episode_id = episode_payload.get("episode_id")
@@ -1000,19 +1123,23 @@ def run_guided_episode_build(
             "voice_ready": True,
         }
     else:
-        import_result = cli.checked([
-            "episode-script-import-approved",
-            "--episode-id",
-            episode_id,
-            "--script-file",
-            str(temp_script),
-            "--idempotency-key",
-            f"{session.session_id}:approved-script-import",
-            "--default-speaker",
-            "Host",
-        ])
+        import_result = cli.checked(
+            [
+                "episode-script-import-approved",
+                "--episode-id",
+                episode_id,
+                "--script-file",
+                str(temp_script),
+                "--idempotency-key",
+                f"{session.session_id}:approved-script-import",
+                "--default-speaker",
+                "Host",
+            ]
+        )
         _record_command(session, import_result)
-        import_payload = _require_mapping(_require_json(import_result, "episode-script-import-approved"), "episode-script-import-approved")
+        import_payload = _require_mapping(
+            _require_json(import_result, "episode-script-import-approved"), "episode-script-import-approved"
+        )
         if not import_payload.get("preserved_byte_for_byte"):
             raise EpisodeBuildError("CloneCast did not prove approved script byte preservation")
         if not import_payload.get("voice_ready"):
@@ -1055,7 +1182,9 @@ def run_guided_episode_build(
     if not speech_job_id:
         raise EpisodeBuildError("CloneCast did not return a speech render job_id")
     session.clonecast_episode_identifiers["speech_job_id"] = speech_job_id
-    session.artifact_paths["sections"] = [item.get("output_path") for item in speech_payload.get("segments", []) if item.get("output_path")]
+    session.artifact_paths["sections"] = [
+        item.get("output_path") for item in speech_payload.get("segments", []) if item.get("output_path")
+    ]
     session.completed_stage = "speech_rendered"
     save_session(session)
 
@@ -1065,15 +1194,17 @@ def run_guided_episode_build(
     session.completed_stage = "speech_validated"
     save_session(session)
 
-    audio_result = cli.checked([
-        "episode-audio-assemble",
-        "--script-id",
-        import_payload["script_id"],
-        "--speech-job-id",
-        speech_job_id,
-        "--idempotency-key",
-        f"{session.session_id}:episode-audio-assemble",
-    ])
+    audio_result = cli.checked(
+        [
+            "episode-audio-assemble",
+            "--script-id",
+            import_payload["script_id"],
+            "--speech-job-id",
+            speech_job_id,
+            "--idempotency-key",
+            f"{session.session_id}:episode-audio-assemble",
+        ]
+    )
     _record_command(session, audio_result)
     audio_payload = _require_json(audio_result, "episode-audio-assemble")
     audio_job = audio_payload.get("job", {})
