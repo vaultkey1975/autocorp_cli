@@ -1,0 +1,42 @@
+<title>AutoCorp Chat</title>
+<link rel="stylesheet" href="/static/app.css">
+<div id="app">
+  <aside id="sidebar">
+    <div id="brand">
+      <div id="brand-mark">AC</div>
+      <div id="brand-name">AutoCorp</div>
+    </div>
+    <button id="new-session-btn" class="primary-btn">New session</button>
+    <div class="sidebar-section">
+      <h3>Recent sessions</h3>
+      <div id="session-list"></div>
+    </div>
+    <div class="sidebar-section" id="current-session-box">
+      <h3>Current session</h3>
+      <div id="current-session-info">No active session</div>
+    </div>
+    <div class="sidebar-section">
+      <h3>System status</h3>
+      <button id="status-toggle-btn" class="secondary-btn">Show status</button>
+      <div id="status-panel" class="hidden"></div>
+    </div>
+    <div class="sidebar-section" id="publishing-lock-box">
+      <span id="publishing-lock-indicator">Publishing locked</span>
+    </div>
+  </aside>
+  <main id="main">
+    <div id="workflow-summary" class="hidden"></div>
+    <div id="chat-log"></div>
+    <div id="bottom-bar">
+      <div id="drop-zone">Drag and drop a research or script file here, or use the file button.</div>
+      <form id="chat-form">
+        <input id="file-input" type="file" style="display:none">
+        <button type="button" id="file-btn" class="secondary-btn" title="Upload a file">Upload</button>
+        <input id="text-input" type="text" placeholder="Type a message..." autocomplete="off">
+        <button type="submit" id="send-btn" class="primary-btn">Send</button>
+        <button type="button" id="cancel-btn" class="secondary-btn hidden">Cancel</button>
+      </form>
+    </div>
+  </main>
+</div>
+<script src="/static/app.js"></script>

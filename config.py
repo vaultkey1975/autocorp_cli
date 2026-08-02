@@ -134,3 +134,34 @@ def ensure_dirs() -> None:
     """Create the runtime directories if they do not exist."""
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+
+# --------------------------------------------------------------------------- #
+# AutoCorp Chat App (Phase 1) — local desktop chat application
+# --------------------------------------------------------------------------- #
+# Bind address for the local FastAPI app. Loopback-only by default; external
+# binding requires an explicit, non-default host to be passed at startup.
+APP_HOST = os.environ.get("AUTOCORP_APP_HOST", "127.0.0.1")
+APP_PORT = int(os.environ.get("AUTOCORP_APP_PORT", "8787"))
+
+# Default CloneCast repository the guided episode workflow targets. Can be
+# overridden per-request via Settings in the UI, but this is the supported
+# default for the current machine.
+CLONECAST_REPO_PATH = os.environ.get("AUTOCORP_CLONECAST_REPO", os.path.expanduser("~/clonecast"))
+
+APP_SESSIONS_DIRNAME = "autocorp_app_sessions"
+APP_UPLOADS_DIRNAME = "autocorp_app_uploads"
+
+APP_UPLOAD_MAX_BYTES = int(os.environ.get("AUTOCORP_APP_UPLOAD_MAX_BYTES", str(200 * 1024 * 1024)))
+
+APP_LOG_DIR = os.path.join(DATA_DIR, "autocorp_app_logs")
+APP_PID_FILE = os.path.join(DATA_DIR, "autocorp_app.pid")
+APP_LOCK_FILE = os.path.join(DATA_DIR, "autocorp_app.lock")
+
+
+def app_sessions_dir() -> str:
+    return os.path.join(DATA_DIR, APP_SESSIONS_DIRNAME)
+
+
+def app_uploads_dir() -> str:
+    return os.path.join(DATA_DIR, APP_UPLOADS_DIRNAME)

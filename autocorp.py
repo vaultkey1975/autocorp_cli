@@ -184,6 +184,28 @@ def cmd_episode_build(args) -> int:
         return 2
 
 
+def cmd_app(args) -> int:
+    """Start the AutoCorp Chat App: local FastAPI server + browser chat UI
+    over the repaired guided CloneCast episode operator. Loopback-only by
+    default; see app/server.py and app/launcher.py."""
+    import uvicorn
+
+    host = getattr(args, "host", None) or config.APP_HOST
+    port = getattr(args, "port", None) or config.APP_PORT
+    if host != "127.0.0.1" and not getattr(args, "allow_external", False):
+        print(
+            "App Error: binding to a non-loopback host requires --allow-external "
+            "(external network exposure is refused by default)",
+            file=sys.stderr,
+        )
+        return 2
+    from app.server import app as fastapi_app
+
+    print(f"AutoCorp Chat starting on http://{host}:{port}")
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+    return 0
+
+
 def cmd_test_plan(args) -> int:
     """Fast Pytest Engine: read-only test plan. Never runs tests, never
     writes to the target repository - see brains/fast_pytest_engine.py."""
@@ -1399,6 +1421,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--regenerate-section", default=None, metavar="SECTION_ID",
                     help="record regeneration of one failed or rejected section")
     sp.set_defaults(func=cmd_episode_build)
+
+    sp = sub.add_parser("app",
+                        help="start the AutoCorp Chat App (local FastAPI server + browser UI)")
+    sp.add_argument("--host", default=None, metavar="HOST",
+                    help="bind host (default: 127.0.0.1)")
+    sp.add_argument("--port", default=None, type=int, metavar="PORT",
+                    help="bind port (default: 8787)")
+    sp.add_argument("--allow-external", action="store_true",
+                    help="required to bind a non-loopback host")
+    sp.set_defaults(func=cmd_app)
 
     sp = sub.add_parser("test-plan",
                         help="Fast Pytest Engine: read-only test plan (runs nothing)")

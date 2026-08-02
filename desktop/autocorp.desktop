@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AutoCorp
+Comment=Local AutoCorp chat app for CloneCast episode production
+Exec=/home/larry/autocorp_cli/scripts/start_autocorp_app.sh
+Icon=/home/larry/autocorp_cli/desktop/autocorp.png
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=true
