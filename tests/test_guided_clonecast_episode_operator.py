@@ -25,6 +25,7 @@ class FakeCloneCast(episode.CloneCastCLI):
         self.research_states = {"research_1": "accepted"}
         self.duplicate_of = {}
         self.created_episodes = 0
+        self.voice_assignments: dict[str, list[dict[str, str]]] = {}
 
     def validate_repo(self):
         episode.CloneCastCLI(self.repo).validate_repo()
@@ -71,8 +72,26 @@ class FakeCloneCast(episode.CloneCastCLI):
                 "voice_ready": True,
             }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
+        if args and args[0] == "script-voice-list":
+            return episode.CloneCastResult(
+                ["python", "-m", "clonecast.cli", *args],
+                0,
+                "[]",
+                "",
+                self.voice_assignments.get(args[1], []),
+            )
         if args and args[0] == "script-voice-assign":
-            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"speaker": "Host"})
+            script_id = args[args.index("--script-id") + 1]
+            speaker = args[args.index("--speaker") + 1]
+            voice_profile_id = args[args.index("--voice-profile-id") + 1]
+            assignment = {
+                "assignment_id": f"assign_{len(self.voice_assignments.get(script_id, [])) + 1}",
+                "script_id": script_id,
+                "speaker": speaker,
+                "voice_profile_id": voice_profile_id,
+            }
+            self.voice_assignments.setdefault(script_id, []).append(assignment)
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", assignment)
         if args and args[0] == "speech-provider-check":
             data = {"available": True, "provider": "chatterbox-turbo", "preflight": {"may_begin": True, "free_vram_mib": 12000}}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
@@ -125,6 +144,7 @@ class FakeCloneCast(episode.CloneCastCLI):
             "research-recover",
             "episode-create",
             "episode-script-import-approved",
+            "script-voice-list",
             "script-voice-assign",
             "speech-provider-check",
             "speech-render",
@@ -339,6 +359,95 @@ def test_retry_reuses_existing_episode_and_does_not_create_duplicate(session_dat
     assert completed.clonecast_episode_identifiers["episode_id"] == "episode_existing"
     assert not any(call[0] == "episode-create" for call in fake.calls)
     assert not any(call[0] == "episode-script-import-approved" for call in fake.calls)
+
+
+def _saved_ready_to_render_session(repo: Path, script: Path, *, voice_profile_id: str) -> episode.EpisodeSession:
+    managed = episode.managed_source_dir() / f"session_resume_voice-{script.name}"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_bytes(script.read_bytes())
+    session = episode.EpisodeSession(session_id="session_resume_voice", clonecast_repo_path=str(repo.resolve()))
+    session.selected_studio_show = "studio_1"
+    session.requested_duration_seconds = 600
+    session.research_source = {"kind": "pasted_text", "sha256": "r"}
+    session.clonecast_episode_identifiers.update(
+        {"research_id": "research_1", "episode_id": "episode_existing", "script_id": "script_1"}
+    )
+    session.script_source = {"kind": "file", "path": str(script)}
+    session.script_checksum = episode.checksum_file(script)
+    session.imported_script_checksum = session.script_checksum
+    session.script_preserved_byte_for_byte = True
+    session.artifact_paths["managed_script"] = str(managed)
+    session.selected_host = "Elias Voss"
+    session.selected_voices = {"host": voice_profile_id}
+    session.guests_or_callers = "no"
+    session.media_mode = "audio-only"
+    episode.save_session(session)
+    return session
+
+
+def test_resume_reuses_identical_existing_voice_assignment_and_continues_to_speech_render(
+    session_data_dir, tmp_path
+):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    voice_id = "voice_d33f7035117f4055b1d46eb150234d6a"
+    _saved_ready_to_render_session(repo, script, voice_profile_id=voice_id)
+    fake = FakeCloneCast(repo)
+    fake.voice_assignments["script_1"] = [
+        {
+            "assignment_id": "assign_existing",
+            "script_id": "script_1",
+            "speaker": "Host",
+            "voice_profile_id": voice_id,
+        }
+    ]
+    ask = _inputs(["YES", "yes", "no", "save"])
+
+    completed = episode.run_guided_episode_build(
+        str(repo),
+        resume="session_resume_voice",
+        input_func=ask,
+        output=lambda _: None,
+        clonecast_factory=lambda _: fake,
+    )
+
+    assert completed.completed_stage == "listening_gate"
+    assert completed.validation_evidence["voice_assignment"]["status"] == "already_assigned"
+    assert not any(call[0] == "script-voice-assign" for call in fake.calls)
+    assert len(fake.voice_assignments["script_1"]) == 1
+    assert any(call[0] == "speech-render" for call in fake.calls)
+
+
+def test_resume_stops_on_conflicting_existing_voice_assignment(session_data_dir, tmp_path):
+    repo = _repo(tmp_path)
+    script = tmp_path / "script.txt"
+    script.write_text("Host: Approved.\n", encoding="utf-8")
+    requested_voice = "voice_d33f7035117f4055b1d46eb150234d6a"
+    _saved_ready_to_render_session(repo, script, voice_profile_id=requested_voice)
+    fake = FakeCloneCast(repo)
+    fake.voice_assignments["script_1"] = [
+        {
+            "assignment_id": "assign_existing",
+            "script_id": "script_1",
+            "speaker": "Host",
+            "voice_profile_id": "voice_different_existing",
+        }
+    ]
+    ask = _inputs(["YES", "yes"])
+
+    with pytest.raises(episode.EpisodeBuildError, match="different voice assigned"):
+        episode.run_guided_episode_build(
+            str(repo),
+            resume="session_resume_voice",
+            input_func=ask,
+            output=lambda _: None,
+            clonecast_factory=lambda _: fake,
+        )
+
+    assert not any(call[0] == "script-voice-assign" for call in fake.calls)
+    assert not any(call[0] == "speech-render" for call in fake.calls)
+    assert len(fake.voice_assignments["script_1"]) == 1
 
 
 def test_15_minute_speech_render_timeout_exceeds_old_fixed_timeout(session_data_dir, tmp_path):

@@ -55,17 +55,32 @@ body {
 .primary-btn { background: var(--accent); color: white; }
 .secondary-btn { background: #262b36; color: var(--text); }
 .primary-btn:disabled, .secondary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.danger-btn { color: #ffb4b4; border: 1px solid #573030; }
 
 .sidebar-section h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; color: var(--muted); }
+#delete-failed-btn { width: 100%; margin-bottom: 8px; font-size: 12px; padding: 7px 8px; }
 
 .session-item {
   padding: 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
-  display: flex; justify-content: space-between; gap: 6px;
+  display: flex; justify-content: space-between; gap: 8px; align-items: center;
 }
 .session-item:hover { background: #202531; }
 .session-item.active { background: #26304a; }
+.session-item > span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.session-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .session-status { font-size: 11px; color: var(--muted); }
 .session-status.failed { color: var(--danger); }
+.icon-btn {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+}
+.danger-session-btn { color: #ffb4b4; border-color: #573030; }
+.danger-session-btn:hover { background: #3a1e1e; }
 
 #publishing-lock-box {
   margin-top: auto;

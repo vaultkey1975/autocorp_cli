@@ -34,6 +34,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         self.calls: list[list[str]] = []
         self.research_states = {"research_1": "accepted"}
         self.duplicate_of: dict[str, str] = {}
+        self.voice_assignments: dict[str, list[dict[str, str]]] = {}
 
     def validate_repo(self):
         super().validate_repo()
@@ -47,6 +48,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             "research-recover",
             "episode-create",
             "episode-script-import-approved",
+            "script-voice-list",
             "script-voice-assign",
             "speech-provider-check",
             "speech-render",
@@ -138,8 +140,27 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
+        if head == "script-voice-list":
+            return episode.CloneCastResult(
+                ["python", "-m", "clonecast.cli", *args],
+                0,
+                "[]",
+                "",
+                self.voice_assignments.get(args[1], []),
+            )
+
         if head == "script-voice-assign":
-            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"speaker": "Host"})
+            script_id = args[args.index("--script-id") + 1]
+            speaker = args[args.index("--speaker") + 1]
+            voice_profile_id = args[args.index("--voice-profile-id") + 1]
+            assignment = {
+                "assignment_id": f"assign_{len(self.voice_assignments.get(script_id, [])) + 1}",
+                "script_id": script_id,
+                "speaker": speaker,
+                "voice_profile_id": voice_profile_id,
+            }
+            self.voice_assignments.setdefault(script_id, []).append(assignment)
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", assignment)
 
         if head == "speech-provider-check":
             data = {"available": True, "provider": "chatterbox-turbo", "preflight": {"may_begin": True, "free_vram_mib": 12000}}

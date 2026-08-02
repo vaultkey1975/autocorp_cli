@@ -15,6 +15,7 @@
   const cancelBtn = el("cancel-btn");
   const statusPanel = el("status-panel");
   const statusToggleBtn = el("status-toggle-btn");
+  const deleteFailedBtn = el("delete-failed-btn");
 
   async function api(path, options) {
     const resp = await fetch(path, {
@@ -162,6 +163,7 @@
   async function refreshSessionList() {
     const sessions = await api("/api/sessions");
     sessionList.innerHTML = "";
+    deleteFailedBtn.disabled = !sessions.some((s) => s.status === "failed");
     for (const s of sessions) {
       const item = document.createElement("div");
       item.className = "session-item" + (s.session_id === state.sessionId ? " active" : "");
@@ -171,11 +173,65 @@
       const status = document.createElement("span");
       status.className = "session-status" + (s.status === "failed" ? " failed" : "");
       status.textContent = s.status;
+      const meta = document.createElement("span");
+      meta.className = "session-meta";
+      meta.appendChild(status);
+      if (s.status === "failed") {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "icon-btn danger-session-btn";
+        del.title = "Delete failed session";
+        del.setAttribute("aria-label", `Delete failed session ${s.title}`);
+        del.textContent = "Delete";
+        del.addEventListener("click", async (ev) => {
+          ev.stopPropagation();
+          await deleteFailedSession(s.session_id, s.title);
+        });
+        meta.appendChild(del);
+      }
       item.appendChild(title);
-      item.appendChild(status);
+      item.appendChild(meta);
       item.addEventListener("click", () => openSession(s.session_id));
       sessionList.appendChild(item);
     }
+  }
+
+  function clearCurrentSessionIfDeleted(sessionId) {
+    if (state.sessionId !== sessionId) return;
+    state.sessionId = null;
+    state.session = null;
+    chatLog.innerHTML = "";
+    workflowSummary.classList.add("hidden");
+    currentSessionInfo.textContent = "No active session";
+    publishingIndicator.textContent = "Publishing locked";
+    publishingIndicator.classList.remove("eligible");
+  }
+
+  function removeSessionListItem(sessionId) {
+    for (const item of Array.from(sessionList.children)) {
+      if (item.dataset.sessionId === sessionId) item.remove();
+    }
+  }
+
+  async function deleteFailedSession(sessionId, title) {
+    if (!window.confirm(`Delete failed session "${title}" and its disposable temporary files?`)) return;
+    await api(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    removeSessionListItem(sessionId);
+    clearCurrentSessionIfDeleted(sessionId);
+    await refreshSessionList();
+  }
+
+  async function deleteAllFailedSessions() {
+    if (!window.confirm("Delete all failed sessions and their disposable temporary files?")) return;
+    const failedIds = Array.from(sessionList.children)
+      .filter((item) => item.querySelector(".session-status.failed"))
+      .map((item) => item.dataset.sessionId);
+    await api("/api/sessions/failed", { method: "DELETE" });
+    for (const sessionId of failedIds) {
+      removeSessionListItem(sessionId);
+      clearCurrentSessionIfDeleted(sessionId);
+    }
+    await refreshSessionList();
   }
 
   function highlightActiveSession() {
@@ -271,6 +327,8 @@
     const detail = await api(`/api/sessions/${state.sessionId}/cancel`, { method: "POST" });
     renderSession(detail);
   });
+
+  deleteFailedBtn.addEventListener("click", deleteAllFailedSessions);
 
   statusToggleBtn.addEventListener("click", async () => {
     const willShow = statusPanel.classList.contains("hidden");

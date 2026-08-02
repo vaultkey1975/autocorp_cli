@@ -382,6 +382,63 @@ def _record_command(session: EpisodeSession, result: CloneCastResult) -> None:
     )
 
 
+def _assignment_for_speaker(payload: Any, speaker: str) -> dict[str, Any] | None:
+    if not isinstance(payload, list):
+        raise EpisodeBuildError("CloneCast returned unexpected JSON for script-voice-list")
+    for item in payload:
+        if isinstance(item, dict) and item.get("speaker") == speaker:
+            return item
+    return None
+
+
+def _ensure_voice_assigned(
+    session: EpisodeSession,
+    cli: CloneCastCLI,
+    *,
+    script_id: str,
+    speaker: str,
+    voice_profile_id: str,
+) -> None:
+    list_result = cli.checked(["script-voice-list", script_id])
+    _record_command(session, list_result)
+    existing = _assignment_for_speaker(_require_json(list_result, "script-voice-list"), speaker)
+    if existing is not None:
+        existing_voice = str(existing.get("voice_profile_id") or "")
+        if existing_voice == voice_profile_id:
+            session.validation_evidence["voice_assignment"] = {
+                "status": "already_assigned",
+                "speaker": speaker,
+                "voice_profile_id": voice_profile_id,
+                "assignment_id": existing.get("assignment_id"),
+            }
+            session.completed_stage = "voice_assigned"
+            save_session(session)
+            return
+        raise EpisodeBuildError(
+            "saved script already has a different voice assigned for "
+            f"{speaker}: {existing_voice}; requested {voice_profile_id}. "
+            "AutoCorp will not overwrite an existing CloneCast voice assignment silently."
+        )
+
+    assign_result = cli.checked([
+        "script-voice-assign",
+        "--script-id",
+        script_id,
+        "--speaker",
+        speaker,
+        "--voice-profile-id",
+        voice_profile_id,
+    ])
+    _record_command(session, assign_result)
+    session.validation_evidence["voice_assignment"] = {
+        "status": "created",
+        "speaker": speaker,
+        "voice_profile_id": voice_profile_id,
+    }
+    session.completed_stage = "voice_assigned"
+    save_session(session)
+
+
 def _prompt(prompt: str, input_func: Callable[[str], str]) -> str:
     return input_func(prompt).strip()
 
@@ -888,6 +945,7 @@ def run_guided_episode_build(
     for command in (
         "episode-create",
         "episode-script-import-approved",
+        "script-voice-list",
         "script-voice-assign",
         "speech-provider-check",
         "speech-render",
@@ -970,18 +1028,13 @@ def run_guided_episode_build(
         save_session(session)
         output("Approved script imported")
 
-    assign_result = cli.checked([
-        "script-voice-assign",
-        "--script-id",
-        import_payload["script_id"],
-        "--speaker",
-        "Host",
-        "--voice-profile-id",
-        voice,
-    ])
-    _record_command(session, assign_result)
-    session.completed_stage = "voice_assigned"
-    save_session(session)
+    _ensure_voice_assigned(
+        session,
+        cli,
+        script_id=import_payload["script_id"],
+        speaker="Host",
+        voice_profile_id=voice,
+    )
     output("Voice assigned")
 
     provider_check = cli.checked(["speech-provider-check"])

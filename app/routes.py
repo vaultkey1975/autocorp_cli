@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 import config
@@ -82,10 +82,24 @@ def api_create_session(body: SessionCreateRequest) -> dict:
     return _session_detail(app)
 
 
+@router.delete("/api/sessions/failed")
+def api_delete_failed_sessions() -> dict:
+    return store.delete_all_failed_sessions()
+
+
 def _get_session_or_404(session_id: str) -> store.AppSession:
     if not store.session_exists(session_id):
         raise HTTPException(status_code=404, detail="session not found")
     return store.load_session(session_id)
+
+
+@router.delete("/api/sessions/{session_id}")
+def api_delete_session(session_id: str) -> dict:
+    _get_session_or_404(session_id)
+    try:
+        return store.delete_failed_session(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/api/sessions/{session_id}")
