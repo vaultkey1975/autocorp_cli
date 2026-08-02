@@ -106,6 +106,44 @@ def save_upload(session_id: str, kind: str, filename: str, data: bytes) -> Saved
     )
 
 
+def save_pasted_text(session_id: str, kind: str, text: str) -> str:
+    """Write pasted (not uploaded) text to a short, deterministically-named
+    managed file, and return its path.
+
+    Pasted research/script text must never be handed to CloneCast's guided
+    operator as a raw string - the operator's ``read_source`` treats a
+    non-``@``-prefixed answer as a candidate filesystem path first
+    (``Path(value).exists()``), and a long paragraph with no path separators
+    becomes a single, oversized path *component*, which can raise
+    ``OSError: [Errno 36] File name too long`` from the stat() syscall
+    instead of cleanly resolving to "not a path". Writing the text to a real
+    file first and handing back that file's path avoids ever taking that
+    branch with untrusted pasted content.
+    """
+    if kind not in ALLOWED_EXTENSIONS:
+        raise FileServiceError(f"unsupported text kind: {kind}")
+    if not text or not text.strip():
+        raise FileServiceError("pasted text is empty")
+
+    directory = managed_dir_for_session(session_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    managed_path = directory / f"{kind}_{_safe_component(session_id)}.txt"
+
+    data = text.encode("utf-8")
+    tmp_path = directory / f".tmp-{uuid.uuid4().hex}"
+    with open(tmp_path, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, managed_path)
+
+    if managed_path.read_bytes() != data:
+        managed_path.unlink(missing_ok=True)
+        raise FileServiceError("pasted text verification failed after write")
+
+    return str(managed_path)
+
+
 def is_path_within_managed_area(path: str) -> bool:
     """True only if ``path`` resolves inside the managed uploads directory
     tree. Used to keep the browser audio/file-serving routes from exposing

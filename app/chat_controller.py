@@ -352,7 +352,19 @@ def _interpret_answer(
             handle.pending_values[f"{kind}_value"] = record.managed_path
             return f"Added {record.original_filename}", "yes"
         if text:
-            handle.pending_values[f"{kind}_value"] = text
+            # Never hand raw pasted text to the guided operator as the raw
+            # prompt answer: it treats a non-"@" answer as a candidate
+            # filesystem path first (Path(value).exists()), and a long
+            # paragraph with no separators becomes one oversized path
+            # component, which can raise OSError: [Errno 36] File name too
+            # long instead of cleanly falling through to "not a path". Write
+            # it to a short, safely-named managed file and hand back that
+            # real path instead.
+            try:
+                managed_path = file_service.save_pasted_text(app.session_id, kind, text)
+            except file_service.FileServiceError as exc:
+                raise ChatControllerError(str(exc)) from exc
+            handle.pending_values[f"{kind}_value"] = managed_path
             return "(pasted text provided)", "yes"
         raise ChatControllerError("provide a file upload_id or pasted text")
 
@@ -486,7 +498,21 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> st
         return "YES"
 
     if kind == "research_provide":
-        return handle.pending_values.pop("research_value")
+        value = handle.pending_values.pop("research_value")
+        if Path(value).suffix.lower() == ".pdf":
+            # PDF text extraction is not implemented yet. Raw PDF bytes must
+            # never be handed to the operator, which would attempt to decode
+            # them as UTF-8 research text - fail clearly here, the single
+            # choke point both the auto-resolved-upload path and the
+            # answered-question path funnel through, rather than letting the
+            # operator's generic UTF-8 decode error surface instead. The
+            # source upload was already marked consumed by whichever path
+            # got us here, so a follow-up .txt upload or pasted text on
+            # Resume is picked up instead of this same PDF again.
+            raise episode.EpisodeBuildError(
+                "PDF text extraction is not yet supported. Please paste the research text or upload a .txt file instead."
+            )
+        return value
 
     if kind == "script_provide":
         return handle.pending_values.pop("script_value")
