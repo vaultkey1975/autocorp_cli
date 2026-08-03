@@ -17,6 +17,9 @@ thread per chat session, and implements ``input_func``/``output`` so that:
 
 This is the *only* place that drives the guided workflow from the web layer;
 the workflow rules themselves are not duplicated here.
+
+NOT related to ``brains/chat.py`` (the unrelated general repo-intelligence
+chat backing the `autocorp.py chat` CLI subcommand) despite the similar name.
 """
 
 from __future__ import annotations
@@ -382,7 +385,7 @@ def _interpret_answer(
                 raise ChatControllerError("uploaded file not found for this session")
             record.consumed = True
             handle.pending_values[f"{kind}_value"] = {
-                "source_type": "uploaded_file",
+                "source_type": episode.uploaded_source_type(record.original_filename),
                 "upload_id": record.upload_id,
                 "path": record.managed_path,
                 "original_filename": record.original_filename,
@@ -603,7 +606,7 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> An
         if unconsumed:
             unconsumed.consumed = True
             handle.pending_values["research_value"] = {
-                "source_type": "uploaded_file",
+                "source_type": episode.uploaded_source_type(unconsumed.original_filename),
                 "upload_id": unconsumed.upload_id,
                 "path": unconsumed.managed_path,
                 "original_filename": unconsumed.original_filename,
@@ -618,7 +621,7 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> An
         if unconsumed:
             unconsumed.consumed = True
             handle.pending_values["script_value"] = {
-                "source_type": "uploaded_file",
+                "source_type": episode.uploaded_source_type(unconsumed.original_filename),
                 "upload_id": unconsumed.upload_id,
                 "path": unconsumed.managed_path,
                 "original_filename": unconsumed.original_filename,
@@ -1045,4 +1048,10 @@ def _on_worker_error(app_session_id: str, safe_message: str, *, technical: str, 
             technical_detail=technical,
         )
     )
+    if config.GPU_GUARD_ENABLED:
+        gpu_guard.release_stage(
+            "Chatterbox audio generation",
+            gpu_name_substring=config.CHATTERBOX_GPU_NAME_SUBSTRING,
+            output=lambda event, text: _log_progress(app, event, text),
+        )
     store.save_session(app)

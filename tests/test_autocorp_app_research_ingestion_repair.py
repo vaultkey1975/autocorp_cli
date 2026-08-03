@@ -167,7 +167,7 @@ def test_real_uploaded_txt_path_still_works(isolated_data_dir, tmp_path):
     app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
 
     ep = episode.load_session(app.episode_session_id)
-    assert ep.research_source["source_type"] == "uploaded_file"
+    assert ep.research_source["source_type"] == "uploaded_txt"
     assert ep.research_source["path"] == str(Path(rec.managed_path).resolve())
     assert ep.research_source["sha256"] == rec.managed_sha256
     assert Path(ep.artifact_paths["managed_research"]) == Path(rec.managed_path).resolve()
@@ -189,10 +189,37 @@ def test_real_uploaded_pdf_path_follows_upload_workflow(isolated_data_dir, tmp_p
     assert app.status == "awaiting_input"
     assert app.pending_question["field"] == "script"
     ep = episode.load_session(app.episode_session_id)
-    assert ep.research_source["source_type"] == "uploaded_file"
+    assert ep.research_source["source_type"] == "uploaded_pdf"
     assert ep.research_source["path"].endswith(".pdf")
     ingest = next(call for call in fake.calls if call[0] == "research-ingest")
     assert ingest[1] == ep.research_source["path"]
+
+
+def test_real_uploaded_markdown_research_follows_upload_workflow(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    app = _start_research_session(repo)
+    rec = controller.register_upload(app.session_id, "research", "bigfoot.md", b"# Bigfoot\n\nMarkdown research body.")
+
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+
+    ep = episode.load_session(app.episode_session_id)
+    assert ep.research_source["source_type"] == "uploaded_markdown"
+    assert ep.research_source["path"].endswith(".md")
+
+
+def test_real_uploaded_markdown_approved_script_follows_upload_workflow(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    app = _start_research_session(repo)
+    rec = controller.register_upload(app.session_id, "research", "research.txt", b"Research body.")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+    assert app.pending_question["field"] == "script"
+
+    rec = controller.register_upload(app.session_id, "script", "approved.md", b"# Host\n\nApproved script body.")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+
+    ep = episode.load_session(app.episode_session_id)
+    assert ep.script_source["source_type"] == "uploaded_markdown"
+    assert ep.script_source["path"].endswith(".md")
 
 
 def test_saved_failed_session_resumes_using_original_research_without_duplication(isolated_data_dir, tmp_path):

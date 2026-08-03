@@ -119,7 +119,6 @@ command cannot). Not all of them are committed to `main` yet — see
 | `live-test` | controlled, non-mutating live test of a target FastAPI app |
 | `workflow-test` | disposable end-to-end episode workflow test against a target repo (requires `--disposable`) |
 | `publish-test` | disposable publishing-pipeline validation, up to but never past a real external upload (requires `--disposable`) |
-| `quick-podcast` | generate a real, disposable, locally-listenable podcast episode against a target repo |
 | `chat` | repository-aware conversational interface over existing AutoCorp capabilities |
 | `episode-build` | guided, resumable CloneCast episode operator (terminal) — the repaired foundation `app` is built on |
 | `app` | start the AutoCorp Chat App: local FastAPI server + browser chat UI over the guided episode operator — see below |

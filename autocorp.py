@@ -35,7 +35,7 @@ from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
 from autocorp_testing import reporting as fast_pytest_reporting
-from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, quick_podcast, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, repair_executor, repair_proposal, scanner, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -1085,12 +1085,6 @@ def cmd_publish_test(args) -> int:
     return 0 if success else 1
 
 
-def cmd_quick_podcast(args) -> int:
-    report = quick_podcast.run(args)
-    quick_podcast.print_report(report)
-    return 0 if report.overall == "PASS" else 1
-
-
 def _print_chat_response(response: chat.ChatResponse) -> None:
     print(response.text)
     if response.commands:
@@ -1385,24 +1379,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--timeout", default=10, type=int, metavar="SEC",
                     help="startup timeout in seconds (default: 10)")
     sp.set_defaults(func=cmd_inspect)
-
-    sp = sub.add_parser("quick-podcast",
-                        help="generate a real disposable CloneCast podcast for listening")
-    sp.add_argument("--repo", required=True, metavar="PATH",
-                    help="absolute path to CloneCast repository")
-    sp.add_argument("--topic", required=True,
-                    help="podcast topic")
-    sp.add_argument("--show", default="CloneCast",
-                    help="show name (default: CloneCast)")
-    sp.add_argument("--duration", default="10m",
-                    help="target duration such as 10m or 600s (default: 10m)")
-    sp.add_argument("--voice", default="",
-                    help="approved CloneCast voice_profile_id to use")
-    sp.add_argument("--output", default="",
-                    help="output directory (default: /tmp/autocorp_quick_podcast_output/<repo>/test_episode)")
-    sp.add_argument("--test", action="store_true",
-                    help="required safety mode: never publish externally")
-    sp.set_defaults(func=cmd_quick_podcast)
 
     sp = sub.add_parser("episode-build",
                         help="guided CloneCast episode operator with review lock")

@@ -5,6 +5,14 @@ This is intentionally not a generic LLM wrapper. It is a small conversational
 router over AutoCorp's existing repository-intelligence, repair, workflow, and
 documentation capabilities. Every answer is derived from the repository at call
 time or from explicit command guidance for an existing AutoCorp command.
+
+NOT related to the guided CloneCast episode workflow. This module backs the
+`autocorp.py chat` CLI subcommand (general repo intelligence: scan, analyze,
+plan repairs). The episode-creation web app's chat UI is driven by the
+similarly-named but unrelated `app/chat_controller.py`, which wraps
+`brains/guided_clonecast_episode.py`. If you're looking for research/script
+upload handling, voice selection, or the listening gate, you want that module,
+not this one.
 """
 
 from __future__ import annotations

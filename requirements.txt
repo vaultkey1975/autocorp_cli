@@ -9,3 +9,9 @@ uvicorn>=0.29
 python-multipart>=0.0.9
 jinja2>=3.1
 httpx2>=2.9  # starlette.testclient's preferred HTTP client (avoids a deprecation warning)
+
+# CloneCastCLI invokes CloneCast's own cli.py via subprocess using this
+# venv's Python (see brains/guided_clonecast_episode.py CloneCastCLI.run),
+# so any dependency CloneCast's own import chain needs at module load time
+# must also be installed here, not only in CloneCast's venv.
+pypdf>=4.0  # required transitively: clonecast.cli -> episode_service -> research_parser (PDF research ingestion)

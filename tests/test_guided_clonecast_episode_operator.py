@@ -584,7 +584,7 @@ def test_resume_after_speech_timeout_preserves_inputs_and_retries_from_speech(se
     saved_path = next((session_data_dir / episode.SESSION_DIRNAME).glob("acce_*.json"))
     failed = episode.load_session(saved_path.stem)
     assert failed.failed_stage == "speech_render"
-    assert failed.selected_studio_show == "studio_1"
+    assert failed.selected_studio_show == "Studio One"  # canonicalized to the real studio's display name
     assert failed.requested_duration_seconds == 900
     assert failed.clonecast_episode_identifiers["research_id"] == "research_1"
     assert failed.script_preserved_byte_for_byte is True
@@ -602,7 +602,7 @@ def test_resume_after_speech_timeout_preserves_inputs_and_retries_from_speech(se
 
     assert completed.completed_stage == "listening_gate"
     assert completed.failed_stage is None
-    assert completed.selected_studio_show == "studio_1"
+    assert completed.selected_studio_show == "Studio One"  # canonicalized to the real studio's display name
     assert completed.requested_duration_seconds == 900
     assert completed.clonecast_episode_identifiers["research_id"] == "research_1"
     assert completed.script_preserved_byte_for_byte is True
@@ -751,7 +751,8 @@ def test_voice_profile_id_is_passed_and_host_name_is_not_used(session_data_dir, 
     assert assign[assign.index("--voice-profile-id") + 1] == "voice_d33f7035117f4055b1d46eb150234d6a"
     assert "Elias Voss" not in assign
     create = next(call for call in fake.calls if call[0] == "episode-create")
-    assert create[create.index("--title") + 1] == "studio_1 Guided Episode"
+    # canonicalized to the real studio's display name, not the raw studio_id typed at the prompt
+    assert create[create.index("--title") + 1] == "Studio One Guided Episode"
     assert session.guests_or_callers == "no"
     assert session.owner_approval_status == "publishing_locked"
 

@@ -34,8 +34,6 @@ PUBLISH_COMMANDS = {
     "publication-retry",
     "radio-publication-create",
 }
-SHADOW_FREQUENCY_PROFESSIONAL_DELIVERY_PRESET_ID = "dvpreset_radio_host_v1"
-SHADOW_FREQUENCY_STUDIO_IDS = {"studio_c7599bb4733e438d9f1926e0e4ad6111"}
 
 _STAGE_ORDER = {
     "created": 0,
@@ -219,7 +217,7 @@ def clonecast_research_document(source: dict[str, Any], data: bytes) -> bytes:
     except UnicodeDecodeError as exc:
         raise EpisodeBuildError("research must be valid UTF-8 for CloneCast ingestion") from exc
     title = "AutoCorp Guided Research"
-    if source.get("source_type") == "uploaded_file" and source.get("path"):
+    if source.get("source_type") in _UPLOADED_SOURCE_TYPES and source.get("path"):
         title = f"AutoCorp Guided Research: {Path(str(source['path'])).name}"
     payload = {
         "title": title,
@@ -255,6 +253,17 @@ def parse_duration(value: str) -> int:
     return seconds
 
 
+_UPLOADED_SOURCE_TYPES_BY_EXTENSION = {".txt": "uploaded_txt", ".md": "uploaded_markdown", ".pdf": "uploaded_pdf"}
+_UPLOADED_SOURCE_TYPES = frozenset(_UPLOADED_SOURCE_TYPES_BY_EXTENSION.values()) | {"uploaded_file"}
+
+
+def uploaded_source_type(filename_or_path: str) -> str:
+    """Map an uploaded file's extension to its explicit provenance type
+    (uploaded_txt / uploaded_markdown / uploaded_pdf), falling back to the
+    generic uploaded_file tag for any other extension."""
+    return _UPLOADED_SOURCE_TYPES_BY_EXTENSION.get(Path(str(filename_or_path)).suffix.lower(), "uploaded_file")
+
+
 def _read_uploaded_source(source: dict[str, Any], *, label: str) -> tuple[dict[str, Any], bytes]:
     raw_path = source.get("path")
     if not raw_path:
@@ -265,9 +274,10 @@ def _read_uploaded_source(source: dict[str, Any], *, label: str) -> tuple[dict[s
     data = path.read_bytes()
     if not data.strip():
         raise EpisodeBuildError(f"{label} file is empty: {path}")
+    existing_type = source.get("source_type")
     metadata = {
         "kind": "file",
-        "source_type": "uploaded_file",
+        "source_type": existing_type if existing_type in _UPLOADED_SOURCE_TYPES else uploaded_source_type(path.name),
         "path": str(path),
         "sha256": checksum_bytes(data),
     }
@@ -305,7 +315,7 @@ def read_source(value: Any, *, label: str) -> tuple[dict[str, Any], bytes]:
         source_type = value.get("source_type")
         if source_type == "pasted_text":
             return _read_pasted_source(value, label=label)
-        if source_type == "uploaded_file":
+        if source_type in _UPLOADED_SOURCE_TYPES:
             return _read_uploaded_source(value, label=label)
         raise EpisodeBuildError(f"{label} input source type is missing or unsupported")
 
@@ -321,7 +331,12 @@ def read_source(value: Any, *, label: str) -> tuple[dict[str, Any], bytes]:
         data = path.read_bytes()
         if not data.strip():
             raise EpisodeBuildError(f"{label} file is empty: {path}")
-        return {"kind": "file", "source_type": "uploaded_file", "path": str(path), "sha256": checksum_bytes(data)}, data
+        return {
+            "kind": "file",
+            "source_type": uploaded_source_type(path.name),
+            "path": str(path),
+            "sha256": checksum_bytes(data),
+        }, data
     data = raw.encode("utf-8")
     if not data.strip():
         raise EpisodeBuildError(f"{label} text is required")
@@ -713,16 +728,25 @@ def _audio_assembly_idempotency_key(session: EpisodeSession) -> str:
     return f"{session.session_id}:episode-audio-assemble:{_delivery_fingerprint(session)[:16]}"
 
 
-def _is_shadow_frequency_show(value: str | None) -> bool:
-    normalized = (value or "").strip()
-    if normalized in SHADOW_FREQUENCY_STUDIO_IDS:
-        return True
-    return normalized.casefold() in {"shadow frequency", "shadow_frequency"}
+def _match_studio(selected_studio_show: str | None, studios_json_data: Any) -> dict[str, Any] | None:
+    """Match the owner's typed studio/show selection (which may be a real
+    studio_id picked from a listing, or free text like a display name)
+    against the real CloneCast studio list, case-insensitively, so callers
+    can key configuration (like a show-specific default delivery preset) off
+    the real studio_id instead of guessing from free text."""
+    if not selected_studio_show or not isinstance(studios_json_data, list):
+        return None
+    needle = selected_studio_show.strip().casefold()
+    for item in studios_json_data:
+        if not isinstance(item, dict):
+            continue
+        candidates = {str(item.get(key, "")).casefold() for key in ("studio_id", "stable_name", "display_name")}
+        if needle in candidates and item.get("studio_id"):
+            return item
+    return None
 
 
 def display_show_name(session: EpisodeSession) -> str | None:
-    if _is_shadow_frequency_show(session.selected_studio_show):
-        return "Shadow Frequency"
     return session.selected_studio_show
 
 
@@ -1286,9 +1310,11 @@ def run_guided_episode_build(
             "CloneCast compatibility blocker; missing supported commands: research-show, research-recover"
         )
 
+    studios_json_data: Any = None
     if "radio-studio-list" in commands:
         studios = cli.checked(["radio-studio-list"])
         _record_command(session, studios)
+        studios_json_data = studios.json_data
         if studios.json_data:
             output("Available CloneCast studios/shows:")
             for item in studios.json_data:
@@ -1301,6 +1327,13 @@ def run_guided_episode_build(
         session.selected_studio_show = normalize_studio_show(session.selected_studio_show)
     if not session.selected_studio_show:
         raise EpisodeBuildError("studio/show is required")
+    matched_studio = _match_studio(session.selected_studio_show, studios_json_data)
+    if matched_studio and matched_studio.get("display_name"):
+        # Canonicalize to the real studio's display name so anything shown to
+        # the owner later (progress text, downloaded filenames) is friendly,
+        # whether the owner typed the display name or picked a raw studio_id
+        # off the listing above.
+        session.selected_studio_show = str(matched_studio["display_name"])
     _normalize_completed_stage_from_saved_state(session)
     _advance_stage(session, "studio_selected")
     save_session(session)
@@ -1366,8 +1399,17 @@ def run_guided_episode_build(
         raise EpisodeBuildError("host display name cannot be used as a voice profile ID")
     session.selected_voices = {"host": voice}
     if not session.selected_delivery_profiles.get("host"):
-        if _is_shadow_frequency_show(session.selected_studio_show):
-            session.selected_delivery_profiles["host"] = SHADOW_FREQUENCY_PROFESSIONAL_DELIVERY_PRESET_ID
+        matched_studio = _match_studio(session.selected_studio_show, studios_json_data)
+        studio_id = matched_studio.get("studio_id") if matched_studio else None
+        if studio_id and "radio-studio-story-profile-show" in commands:
+            try:
+                profile_result = cli.checked(["radio-studio-story-profile-show", studio_id])
+            except EpisodeBuildError:
+                profile_result = None  # no story profile configured for this studio; that is the normal case
+            if profile_result is not None and profile_result.json_data:
+                default_preset_id = profile_result.json_data.get("default_delivery_preset_id")
+                if default_preset_id:
+                    session.selected_delivery_profiles["host"] = default_preset_id
     if session.guests_or_callers is None:
         session.guests_or_callers = _prompt("Are guests or callers required? Describe them or say no: ", input_func)
     media = session.media_mode or _prompt("Audio-only or video? [audio/video] ", input_func).lower()

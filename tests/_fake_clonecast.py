@@ -35,6 +35,13 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         self.research_states = {"research_1": "accepted"}
         self.duplicate_of: dict[str, str] = {}
         self.voice_assignments: dict[str, list[dict[str, str]]] = {}
+        # STUDIO_ID is "the exact studio/voice fixture named in the Phase 1
+        # spec" (see module docstring) and has always had a professional
+        # radio-host delivery default in practice; represent that here as a
+        # configured story profile (the real-world equivalent of running
+        # `radio-studio-story-profile-set`) rather than as code that
+        # name-matches "Shadow Frequency".
+        self.story_profiles: dict[str, dict] = {STUDIO_ID: {"default_delivery_preset_id": "dvpreset_radio_host_v1"}}
 
     def validate_repo(self):
         super().validate_repo()
@@ -42,6 +49,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
     def discover_commands(self):
         return {
             "radio-studio-list",
+            "radio-studio-story-profile-show",
             "voice-list",
             "research-ingest",
             "research-show",
@@ -71,6 +79,15 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         if args == ["radio-studio-list"]:
             data = [{"studio_id": STUDIO_ID, "display_name": STUDIO_DISPLAY_NAME, "lifecycle_status": "approved"}]
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "[]", "", data)
+
+        if head == "radio-studio-story-profile-show":
+            studio_id = args[1]
+            profile = self.story_profiles.get(studio_id)
+            if profile is None:
+                return episode.CloneCastResult(
+                    ["python", "-m", "clonecast.cli", *args], 1, "", "no story profile configured", None
+                )
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", profile)
 
         if head == "voice-list":
             data = [
