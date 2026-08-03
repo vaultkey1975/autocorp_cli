@@ -893,6 +893,47 @@ def _record_speech_failure_cleanup(session: EpisodeSession, cli: CloneCastCLI) -
     save_session(session)
 
 
+def _poll_speech_progress(cli: CloneCastCLI, session: EpisodeSession) -> dict[str, Any]:
+    """Best-effort, real-only progress lookup while ``speech-render`` is
+    still running in a separate blocking subprocess. AutoCorp cannot see
+    inside that subprocess directly, but the script_id is already known, so
+    a short, cheap ``speech-render-list``/``speech-render-segments`` lookup
+    can find the in-progress job and report real completed-segment counts.
+    Returns {} (never fabricated data) if the job hasn't been created yet or
+    either lookup fails or times out - the caller falls back to a plain
+    elapsed-time heartbeat in that case."""
+    script_id = session.clonecast_episode_identifiers.get("script_id")
+    if not script_id:
+        return {}
+    try:
+        jobs_result = cli.run(["speech-render-list", "--script-id", script_id], timeout=5)
+        jobs = jobs_result.json_data if jobs_result.returncode == 0 else None
+        if not isinstance(jobs, list) or not jobs:
+            return {}
+        idempotency_key = f"{session.session_id}:speech-render"
+        job = next((j for j in jobs if isinstance(j, dict) and j.get("idempotency_key") == idempotency_key), jobs[0])
+        job_id = job.get("job_id") if isinstance(job, dict) else None
+        if not job_id:
+            return {}
+        progress: dict[str, Any] = {
+            "job_id": job_id,
+            "job_status": job.get("status"),
+            "job_updated_at": job.get("updated_at"),
+        }
+        segments_result = cli.run(["speech-render-segments", job_id], timeout=5)
+        segments = segments_result.json_data if segments_result.returncode == 0 else None
+        if isinstance(segments, list) and segments:
+            completed = [s for s in segments if isinstance(s, dict) and s.get("status") == "completed"]
+            rendering = next((s for s in segments if isinstance(s, dict) and s.get("status") == "rendering"), None)
+            progress["items_completed"] = len(completed)
+            progress["item_count"] = len(segments)
+            if rendering is not None:
+                progress["current_segment_order_index"] = rendering.get("order_index")
+        return progress
+    except Exception:
+        return {}
+
+
 def _render_speech(
     session: EpisodeSession,
     cli: CloneCastCLI,
@@ -915,14 +956,22 @@ def _render_speech(
     output("Audio generation started")
 
     def heartbeat(elapsed_seconds: int) -> None:
+        progress = _poll_speech_progress(cli, session)
         session.validation_evidence["speech_render_heartbeat"] = {
             "stage": "speech-render",
             "status": "running",
             "elapsed_seconds": elapsed_seconds,
             "updated_at": _now(),
+            **progress,
         }
         save_session(session)
-        output(f"Audio generation still running ({elapsed_seconds}s elapsed)")
+        if progress.get("item_count"):
+            output(
+                f"Audio generation is active — segment {progress.get('items_completed', 0)} of "
+                f"{progress['item_count']} complete ({elapsed_seconds}s elapsed)"
+            )
+        else:
+            output(f"Audio generation still running ({elapsed_seconds}s elapsed)")
 
     try:
         return cli.checked_monitored(

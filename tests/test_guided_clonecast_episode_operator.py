@@ -614,6 +614,132 @@ def test_resume_after_speech_timeout_preserves_inputs_and_retries_from_speech(se
     assert any(call[0] == "speech-render" for call in second_calls)
 
 
+def _write_progress_reporting_clonecast_cli(repo: Path, *, items_completed: int, item_count: int) -> None:
+    (repo / "src" / "clonecast" / "cli.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "argv = sys.argv[1:]",
+                "if argv and argv[0] == 'speech-render-list':",
+                "    print(json.dumps([{'job_id': 'speech_progress_job', 'status': 'rendering', 'updated_at': '2026-01-01T00:00:00+00:00', 'idempotency_key': 'x'}]))",
+                "elif argv and argv[0] == 'speech-render-segments':",
+                f"    completed = [{{'status': 'completed', 'order_index': i}} for i in range({items_completed})]",
+                f"    remaining = [{{'status': 'rendering' if i == {items_completed} else 'pending', 'order_index': i}} for i in range({items_completed}, {item_count})]",
+                "    print(json.dumps(completed + remaining))",
+                "else:",
+                "    print('{}')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_poll_speech_progress_reports_real_segment_counts_from_cli(tmp_path):
+    repo = _repo(tmp_path)
+    _write_progress_reporting_clonecast_cli(repo, items_completed=3, item_count=7)
+    cli = episode.CloneCastCLI(repo)
+    session = episode.EpisodeSession(session_id="session_progress", clonecast_repo_path=str(repo.resolve()))
+    session.clonecast_episode_identifiers["script_id"] = "script_1"
+
+    progress = episode._poll_speech_progress(cli, session)
+
+    assert progress["items_completed"] == 3
+    assert progress["item_count"] == 7
+    assert progress["current_segment_order_index"] == 3
+    assert progress["job_id"] == "speech_progress_job"
+
+
+def test_poll_speech_progress_returns_empty_without_a_script_id():
+    session = episode.EpisodeSession(session_id="session_no_script", clonecast_repo_path="/tmp/x")
+    assert episode._poll_speech_progress(episode.CloneCastCLI(Path("/tmp/x")), session) == {}
+
+
+def test_poll_speech_progress_is_best_effort_and_never_raises(tmp_path):
+    repo = _repo(tmp_path)
+    # cli.py that always crashes - the poll must swallow this, not blow up
+    # the real heartbeat it's enriching.
+    (repo / "src" / "clonecast" / "cli.py").write_text("import sys; sys.exit(1)\n", encoding="utf-8")
+    cli = episode.CloneCastCLI(repo)
+    session = episode.EpisodeSession(session_id="session_crash", clonecast_repo_path=str(repo.resolve()))
+    session.clonecast_episode_identifiers["script_id"] = "script_1"
+
+    assert episode._poll_speech_progress(cli, session) == {}
+
+
+def test_heartbeat_uses_real_segment_progress_when_available(tmp_path):
+    repo = _repo(tmp_path)
+    _write_progress_reporting_clonecast_cli(repo, items_completed=2, item_count=5)
+    _write_sleeping_clonecast_cli_with_progress(repo, sleep_seconds=1.2)
+    cli = episode.CloneCastCLI(repo)
+    session = episode.EpisodeSession(session_id="session_hb_progress", clonecast_repo_path=str(repo.resolve()))
+    session.requested_duration_seconds = 900
+    session.clonecast_episode_identifiers["script_id"] = "script_1"
+    episode.save_session(session)
+    lines: list[str] = []
+
+    episode._render_speech(session, cli, script_id="script_1", output=lines.append)
+
+    assert any("segment 2 of 5" in line for line in lines)
+    saved = episode.load_session("session_hb_progress")
+    assert saved.validation_evidence["speech_render_heartbeat"]["items_completed"] == 2
+    assert saved.validation_evidence["speech_render_heartbeat"]["item_count"] == 5
+
+
+def _write_sleeping_clonecast_cli_with_progress(repo: Path, *, sleep_seconds: float) -> None:
+    # Same as _write_sleeping_clonecast_cli, but the wrapper script must
+    # still answer speech-render-list/speech-render-segments (used by the
+    # heartbeat's progress poll, which runs the *same* cli.py) while the
+    # main speech-render invocation is asleep - that's a separate process
+    # invocation, so this just needs both branches in one script.
+    (repo / "src" / "clonecast" / "cli.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "import time",
+                "argv = sys.argv[1:]",
+                "if argv and argv[0] == 'speech-render-list':",
+                "    print(json.dumps([{'job_id': 'speech_progress_job', 'status': 'rendering', 'updated_at': 'x', 'idempotency_key': 'x'}]))",
+                "elif argv and argv[0] == 'speech-render-segments':",
+                "    print(json.dumps([{'status': 'completed', 'order_index': 0}, {'status': 'completed', 'order_index': 1}, {'status': 'rendering', 'order_index': 2}, {'status': 'pending', 'order_index': 3}, {'status': 'pending', 'order_index': 4}]))",
+                "elif argv and argv[0] == 'speech-render':",
+                f"    time.sleep({sleep_seconds!r})",
+                "    print(json.dumps({'job': {'job_id': 'speech_cli'}, 'segments': []}))",
+                "else:",
+                "    print('{}')",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_friendly_error_message_hides_raw_dump_but_keeps_it_in_technical_detail():
+    from app import chat_controller as controller
+
+    raw = (
+        "CloneCast command failed: speech-render --script-id script_1\n"
+        "stdout:\n(very long real stdout dump)\n"
+        "stderr:\nChatterbox lifecycle worker response timed out\n" + ("x" * 3000)
+    )
+    friendly = controller._friendly_episode_error_message(raw)
+
+    assert len(friendly) < 200
+    assert "stdout" not in friendly
+    assert "x" * 100 not in friendly
+    assert "resume" in friendly.lower() or "regenerate" in friendly.lower()
+
+
+def test_friendly_error_message_falls_back_to_short_first_line_for_unknown_errors():
+    from app import chat_controller as controller
+
+    friendly = controller._friendly_episode_error_message("Some totally new CloneCast failure text")
+    assert "Some totally new CloneCast failure text" in friendly
+    assert len(friendly) < 250
+
+
 def test_voice_profile_id_is_passed_and_host_name_is_not_used(session_data_dir, tmp_path):
     repo = _repo(tmp_path)
     script = tmp_path / "script.txt"

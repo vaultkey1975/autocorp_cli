@@ -543,7 +543,7 @@ def _worker(
         )
         _on_worker_success(app_session_id, session)
     except episode.EpisodeBuildError as exc:
-        _on_worker_error(app_session_id, str(exc), technical=str(exc), retry_safe=True)
+        _on_worker_error(app_session_id, _friendly_episode_error_message(str(exc)), technical=str(exc), retry_safe=True)
     except _CancelledSignal:
         _on_worker_error(
             app_session_id,
@@ -916,6 +916,33 @@ def workflow_summary(app: store.AppSession) -> dict[str, Any]:
         "listening_gate_status": "ready to listen" if ep.artifact_paths.get("final_audio") else "not reached",
         "publishing_lock_status": "eligible" if ep.owner_approval_status == "publishing_eligible" else "locked",
     }
+
+
+_FRIENDLY_ERROR_PATTERNS: list[tuple[str, str]] = [
+    ("Chatterbox lifecycle worker response timed out", "Audio generation stalled and was stopped. No publishing occurred. You can safely resume or regenerate."),
+    ("exceeded the per-segment timeout", "One audio segment took far longer than expected and was stopped. No publishing occurred. You can safely resume or regenerate."),
+    ("CloneCast command timed out during", "Audio generation took too long and was stopped safely. No publishing occurred. You can safely resume or regenerate."),
+    ("VRAM release was not confirmed", "The GPU could not be confirmed as free after generation stopped. No publishing occurred. Check GPU status before retrying."),
+    ("insufficient free VRAM", "There is not enough free GPU memory to generate audio right now. No publishing occurred. Free up GPU memory and resume."),
+    ("segment_error", "One audio segment failed to generate. No publishing occurred. You can safely resume or regenerate."),
+    ("Chatterbox lifecycle worker exited without a response", "The audio generation worker stopped unexpectedly. No publishing occurred. You can safely resume or regenerate."),
+    ("research must be valid UTF-8", "That research could not be used as-is. Add it as plain text or a .txt file instead."),
+    ("PDF text extraction is not yet supported", "PDF text extraction is not yet supported. Please paste the research text or upload a .txt file instead."),
+]
+
+
+def _friendly_episode_error_message(raw: str) -> str:
+    """Never show the raw CloneCast stdout/stderr dump as the primary chat
+    message - map known failure shapes to a short, honest sentence, and use
+    a short generic fallback (never fabricated success) for anything else.
+    The full raw text is always still available behind Technical details."""
+    for needle, friendly in _FRIENDLY_ERROR_PATTERNS:
+        if needle in raw:
+            return friendly
+    first_line = raw.strip().splitlines()[0] if raw.strip() else "CloneCast reported a failure."
+    if len(first_line) > 160:
+        first_line = first_line[:157] + "..."
+    return f"{first_line} No publishing occurred. You can safely resume or regenerate."
 
 
 def _on_worker_error(app_session_id: str, safe_message: str, *, technical: str, retry_safe: bool) -> None:
