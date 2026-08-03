@@ -571,6 +571,10 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> An
     kind = classify_prompt(prompt)
     app = store.load_session(app_session_id)
 
+    if kind == "start_generation" and _generation_already_started(app):
+        _run_gpu_guard(app_session_id, handle)
+        return "yes"
+
     if kind == "confirm_target":
         if not app.episode_session_id:
             # The operator has already created and saved its EpisodeSession by
@@ -681,6 +685,37 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> An
     if kind == "start_generation" and str(answer).strip().lower() in {"yes", "y"}:
         _run_gpu_guard(app_session_id, handle)
     return answer
+
+
+def _generation_already_started(app: store.AppSession) -> bool:
+    if not app.episode_session_id:
+        return False
+    try:
+        ep = episode.load_session(app.episode_session_id)
+    except episode.EpisodeBuildError:
+        return False
+    if ep.completed_stage == "saved_before_generation":
+        return False
+    if ep.failed_stage in {"speech_render", "episode_audio_assemble", "episode_audio_validate", "episode_audio_master"}:
+        return True
+    if ep.completed_stage in {
+        "episode_created",
+        "approved_script_imported",
+        "voice_assigned",
+        "speech_provider_preflight",
+        "speech_rendering",
+        "speech_rendered",
+        "speech_validated",
+        "episode_assembled",
+        "episode_validated",
+        "episode_mastered",
+        "listening_gate",
+    }:
+        return True
+    return any(
+        ep.clonecast_episode_identifiers.get(key)
+        for key in ("episode_id", "script_id", "speech_job_id", "episode_audio_job_id")
+    )
 
 
 def _build_question(kind: str, prompt: str, app: store.AppSession, handle: EngineHandle) -> dict[str, Any]:
@@ -919,15 +954,47 @@ def workflow_summary(app: store.AppSession) -> dict[str, Any]:
 
 
 _FRIENDLY_ERROR_PATTERNS: list[tuple[str, str]] = [
-    ("Chatterbox lifecycle worker response timed out", "Audio generation stalled and was stopped. No publishing occurred. You can safely resume or regenerate."),
-    ("exceeded the per-segment timeout", "One audio segment took far longer than expected and was stopped. No publishing occurred. You can safely resume or regenerate."),
-    ("CloneCast command timed out during", "Audio generation took too long and was stopped safely. No publishing occurred. You can safely resume or regenerate."),
-    ("VRAM release was not confirmed", "The GPU could not be confirmed as free after generation stopped. No publishing occurred. Check GPU status before retrying."),
-    ("insufficient free VRAM", "There is not enough free GPU memory to generate audio right now. No publishing occurred. Free up GPU memory and resume."),
-    ("segment_error", "One audio segment failed to generate. No publishing occurred. You can safely resume or regenerate."),
-    ("Chatterbox lifecycle worker exited without a response", "The audio generation worker stopped unexpectedly. No publishing occurred. You can safely resume or regenerate."),
-    ("research must be valid UTF-8", "That research could not be used as-is. Add it as plain text or a .txt file instead."),
-    ("PDF text extraction is not yet supported", "PDF text extraction is not yet supported. Please paste the research text or upload a .txt file instead."),
+    (
+        "Chatterbox lifecycle worker response timed out",
+        "Audio generation stalled and was stopped. No publishing occurred. You can safely resume or regenerate.",
+    ),
+    (
+        "exceeded the per-segment timeout",
+        "One audio segment took far longer than expected and was stopped. "
+        "No publishing occurred. You can safely resume or regenerate.",
+    ),
+    (
+        "CloneCast command timed out during",
+        "Audio generation took too long and was stopped safely. "
+        "No publishing occurred. You can safely resume or regenerate.",
+    ),
+    (
+        "VRAM release was not confirmed",
+        "The GPU could not be confirmed as free after generation stopped. "
+        "No publishing occurred. Check GPU status before retrying.",
+    ),
+    (
+        "insufficient free VRAM",
+        "There is not enough free GPU memory to generate audio right now. "
+        "No publishing occurred. Free up GPU memory and resume.",
+    ),
+    (
+        "segment_error",
+        "One audio segment failed to generate. No publishing occurred. You can safely resume or regenerate.",
+    ),
+    (
+        "Chatterbox lifecycle worker exited without a response",
+        "The audio generation worker stopped unexpectedly. "
+        "No publishing occurred. You can safely resume or regenerate.",
+    ),
+    (
+        "research must be valid UTF-8",
+        "That research could not be used as-is. Add it as plain text or a .txt file instead.",
+    ),
+    (
+        "PDF text extraction is not yet supported",
+        "PDF text extraction is not yet supported. Please paste the research text or upload a .txt file instead.",
+    ),
 ]
 
 

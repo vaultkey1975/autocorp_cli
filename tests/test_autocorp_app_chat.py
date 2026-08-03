@@ -14,6 +14,8 @@ from tests._fake_clonecast import (
     make_repo,
 )
 
+READY_PROMPT = "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only."
+
 
 @pytest.fixture
 def isolated_data_dir(tmp_path, monkeypatch):
@@ -33,9 +35,7 @@ def _factory(_path):
 
 def test_one_question_at_a_time_and_known_choices_render_as_buttons(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
-    app = controller.start_session(
-        str(repo), "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only.", clonecast_cli_factory=_factory
-    )
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=_factory)
     assert app.status == "awaiting_input"
     assert app.pending_question["field"] == "research"
     assert app.pending_question["input_kind"] == "file_or_text"
@@ -57,9 +57,7 @@ def test_studio_question_renders_friendly_buttons_when_not_prefilled(isolated_da
 
 def test_full_guided_flow_reaches_listening_gate_with_approved_voice(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
-    app = controller.start_session(
-        str(repo), "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only.", clonecast_cli_factory=_factory
-    )
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=_factory)
     assert app.pending_question["field"] == "research"
 
     rec = controller.register_upload(app.session_id, "research", "bigfoot.txt", b"Bigfoot research body.")
@@ -106,11 +104,69 @@ def test_full_guided_flow_reaches_listening_gate_with_approved_voice(isolated_da
     assert ep.owner_approval_status == "publishing_locked"
 
 
+def test_resume_after_speech_failure_auto_continues_past_start_gate(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    failures_remaining = {"count": 1}
+    instances = []
+
+    class OneSpeechFailureThenSuccess(FakeCloneCastCLI):
+        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+            self.calls.append(args)
+            if args and args[0] == "speech-render" and failures_remaining["count"]:
+                failures_remaining["count"] -= 1
+                heartbeat(heartbeat_interval)
+                raise episode.EpisodeBuildError("Chatterbox lifecycle worker response timed out")
+            return self.checked(args)
+
+    def factory(path):
+        fake = OneSpeechFailureThenSuccess(path)
+        instances.append(fake)
+        return fake
+
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=factory)
+    rec = controller.register_upload(app.session_id, "research", "r.txt", b"research body")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+    rec = controller.register_upload(app.session_id, "script", "s.txt", b"Host: Approved script body.\n")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+    app = controller.submit_answer(app.session_id, {"text": "Elias Voss"})
+    app = controller.submit_answer(app.session_id, {"value": VOICE_LARRY_APPROVED})
+    app = controller.submit_answer(app.session_id, {"value": "yes"})
+
+    assert app.status == "failed"
+    failed_ep = episode.load_session(app.episode_session_id)
+    assert failed_ep.failed_stage == "speech_render"
+    first_start_questions = [m for m in app.messages if m.kind == "question" and m.text.startswith("Everything is set")]
+    assert len(first_start_questions) == 1
+
+    controller._unregister(app.session_id)
+    resumed = controller.resume_session(app.session_id, clonecast_cli_factory=factory)
+
+    assert resumed.status == "awaiting_input"
+    assert resumed.pending_question["field"] == "listening_gate_action"
+    start_questions = [m for m in resumed.messages if m.kind == "question" and m.text.startswith("Everything is set")]
+    assert len(start_questions) == 1
+    completed_ep = episode.load_session(resumed.episode_session_id)
+    assert completed_ep.completed_stage == "listening_gate"
+    assert completed_ep.failed_stage is None
+    assert (
+        completed_ep.clonecast_episode_identifiers["research_id"]
+        == failed_ep.clonecast_episode_identifiers["research_id"]
+    )
+    assert (
+        completed_ep.clonecast_episode_identifiers["script_id"]
+        == failed_ep.clonecast_episode_identifiers["script_id"]
+    )
+    assert completed_ep.script_checksum == failed_ep.script_checksum
+    assert completed_ep.script_preserved_byte_for_byte is True
+    resume_calls = instances[-1].calls
+    assert not any(call[0] == "episode-create" for call in resume_calls)
+    assert not any(call[0] == "episode-script-import-approved" for call in resume_calls)
+    assert any(call[0] == "speech-render" for call in resume_calls)
+
+
 def test_draft_voice_requires_explicit_override(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
-    app = controller.start_session(
-        str(repo), "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only.", clonecast_cli_factory=_factory
-    )
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=_factory)
     rec = controller.register_upload(app.session_id, "research", "r.txt", b"research body")
     app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
     rec = controller.register_upload(app.session_id, "script", "s.txt", b"Host: hi\n")
@@ -131,7 +187,7 @@ def test_draft_voice_requires_explicit_override(isolated_data_dir, tmp_path):
     app = controller.submit_answer(app.session_id, {"value": VOICE_LARRY_DRAFT})
     assert app.pending_question["field"] == "voice"
     assert "needs confirmation" in app.messages[-1].text or "confirmation" in app.pending_question["text"]
-    confirm_option = next(o for o in app.pending_question["options"] if o["value"] == VOICE_LARRY_DRAFT)
+    assert next(o for o in app.pending_question["options"] if o["value"] == VOICE_LARRY_DRAFT)
     app = controller.submit_answer(app.session_id, {"value": VOICE_LARRY_DRAFT, "confirm_draft": True})
     assert app.pending_question["field"] == "start_generation"
     ep = episode.load_session(app.episode_session_id)
@@ -140,9 +196,7 @@ def test_draft_voice_requires_explicit_override(isolated_data_dir, tmp_path):
 
 def test_host_name_cannot_be_used_as_voice_id(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
-    app = controller.start_session(
-        str(repo), "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only.", clonecast_cli_factory=_factory
-    )
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=_factory)
     rec = controller.register_upload(app.session_id, "research", "r.txt", b"research body")
     app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
     rec = controller.register_upload(app.session_id, "script", "s.txt", b"Host: hi\n")
@@ -156,9 +210,7 @@ def test_host_name_cannot_be_used_as_voice_id(isolated_data_dir, tmp_path):
 
 def test_approve_records_listening_approval_and_keeps_publishing_locked(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
-    app = controller.start_session(
-        str(repo), "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only.", clonecast_cli_factory=_factory
-    )
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=_factory)
     rec = controller.register_upload(app.session_id, "research", "r.txt", b"research body")
     app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
     rec = controller.register_upload(app.session_id, "script", "s.txt", b"Host: hi\n")

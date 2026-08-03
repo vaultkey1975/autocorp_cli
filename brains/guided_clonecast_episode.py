@@ -826,17 +826,45 @@ def _record_mastering_result(session: EpisodeSession, payload: dict[str, Any]) -
     )
 
 
+def _next_mastering_retry_count(session: EpisodeSession, cli: CloneCastCLI, audio_job_id: str) -> int:
+    prefix = f"{session.session_id}:episode-audio-master:"
+    retry_count = int(session.validation_evidence.get("mastering_retry_count", 0))
+    try:
+        result = cli.run(["episode-audio-master-list", "--episode-audio-job-id", audio_job_id], timeout=10)
+    except Exception:
+        return retry_count
+    jobs = result.json_data if result.returncode == 0 else None
+    if not isinstance(jobs, list):
+        return retry_count
+    used_suffixes: list[int] = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        key = str(job.get("idempotency_key") or "")
+        if not key.startswith(prefix):
+            continue
+        suffix = key.removeprefix(prefix)
+        if suffix.isdigit():
+            used_suffixes.append(int(suffix))
+    if used_suffixes:
+        retry_count = max(retry_count, max(used_suffixes) + 1)
+    session.validation_evidence["mastering_retry_count"] = retry_count
+    save_session(session)
+    return retry_count
+
+
 def _master_existing_episode(session: EpisodeSession, cli: CloneCastCLI) -> None:
     audio_job_id = session.clonecast_episode_identifiers.get("episode_audio_job_id")
     if not audio_job_id:
         raise EpisodeBuildError("resume cannot master because episode_audio_job_id is missing")
+    retry_count = _next_mastering_retry_count(session, cli, audio_job_id)
     result = cli.checked(
         [
             "episode-audio-master",
             "--episode-audio-job-id",
             audio_job_id,
             "--idempotency-key",
-            f"{session.session_id}:episode-audio-master:{session.validation_evidence.get('mastering_retry_count', 0)}",
+            f"{session.session_id}:episode-audio-master:{retry_count}",
         ]
     )
     _record_command(session, result)
