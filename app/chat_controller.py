@@ -76,6 +76,16 @@ def _unregister(app_session_id: str) -> None:
         _HANDLES.pop(app_session_id, None)
 
 
+def has_active_worker(app_session_id: str) -> bool:
+    """True only if a live background worker thread is actually registered
+    for this session right now. ``EngineHandle``s are in-memory only, so
+    this is always False immediately after a server restart even for a
+    session whose persisted state still says "awaiting_input" - the browser
+    needs this to know a real Resume is required before answering/uploading
+    will do anything, instead of silently failing."""
+    return _get_handle(app_session_id) is not None
+
+
 PROMPT_PREFIXES: list[tuple[str, str]] = [
     ("Confirm CloneCast target", "confirm_target"),
     ("Which CloneCast show/studio should be used?", "studio"),
@@ -206,12 +216,23 @@ def start_session(
     return store.load_session(session_id)
 
 
+RESUMING_MESSAGE = "Resuming from the last completed step."
+
+
 def resume_session(app_session_id: str, *, clonecast_cli_factory: Any | None = None) -> store.AppSession:
     app = store.load_session(app_session_id)
     if app.status not in {"failed", "awaiting_input"}:
         raise ChatControllerError(f"session cannot be resumed from status {app.status!r}")
     if not app.episode_session_id:
         raise ChatControllerError("session has no linked episode to resume")
+    if has_active_worker(app_session_id):
+        # A live worker already exists for this session (e.g. a duplicate
+        # Resume click, or the session was already sitting at an open
+        # question). Starting a second worker thread on the same episode
+        # session would race the first one against the same CloneCast
+        # calls, so this is a no-op that just returns the current,
+        # already-correct state instead of an error or a duplicate worker.
+        return app
     repo_path = app.clonecast_repo_path
     cli = clonecast_cli_factory(Path(repo_path)) if clonecast_cli_factory else None
     client = cc.CloneCastClient(repo_path, cli=cli)
@@ -225,7 +246,12 @@ def resume_session(app_session_id: str, *, clonecast_cli_factory: Any | None = N
         app = store.load_session(app_session_id)
     app.status = "running"
     app.error = None
-    app.add_message(store.ChatMessage(role="system", kind="text", text="Resuming from the last completed step."))
+    # Restoring the exact same still-open question (the common case: the
+    # in-memory worker was lost - e.g. a server restart - but nothing about
+    # the workflow actually failed) doesn't need a second "Resuming..."
+    # banner stacked on the last one.
+    if not (app.messages and app.messages[-1].kind == "text" and app.messages[-1].text == RESUMING_MESSAGE):
+        app.add_message(store.ChatMessage(role="system", kind="text", text=RESUMING_MESSAGE))
     store.save_session(app)
     _register(handle)
     thread = threading.Thread(
@@ -291,6 +317,12 @@ def cancel_session(app_session_id: str) -> store.AppSession:
 
 def register_upload(app_session_id: str, kind: str, filename: str, data: bytes) -> store.UploadRecord:
     app = store.load_session(app_session_id)
+    expected_field = (app.pending_question or {}).get("field")
+    if expected_field != kind:
+        raise ChatControllerError(
+            f"this session is not currently expecting a {kind} upload "
+            f"(it is waiting on: {expected_field or 'nothing'})"
+        )
     saved = file_service.save_upload(app_session_id, kind, filename, data)
     record = store.UploadRecord(
         upload_id=f"upl_{saved.sha256[:16]}",
@@ -619,17 +651,28 @@ def _resolve_input(app_session_id: str, handle: EngineHandle, prompt: str) -> An
         return value
 
     question = _build_question(kind, prompt, app, handle)
+    # Restoring the same still-open waiting state (e.g. a resume after the
+    # in-memory worker was lost, that lands right back on the same
+    # unanswered question) must not spam a duplicate chat bubble - only the
+    # first time a question is actually shown does it get one.
+    is_same_waiting_state = (
+        app.pending_question is not None
+        and app.pending_question.get("field") == question.get("field")
+        and app.pending_question.get("text") == question.get("text")
+        and app.pending_question.get("input_kind") == question.get("input_kind")
+    )
     app.pending_question = question
     app.status = "awaiting_input"
-    app.add_message(
-        store.ChatMessage(
-            role="assistant",
-            kind="question",
-            text=question["text"],
-            input_kind=question["input_kind"],
-            options=question.get("options", []),
+    if not is_same_waiting_state:
+        app.add_message(
+            store.ChatMessage(
+                role="assistant",
+                kind="question",
+                text=question["text"],
+                input_kind=question["input_kind"],
+                options=question.get("options", []),
+            )
         )
-    )
     store.save_session(app)
     handle.updated_event.set()
     answer = handle.answer_queue.get()

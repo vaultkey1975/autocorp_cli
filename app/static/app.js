@@ -120,21 +120,55 @@
     publishingIndicator.classList.toggle("eligible", !!eligible);
 
     const pq = detail.pending_question;
-    textInput.disabled = detail.status !== "awaiting_input" && detail.status !== "new" && detail.status !== "failed";
+    const needsResume = detail.status === "awaiting_input" && !detail.has_active_worker;
+    textInput.disabled = (detail.status !== "awaiting_input" && detail.status !== "new" && detail.status !== "failed") || needsResume;
     if (pq && (pq.input_kind === "text" || pq.input_kind === "buttons_or_text" || pq.input_kind === "file_or_text")) {
       textInput.placeholder = pq.text;
     } else {
       textInput.placeholder = "Type a message...";
     }
-    dropZone.classList.toggle("hidden", !(pq && pq.input_kind === "file_or_text"));
+    dropZone.classList.toggle("hidden", !(pq && pq.input_kind === "file_or_text") || needsResume);
     cancelBtn.classList.toggle("hidden", detail.status !== "awaiting_input" && detail.status !== "running");
 
     if (detail.status === "failed" && detail.error && detail.error.retry_safe) {
+      showResumeButton();
+    } else if (needsResume) {
+      // The persisted session is still waiting on an answer, but the
+      // in-memory worker for it is gone (e.g. the server restarted) - the
+      // same question would otherwise look "stuck" with Upload/Send
+      // silently doing nothing.
+      showTransientNotice(
+        "This session needs to be resumed before it can continue.",
+        "has_active_worker is false while status is awaiting_input"
+      );
       showResumeButton();
     }
 
     highlightActiveSession();
     schedulePoll(detail.status);
+  }
+
+  function showTransientNotice(text, technicalDetail) {
+    if (chatLog.lastElementChild && chatLog.lastElementChild.dataset.transientNotice === text) return;
+    const div = document.createElement("div");
+    div.className = "msg assistant error";
+    div.dataset.transientNotice = text;
+    const body = document.createElement("div");
+    body.textContent = text;
+    div.appendChild(body);
+    if (technicalDetail) {
+      const toggle = document.createElement("div");
+      toggle.className = "tech-toggle";
+      toggle.textContent = "Technical details";
+      const detailEl = document.createElement("div");
+      detailEl.className = "tech-detail hidden";
+      detailEl.textContent = technicalDetail;
+      toggle.addEventListener("click", () => detailEl.classList.toggle("hidden"));
+      div.appendChild(toggle);
+      div.appendChild(detailEl);
+    }
+    chatLog.appendChild(div);
+    chatLog.scrollTop = chatLog.scrollHeight;
   }
 
   function showResumeButton() {
@@ -255,24 +289,64 @@
 
   async function sendAnswer(payload) {
     if (!state.sessionId) return;
-    const detail = await api(`/api/sessions/${state.sessionId}/answer`, { method: "POST", body: JSON.stringify(payload) });
+    let detail;
+    try {
+      detail = await api(`/api/sessions/${state.sessionId}/answer`, { method: "POST", body: JSON.stringify(payload) });
+    } catch (err) {
+      showTransientNotice("That could not be sent. Your session was preserved.", String((err && err.message) || err));
+      try {
+        state.session = await api(`/api/sessions/${state.sessionId}`);
+        if (!state.session.has_active_worker) showResumeButton();
+      } catch (_) {
+        // Best-effort refresh; the notice above already told the user what happened.
+      }
+      return;
+    }
     renderSession(detail);
     await refreshSessionList();
   }
 
   async function uploadFile(file) {
-    if (!state.sessionId || !state.session || !state.session.pending_question) return;
-    const kind = state.session.pending_question.field === "script" ? "script" : "research";
-    const form = new FormData();
-    form.append("file", file);
-    const resp = await fetch(`/api/sessions/${state.sessionId}/upload?kind=${kind}`, { method: "POST", body: form });
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      alert(body.detail || "upload failed");
+    // Real file bytes only: the actual File object from the input/drop
+    // event, appended to a real multipart FormData - never a filename or
+    // browser fake-path string standing in for the file.
+    if (!(file instanceof File)) return;
+    if (!state.sessionId || !state.session || !state.session.pending_question) {
+      showTransientNotice("Start or open a session before uploading a file.");
       return;
     }
-    const record = await resp.json();
-    await sendAnswer({ upload_id: record.upload_id });
+    const kindLabel = state.session.pending_question.field === "script" ? "script" : "research";
+    const form = new FormData();
+    form.append("file", file, file.name);
+    try {
+      const resp = await fetch(`/api/sessions/${state.sessionId}/upload?kind=${kindLabel}`, { method: "POST", body: form });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        showTransientNotice(
+          `The ${kindLabel} could not be uploaded. Your session was preserved.`,
+          body.detail || `HTTP ${resp.status}`
+        );
+        return;
+      }
+      const record = await resp.json();
+      await sendAnswer({ upload_id: record.upload_id });
+    } catch (err) {
+      showTransientNotice(
+        `The ${kindLabel} could not be uploaded. Your session was preserved.`,
+        String((err && err.message) || err)
+      );
+      // Re-sync has_active_worker/pending_question in memory (without a
+      // full chat-log re-render, which would wipe the notice just shown
+      // above) so a stale "no active worker" state doesn't keep silently
+      // rejecting every further attempt without an obvious way out.
+      try {
+        state.session = await api(`/api/sessions/${state.sessionId}`);
+        if (!state.session.has_active_worker) showResumeButton();
+      } catch (_) {
+        // Best-effort refresh; the notice above already told the user
+        // what happened.
+      }
+    }
   }
 
   el("new-session-btn").addEventListener("click", async () => {

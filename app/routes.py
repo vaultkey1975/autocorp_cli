@@ -48,6 +48,7 @@ def _session_detail(app: store.AppSession) -> dict:
         "voice_advanced_unlocked": app.voice_advanced_unlocked,
         "error": app.error,
         "workflow_summary": controller.workflow_summary(app),
+        "has_active_worker": controller.has_active_worker(app.session_id),
     }
 
 
@@ -177,6 +178,8 @@ async def api_upload(session_id: str, kind: str, file: UploadFile = File(...)) -
         record = controller.register_upload(session_id, kind, file.filename or "upload", data)
     except file_service.FileServiceError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except controller.ChatControllerError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return record.to_dict()
 
 

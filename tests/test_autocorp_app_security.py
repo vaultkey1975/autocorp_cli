@@ -25,10 +25,14 @@ def fake_clonecast(monkeypatch):
     monkeypatch.setattr(cc, "CloneCastCLI", FakeCloneCastCLI)
 
 
+_RESEARCH_MESSAGE = "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only."
+
+
 def test_path_traversal_upload_is_rejected(isolated_data_dir, fake_clonecast, tmp_path):
     repo = make_repo(tmp_path)
     client = TestClient(fastapi_app)
-    session = client.post("/api/sessions", json={"repo_path": str(repo), "message": "start"}).json()
+    session = client.post("/api/sessions", json={"repo_path": str(repo), "message": _RESEARCH_MESSAGE}).json()
+    assert session["pending_question"]["field"] == "research"
     resp = client.post(
         f"/api/sessions/{session['session_id']}/upload?kind=research",
         files={"file": ("../../../etc/passwd", b"not really passwd", "text/plain")},
@@ -41,7 +45,8 @@ def test_path_traversal_upload_is_rejected(isolated_data_dir, fake_clonecast, tm
 def test_unsupported_executable_upload_is_rejected(isolated_data_dir, fake_clonecast, tmp_path):
     repo = make_repo(tmp_path)
     client = TestClient(fastapi_app)
-    session = client.post("/api/sessions", json={"repo_path": str(repo), "message": "start"}).json()
+    session = client.post("/api/sessions", json={"repo_path": str(repo), "message": _RESEARCH_MESSAGE}).json()
+    assert session["pending_question"]["field"] == "research"
     resp = client.post(
         f"/api/sessions/{session['session_id']}/upload?kind=research",
         files={"file": ("payload.sh", b"#!/bin/sh\nrm -rf /", "application/x-sh")},
