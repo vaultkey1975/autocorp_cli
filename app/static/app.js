@@ -56,6 +56,10 @@
       ["Script checksum", summary.script_checksum_status],
       ["Host", summary.host],
       ["Voice", summary.voice],
+      ["Delivery", summary.delivery_profile],
+      ["Generated", summary.generated_at],
+      ["Audio version", summary.audio_version],
+      ["Audio checksum", summary.audio_checksum],
       ["Guests / callers", summary.guests_or_callers],
       ["Audio / video", summary.media_mode],
       ["Current step", summary.current_step],
@@ -76,7 +80,9 @@
     if (msg.kind === "listening_gate") {
       const audio = document.createElement("audio");
       audio.controls = true;
-      audio.src = `/api/sessions/${state.sessionId}/audio`;
+      const summary = state.session && state.session.workflow_summary;
+      const version = summary && (summary.audio_checksum || summary.audio_version);
+      audio.src = `/api/sessions/${state.sessionId}/audio${version ? `?v=${encodeURIComponent(version)}` : ""}`;
       div.appendChild(audio);
     }
 

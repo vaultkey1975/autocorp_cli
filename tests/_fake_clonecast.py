@@ -50,6 +50,8 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             "episode-script-import-approved",
             "script-voice-list",
             "script-voice-assign",
+            "script-voice-unassign",
+            "voice-delivery-preset-show",
             "speech-provider-check",
             "speech-render",
             "speech-render-validate",
@@ -63,7 +65,8 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         head = args[0] if args else ""
 
         if args == ["config-check"]:
-            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"db_path": str(self.repo / "db" / "cloneshow.db")})
+            data = {"db_path": str(self.repo / "db" / "cloneshow.db")}
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if args == ["radio-studio-list"]:
             data = [{"studio_id": STUDIO_ID, "display_name": STUDIO_DISPLAY_NAME, "lifecycle_status": "approved"}]
@@ -153,21 +156,88 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             script_id = args[args.index("--script-id") + 1]
             speaker = args[args.index("--speaker") + 1]
             voice_profile_id = args[args.index("--voice-profile-id") + 1]
+            delivery_preset_id = (
+                args[args.index("--delivery-preset-id") + 1] if "--delivery-preset-id" in args else None
+            )
             assignment = {
                 "assignment_id": f"assign_{len(self.voice_assignments.get(script_id, [])) + 1}",
                 "script_id": script_id,
                 "speaker": speaker,
                 "voice_profile_id": voice_profile_id,
+                "delivery_preset_id": delivery_preset_id,
+                "generation_settings_sha256": "95f3a122ff06ae6a7beced1d88d4abb415045a3f35d2b7dbb41106a2b8c1c656"
+                if delivery_preset_id == "dvpreset_radio_host_v1"
+                else "184a1bf5c2f194840fa0828ae638469092433d60b723ce727feff07eb0bf3d31",
             }
+            existing = next(
+                (item for item in self.voice_assignments.get(script_id, []) if item["speaker"] == speaker),
+                None,
+            )
+            if existing:
+                existing.update(
+                    {
+                        "voice_profile_id": voice_profile_id,
+                        "delivery_preset_id": assignment["delivery_preset_id"],
+                        "generation_settings_sha256": assignment["generation_settings_sha256"],
+                    }
+                )
+                return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", existing)
             self.voice_assignments.setdefault(script_id, []).append(assignment)
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", assignment)
 
+        if head == "script-voice-unassign":
+            script_id = args[args.index("--script-id") + 1]
+            speaker = args[args.index("--speaker") + 1]
+            self.voice_assignments[script_id] = [
+                item for item in self.voice_assignments.get(script_id, []) if item["speaker"] != speaker
+            ]
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"removed": None})
+
+        if head == "voice-delivery-preset-show":
+            preset_id = args[1]
+            if preset_id == "dvpreset_radio_host_v1":
+                data = {
+                    "delivery_preset_id": "dvpreset_radio_host_v1",
+                    "stable_name": "radio-host",
+                    "display_name": "Radio Host v1",
+                    "generation_settings": {
+                        "norm_loudness": True,
+                        "repetition_penalty": 1.05,
+                        "temperature": 0.7,
+                        "top_k": 1000,
+                        "top_p": 0.9,
+                    },
+                    "generation_settings_sha256": "95f3a122ff06ae6a7beced1d88d4abb415045a3f35d2b7dbb41106a2b8c1c656",
+                }
+            else:
+                data = {
+                    "delivery_preset_id": "dvpreset_natural_v1",
+                    "stable_name": "natural",
+                    "display_name": "Natural v1",
+                    "generation_settings": {
+                        "norm_loudness": True,
+                        "repetition_penalty": 1.05,
+                        "temperature": 0.8,
+                        "top_k": 1000,
+                        "top_p": 0.95,
+                    },
+                    "generation_settings_sha256": "184a1bf5c2f194840fa0828ae638469092433d60b723ce727feff07eb0bf3d31",
+                }
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
+
         if head == "speech-provider-check":
-            data = {"available": True, "provider": "chatterbox-turbo", "preflight": {"may_begin": True, "free_vram_mib": 12000}}
+            data = {
+                "available": True,
+                "provider": "chatterbox-turbo",
+                "preflight": {"may_begin": True, "free_vram_mib": 12000},
+            }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if head == "speech-render":
-            data = {"job": {"job_id": "speech_1"}, "segments": [{"segment_render_id": "seg_1", "output_path": str(self.repo / "segment.wav")}]}
+            data = {
+                "job": {"job_id": "speech_1"},
+                "segments": [{"segment_render_id": "seg_1", "output_path": str(self.repo / "segment.wav")}],
+            }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if head == "speech-render-validate":
@@ -178,7 +248,17 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             final.write_bytes(b"x" * 2048)
             data = {
                 "job": {"job_id": "audio_1"},
-                "outputs": [{"output_type": "mp3", "path": str(final), "duration_seconds": 42.0, "file_size_bytes": final.stat().st_size, "container": "mp3", "codec": "mp3", "sha256": "a" * 64}],
+                "outputs": [
+                    {
+                        "output_type": "mp3",
+                        "path": str(final),
+                        "duration_seconds": 42.0,
+                        "file_size_bytes": final.stat().st_size,
+                        "container": "mp3",
+                        "codec": "mp3",
+                        "sha256": "a" * 64,
+                    }
+                ],
             }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
@@ -203,10 +283,29 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
                     "output_lra_lu": 2.5,
                 },
                 "artifacts": [
-                    {"artifact_type": "source_mp3", "path": str(raw), "sha256": "a" * 64, "file_size_bytes": raw.stat().st_size, "duration_seconds": 42.0, "container": "mp3", "codec": "mp3"},
-                    {"artifact_type": "mastered_mp3", "path": str(mastered), "sha256": "b" * 64, "file_size_bytes": mastered.stat().st_size, "duration_seconds": 42.0, "container": "mp3", "codec": "mp3"},
+                    {
+                        "artifact_type": "source_mp3",
+                        "path": str(raw),
+                        "sha256": "a" * 64,
+                        "file_size_bytes": raw.stat().st_size,
+                        "duration_seconds": 42.0,
+                        "container": "mp3",
+                        "codec": "mp3",
+                    },
+                    {
+                        "artifact_type": "mastered_mp3",
+                        "path": str(mastered),
+                        "sha256": "b" * 64,
+                        "file_size_bytes": mastered.stat().st_size,
+                        "duration_seconds": 42.0,
+                        "container": "mp3",
+                        "codec": "mp3",
+                    },
                 ],
-                "validation": {"valid": True, "measurements": {"output_i_lufs": -16.0, "output_tp_dbtp": -2.1, "output_lra_lu": 2.5}},
+                "validation": {
+                    "valid": True,
+                    "measurements": {"output_i_lufs": -16.0, "output_tp_dbtp": -2.1, "output_lra_lu": 2.5},
+                },
             }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 

@@ -73,12 +73,49 @@ def test_audio_route_cannot_serve_arbitrary_local_path(isolated_data_dir, fake_c
     assert resp.status_code == 404
 
 
+def test_audio_route_serves_current_version_with_no_store_headers(isolated_data_dir, fake_clonecast, tmp_path):
+    repo = make_repo(tmp_path)
+    client = TestClient(fastapi_app)
+    session = client.post(
+        "/api/sessions",
+        json={"repo_path": str(repo), "message": _RESEARCH_MESSAGE},
+    ).json()
+    session_id = session["session_id"]
+    r1 = client.post(
+        f"/api/sessions/{session_id}/upload?kind=research",
+        files={"file": ("r.txt", b"research", "text/plain")},
+    ).json()
+    d = client.post(f"/api/sessions/{session_id}/answer", json={"upload_id": r1["upload_id"]}).json()
+    r2 = client.post(
+        f"/api/sessions/{session_id}/upload?kind=script",
+        files={"file": ("s.txt", b"Host: hi\n", "text/plain")},
+    ).json()
+    d = client.post(f"/api/sessions/{session_id}/answer", json={"upload_id": r2["upload_id"]}).json()
+    d = client.post(f"/api/sessions/{session_id}/answer", json={"text": "Elias Voss"}).json()
+    d = client.post(
+        f"/api/sessions/{session_id}/answer",
+        json={"value": d["pending_question"]["options"][0]["value"]},
+    ).json()
+    d = client.post(f"/api/sessions/{session_id}/answer", json={"value": "yes"}).json()
+
+    checksum = d["workflow_summary"]["audio_checksum"]
+    version = d["workflow_summary"]["audio_version"]
+    resp = client.get(f"/api/sessions/{session_id}/audio", params={"v": checksum})
+
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store, max-age=0"
+    assert resp.headers["pragma"] == "no-cache"
+    assert resp.headers["x-autocorp-audio-sha256"] == checksum
+    assert resp.headers["x-autocorp-audio-version"] == version
+    assert "Shadow_Frequency_radio_host_professional_v" in resp.headers["content-disposition"]
+
+
 def test_duplicate_answer_submission_does_not_duplicate_backend_work(isolated_data_dir, fake_clonecast, tmp_path):
     repo = make_repo(tmp_path)
     client = TestClient(fastapi_app)
     session = client.post(
         "/api/sessions",
-        json={"repo_path": str(repo), "message": "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only."},
+        json={"repo_path": str(repo), "message": _RESEARCH_MESSAGE},
     ).json()
     session_id = session["session_id"]
     files = {"file": ("research.txt", b"research body", "text/plain")}
@@ -106,12 +143,18 @@ def test_approving_audio_never_calls_a_publishing_command(isolated_data_dir, fak
     client = TestClient(fastapi_app)
     session = client.post(
         "/api/sessions",
-        json={"repo_path": str(repo), "message": "Create a Shadow Frequency episode. 10 minutes. No guests. Audio only."},
+        json={"repo_path": str(repo), "message": _RESEARCH_MESSAGE},
     ).json()
     session_id = session["session_id"]
-    r1 = client.post(f"/api/sessions/{session_id}/upload?kind=research", files={"file": ("r.txt", b"research", "text/plain")}).json()
+    r1 = client.post(
+        f"/api/sessions/{session_id}/upload?kind=research",
+        files={"file": ("r.txt", b"research", "text/plain")},
+    ).json()
     d = client.post(f"/api/sessions/{session_id}/answer", json={"upload_id": r1["upload_id"]}).json()
-    r2 = client.post(f"/api/sessions/{session_id}/upload?kind=script", files={"file": ("s.txt", b"Host: hi\n", "text/plain")}).json()
+    r2 = client.post(
+        f"/api/sessions/{session_id}/upload?kind=script",
+        files={"file": ("s.txt", b"Host: hi\n", "text/plain")},
+    ).json()
     d = client.post(f"/api/sessions/{session_id}/answer", json={"upload_id": r2["upload_id"]}).json()
     d = client.post(f"/api/sessions/{session_id}/answer", json={"text": "Elias Voss"}).json()
     voice_id = d["pending_question"]["options"][0]["value"]

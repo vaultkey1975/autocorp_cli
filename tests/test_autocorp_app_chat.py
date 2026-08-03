@@ -102,6 +102,119 @@ def test_full_guided_flow_reaches_listening_gate_with_approved_voice(isolated_da
     assert ep.guests_or_callers == "no"
     assert ep.media_mode == "audio-only"
     assert ep.owner_approval_status == "publishing_locked"
+    assert ep.selected_delivery_profiles["host"] == "dvpreset_radio_host_v1"
+    assert ep.validation_evidence["delivery_profile"]["stable_name"] == "radio-host"
+
+
+def test_shadow_frequency_professional_delivery_is_fingerprinted_in_real_commands(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    instances = []
+
+    def factory(path):
+        fake = FakeCloneCastCLI(path)
+        instances.append(fake)
+        return fake
+
+    app = controller.start_session(str(repo), READY_PROMPT, clonecast_cli_factory=factory)
+    rec = controller.register_upload(app.session_id, "research", "bigfoot.txt", b"research body")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+    rec = controller.register_upload(app.session_id, "script", "shadow.txt", b"Host: Approved script body.\n")
+    app = controller.submit_answer(app.session_id, {"upload_id": rec.upload_id})
+    app = controller.submit_answer(app.session_id, {"text": "Elias Voss"})
+    app = controller.submit_answer(app.session_id, {"value": VOICE_LARRY_APPROVED})
+    app = controller.submit_answer(app.session_id, {"value": "yes"})
+
+    assert app.pending_question["field"] == "listening_gate_action"
+    ep = episode.load_session(app.episode_session_id)
+    delivery = ep.validation_evidence["delivery_profile"]
+    assert ep.selected_delivery_profiles["host"] == "dvpreset_radio_host_v1"
+    assert delivery["stable_name"] == "radio-host"
+    assert delivery["generation_settings"]["temperature"] == 0.7
+    assert delivery["generation_settings"]["top_p"] == 0.9
+    assert ep.validation_evidence["audio_version"].startswith("professional-v")
+    assert len(ep.validation_evidence["audio_version_fingerprint"]) == 64
+
+    calls = instances[-1].calls
+    assign = next(call for call in calls if call[0] == "script-voice-assign")
+    assert assign[assign.index("--delivery-preset-id") + 1] == "dvpreset_radio_host_v1"
+    speech = next(call for call in calls if call[0] == "speech-render")
+    speech_key = speech[speech.index("--idempotency-key") + 1]
+    assert speech_key.startswith(f"{ep.session_id}:speech-render:")
+    assert speech_key != f"{ep.session_id}:speech-render"
+    assemble = next(call for call in calls if call[0] == "episode-audio-assemble")
+    assemble_key = assemble[assemble.index("--idempotency-key") + 1]
+    assert assemble_key.startswith(f"{ep.session_id}:episode-audio-assemble:")
+
+    summary = controller.workflow_summary(app)
+    assert summary["delivery_profile"] == "Radio Host v1"
+    assert summary["audio_version"] == ep.validation_evidence["audio_version"]
+    assert summary["audio_checksum"] == ep.validation_evidence["final_audio_sha256"]
+
+
+def test_delivery_change_preserves_previous_audio_and_forces_new_render(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    cli = FakeCloneCastCLI(repo)
+    script_id = "script_existing"
+    assignment = {
+        "assignment_id": "assign_existing",
+        "script_id": script_id,
+        "speaker": "Host",
+        "voice_profile_id": VOICE_LARRY_APPROVED,
+        "delivery_preset_id": "dvpreset_natural_v1",
+        "generation_settings_sha256": "184a1bf5c2f194840fa0828ae638469092433d60b723ce727feff07eb0bf3d31",
+    }
+    cli.voice_assignments[script_id] = [assignment]
+    session = episode.EpisodeSession(
+        session_id="acce_existing",
+        clonecast_repo_path=str(repo),
+        selected_studio_show=STUDIO_ID,
+        script_checksum="c" * 64,
+        imported_script_checksum="c" * 64,
+        script_preserved_byte_for_byte=True,
+        selected_voices={"host": VOICE_LARRY_APPROVED},
+        selected_delivery_profiles={"host": "dvpreset_radio_host_v1"},
+        clonecast_episode_identifiers={
+            "script_id": script_id,
+            "speech_job_id": "speech_old",
+            "episode_audio_job_id": "audio_old",
+            "episode_mastering_job_id": "master_old",
+        },
+        completed_stage="listening_gate",
+        artifact_paths={
+            "sections": [str(tmp_path / "old-segment.wav")],
+            "raw_audio": str(tmp_path / "old-raw.mp3"),
+            "final_audio": str(tmp_path / "old-final.mp3"),
+        },
+        validation_evidence={
+            "delivery_profile": {"delivery_preset_id": "dvpreset_natural_v1", "stable_name": "natural"},
+            "raw_audio_sha256": "a" * 64,
+            "final_audio_sha256": "b" * 64,
+            "audio_version": "audio-v1",
+            "actual_duration_seconds": 123.0,
+        },
+    )
+
+    episode._ensure_voice_assigned(
+        session,
+        cli,
+        script_id=script_id,
+        speaker="Host",
+        voice_profile_id=VOICE_LARRY_APPROVED,
+        delivery_preset_id="dvpreset_radio_host_v1",
+    )
+
+    assert session.validation_evidence["voice_assignment"]["status"] == "delivery_updated"
+    assert session.validation_evidence["delivery_profile"]["stable_name"] == "radio-host"
+    assert session.clonecast_episode_identifiers == {"script_id": script_id}
+    assert "sections" not in session.artifact_paths
+    assert "final_audio" not in session.artifact_paths
+    history = session.validation_evidence["previous_audio_versions"]
+    assert len(history) == 1
+    assert history[0]["speech_job_id"] == "speech_old"
+    assert history[0]["final_audio_sha256"] == "b" * 64
+    assert session.owner_approval_status == "publishing_locked"
+    assign = [call for call in cli.calls if call[0] == "script-voice-assign"][-1]
+    assert assign[assign.index("--delivery-preset-id") + 1] == "dvpreset_radio_host_v1"
 
 
 def test_resume_after_speech_failure_auto_continues_past_start_gate(isolated_data_dir, tmp_path):

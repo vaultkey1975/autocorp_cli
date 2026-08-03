@@ -6,6 +6,7 @@ Kept deliberately thin: every route delegates to ``app.chat_controller``,
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -195,4 +196,28 @@ def api_audio(session_id: str) -> FileResponse:
     final_audio = ep.artifact_paths.get("final_audio")
     if not final_audio or not Path(str(final_audio)).is_file():
         raise HTTPException(status_code=404, detail="audio is not ready yet")
-    return FileResponse(str(final_audio), media_type="audio/mpeg", filename=f"{session_id}.mp3")
+    checksum = str(ep.validation_evidence.get("final_audio_sha256") or "")
+    filename = _audio_download_filename(ep)
+    headers = {
+        "Cache-Control": "no-store, max-age=0",
+        "Pragma": "no-cache",
+        "Expires": "0",
+        "X-AutoCorp-Audio-SHA256": checksum,
+        "X-AutoCorp-Audio-Version": str(ep.validation_evidence.get("audio_version") or ""),
+    }
+    if checksum:
+        headers["ETag"] = f'"{checksum}"'
+    return FileResponse(str(final_audio), media_type="audio/mpeg", filename=filename, headers=headers)
+
+
+def _audio_download_filename(ep: episode.EpisodeSession) -> str:
+    show = re.sub(r"[^A-Za-z0-9]+", "_", str(episode.display_show_name(ep) or "Episode")).strip("_")
+    delivery = ep.validation_evidence.get("delivery_profile", {})
+    profile = re.sub(
+        r"[^A-Za-z0-9]+",
+        "_",
+        str(delivery.get("stable_name") or delivery.get("display_name") or "audio"),
+    ).strip("_")
+    version = re.sub(r"[^A-Za-z0-9]+", "_", str(ep.validation_evidence.get("audio_version") or "v1")).strip("_")
+    parts = [part for part in (show, profile, version) if part]
+    return "_".join(parts) + ".mp3"

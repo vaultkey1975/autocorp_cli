@@ -864,6 +864,10 @@ def _append_listening_gate_message(app: store.AppSession) -> None:
     final_audio = ep.artifact_paths.get("final_audio")
     text = (
         f"Episode ready for review.\n"
+        f"Delivery: {ep.validation_evidence.get('delivery_profile', {}).get('display_name', 'unknown')}\n"
+        f"Voice: {ep.selected_voices.get('host', 'unknown')}\n"
+        f"Audio version: {ep.validation_evidence.get('audio_version', 'unknown')}\n"
+        f"Generated: {ep.validation_evidence.get('final_audio_generated_at', ep.updated_at)}\n"
         f"Duration: {ep.validation_evidence.get('actual_duration_seconds', 'unknown')} seconds\n"
         f"File size: {ep.validation_evidence.get('final_audio_file_size_bytes', 'unknown')} bytes\n"
         f"Checksum: {ep.validation_evidence.get('final_audio_sha256', 'unknown')}\n"
@@ -922,6 +926,11 @@ def workflow_summary(app: store.AppSession) -> dict[str, Any]:
             "script_checksum_status": "not started",
             "host": None,
             "voice": None,
+            "delivery_profile": None,
+            "delivery_profile_id": None,
+            "generated_at": None,
+            "audio_version": None,
+            "audio_checksum": None,
             "guests_or_callers": None,
             "media_mode": None,
             "current_step": app.status,
@@ -942,6 +951,11 @@ def workflow_summary(app: store.AppSession) -> dict[str, Any]:
         "script_checksum_status": "verified" if ep.script_preserved_byte_for_byte else "not verified",
         "host": ep.selected_host,
         "voice": ep.selected_voices.get("host"),
+        "delivery_profile": ep.validation_evidence.get("delivery_profile", {}).get("display_name"),
+        "delivery_profile_id": ep.validation_evidence.get("delivery_profile", {}).get("delivery_preset_id"),
+        "generated_at": ep.validation_evidence.get("final_audio_generated_at"),
+        "audio_version": ep.validation_evidence.get("audio_version"),
+        "audio_checksum": ep.validation_evidence.get("final_audio_sha256"),
         "guests_or_callers": ep.guests_or_callers,
         "media_mode": ep.media_mode,
         "current_step": ep.completed_stage,

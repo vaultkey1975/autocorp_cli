@@ -34,6 +34,8 @@ PUBLISH_COMMANDS = {
     "publication-retry",
     "radio-publication-create",
 }
+SHADOW_FREQUENCY_PROFESSIONAL_DELIVERY_PRESET_ID = "dvpreset_radio_host_v1"
+SHADOW_FREQUENCY_STUDIO_IDS = {"studio_c7599bb4733e438d9f1926e0e4ad6111"}
 
 _STAGE_ORDER = {
     "created": 0,
@@ -90,6 +92,7 @@ class EpisodeSession:
     script_preserved_byte_for_byte: bool = False
     selected_host: str | None = None
     selected_voices: dict[str, str] = field(default_factory=dict)
+    selected_delivery_profiles: dict[str, str] = field(default_factory=dict)
     guests_or_callers: str | None = None
     media_mode: str | None = None
     clonecast_episode_identifiers: dict[str, str] = field(default_factory=dict)
@@ -120,6 +123,7 @@ class EpisodeSession:
             "script_preserved_byte_for_byte": self.script_preserved_byte_for_byte,
             "selected_host": self.selected_host,
             "selected_voices": self.selected_voices,
+            "selected_delivery_profiles": self.selected_delivery_profiles,
             "guests_or_callers": self.guests_or_callers,
             "media_mode": self.media_mode,
             "clonecast_episode_identifiers": self.clonecast_episode_identifiers,
@@ -507,19 +511,56 @@ def _ensure_voice_assigned(
     script_id: str,
     speaker: str,
     voice_profile_id: str,
+    delivery_preset_id: str | None = None,
 ) -> None:
+    delivery_preset = _delivery_preset(cli, delivery_preset_id) if delivery_preset_id else None
     list_result = cli.checked(["script-voice-list", script_id])
     _record_command(session, list_result)
     existing = _assignment_for_speaker(_require_json(list_result, "script-voice-list"), speaker)
     if existing is not None:
         existing_voice = str(existing.get("voice_profile_id") or "")
+        existing_preset = str(existing.get("delivery_preset_id") or "")
         if existing_voice == voice_profile_id:
+            if delivery_preset_id and existing_preset != delivery_preset_id:
+                _preserve_active_audio_version(session, reason="delivery_profile_changed")
+                assign_result = cli.checked(
+                    [
+                        "script-voice-assign",
+                        "--script-id",
+                        script_id,
+                        "--speaker",
+                        speaker,
+                        "--voice-profile-id",
+                        voice_profile_id,
+                        "--delivery-preset-id",
+                        delivery_preset_id,
+                    ]
+                )
+                _record_command(session, assign_result)
+                _clear_active_render_outputs(session)
+                session.validation_evidence["voice_assignment"] = {
+                    "status": "delivery_updated",
+                    "speaker": speaker,
+                    "voice_profile_id": voice_profile_id,
+                    "previous_delivery_preset_id": existing_preset or "identity_default",
+                    "delivery_preset_id": delivery_preset_id,
+                    "assignment_id": existing.get("assignment_id"),
+                }
+                _record_delivery_provenance(
+                    session,
+                    delivery_preset or _require_mapping(assign_result.json_data, "script-voice-assign"),
+                )
+                session.completed_stage = "voice_assigned"
+                save_session(session)
+                return
             session.validation_evidence["voice_assignment"] = {
                 "status": "already_assigned",
                 "speaker": speaker,
                 "voice_profile_id": voice_profile_id,
+                "delivery_preset_id": existing_preset or delivery_preset_id,
                 "assignment_id": existing.get("assignment_id"),
             }
+            _record_delivery_provenance(session, delivery_preset or existing)
             session.completed_stage = "voice_assigned"
             save_session(session)
             return
@@ -539,15 +580,150 @@ def _ensure_voice_assigned(
             "--voice-profile-id",
             voice_profile_id,
         ]
+        + (["--delivery-preset-id", delivery_preset_id] if delivery_preset_id else [])
     )
     _record_command(session, assign_result)
     session.validation_evidence["voice_assignment"] = {
         "status": "created",
         "speaker": speaker,
         "voice_profile_id": voice_profile_id,
+        "delivery_preset_id": delivery_preset_id,
     }
+    _record_delivery_provenance(
+        session,
+        delivery_preset or _require_mapping(assign_result.json_data, "script-voice-assign"),
+    )
     session.completed_stage = "voice_assigned"
     save_session(session)
+
+
+def _preserve_active_audio_version(session: EpisodeSession, *, reason: str) -> None:
+    if not any(
+        session.clonecast_episode_identifiers.get(key)
+        for key in ("speech_job_id", "episode_audio_job_id", "episode_mastering_job_id")
+    ):
+        return
+    previous = {
+        "reason": reason,
+        "preserved_at": _now(),
+        "delivery_profile": session.validation_evidence.get("delivery_profile"),
+        "voice_profile_id": session.selected_voices.get("host"),
+        "script_id": session.clonecast_episode_identifiers.get("script_id"),
+        "script_sha256": session.script_checksum,
+        "speech_job_id": session.clonecast_episode_identifiers.get("speech_job_id"),
+        "episode_audio_job_id": session.clonecast_episode_identifiers.get("episode_audio_job_id"),
+        "episode_mastering_job_id": session.clonecast_episode_identifiers.get("episode_mastering_job_id"),
+        "raw_audio": session.artifact_paths.get("raw_audio"),
+        "final_audio": session.artifact_paths.get("final_audio"),
+        "sections": list(session.artifact_paths.get("sections") or []),
+        "raw_audio_sha256": session.validation_evidence.get("raw_audio_sha256"),
+        "final_audio_sha256": session.validation_evidence.get("final_audio_sha256"),
+        "audio_version": session.validation_evidence.get("audio_version"),
+        "audio_version_fingerprint": session.validation_evidence.get("audio_version_fingerprint"),
+        "actual_duration_seconds": session.validation_evidence.get("actual_duration_seconds"),
+    }
+    history = session.validation_evidence.setdefault("previous_audio_versions", [])
+    if not isinstance(history, list):
+        history = []
+        session.validation_evidence["previous_audio_versions"] = history
+    if not any(
+        item.get("speech_job_id") == previous["speech_job_id"]
+        and item.get("episode_audio_job_id") == previous["episode_audio_job_id"]
+        and item.get("episode_mastering_job_id") == previous["episode_mastering_job_id"]
+        for item in history
+        if isinstance(item, dict)
+    ):
+        history.append(previous)
+
+
+def _clear_active_render_outputs(session: EpisodeSession) -> None:
+    for key in ("speech_job_id", "episode_audio_job_id", "episode_mastering_job_id"):
+        session.clonecast_episode_identifiers.pop(key, None)
+    for key in ("sections", "raw_audio", "final_audio"):
+        session.artifact_paths.pop(key, None)
+    for key in (
+        "speech_render",
+        "episode_audio",
+        "mastering_result",
+        "raw_audio_file_size_bytes",
+        "raw_audio_format",
+        "raw_audio_sha256",
+        "raw_audio_duration_seconds",
+        "final_audio_sha256",
+        "final_audio_file_size_bytes",
+        "actual_duration_seconds",
+        "audio_version",
+        "audio_version_fingerprint",
+        "final_audio_generated_at",
+    ):
+        session.validation_evidence.pop(key, None)
+    session.review_status = "not_started"
+    session.owner_approval_status = "publishing_locked"
+    session.publishing_lock_reason = PUBLISHING_LOCKED_REASON
+
+
+def _delivery_preset(cli: CloneCastCLI, delivery_preset_id: str | None) -> dict[str, Any] | None:
+    if not delivery_preset_id:
+        return None
+    result = cli.checked(["voice-delivery-preset-show", delivery_preset_id])
+    preset = _require_mapping(_require_json(result, "voice-delivery-preset-show"), "voice-delivery-preset-show")
+    return preset
+
+
+def _record_delivery_provenance(session: EpisodeSession, preset: dict[str, Any] | None) -> None:
+    if not preset:
+        return
+    delivery_preset_id = str(preset.get("delivery_preset_id") or "")
+    settings_sha = str(preset.get("generation_settings_sha256") or "")
+    display_name = str(preset.get("display_name") or preset.get("stable_name") or delivery_preset_id)
+    stable_name = str(preset.get("stable_name") or "")
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "delivery_preset_id": delivery_preset_id,
+                "generation_settings_sha256": settings_sha,
+                "stable_name": stable_name,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    session.validation_evidence["delivery_profile"] = {
+        "delivery_preset_id": delivery_preset_id,
+        "display_name": display_name,
+        "stable_name": stable_name,
+        "generation_settings": preset.get("generation_settings"),
+        "generation_settings_sha256": settings_sha,
+        "fingerprint": fingerprint,
+    }
+
+
+def _delivery_fingerprint(session: EpisodeSession) -> str:
+    delivery = session.validation_evidence.get("delivery_profile")
+    if isinstance(delivery, dict) and delivery.get("fingerprint"):
+        return str(delivery["fingerprint"])
+    return hashlib.sha256(b"delivery-profile:identity-default").hexdigest()
+
+
+def _speech_idempotency_key(session: EpisodeSession) -> str:
+    return f"{session.session_id}:speech-render:{_delivery_fingerprint(session)[:16]}"
+
+
+def _audio_assembly_idempotency_key(session: EpisodeSession) -> str:
+    return f"{session.session_id}:episode-audio-assemble:{_delivery_fingerprint(session)[:16]}"
+
+
+def _is_shadow_frequency_show(value: str | None) -> bool:
+    normalized = (value or "").strip()
+    if normalized in SHADOW_FREQUENCY_STUDIO_IDS:
+        return True
+    return normalized.casefold() in {"shadow frequency", "shadow_frequency"}
+
+
+def display_show_name(session: EpisodeSession) -> str | None:
+    if _is_shadow_frequency_show(session.selected_studio_show):
+        return "Shadow Frequency"
+    return session.selected_studio_show
 
 
 def _prompt(prompt: str, input_func: Callable[[str], Any]) -> Any:
@@ -824,6 +1000,22 @@ def _record_mastering_result(session: EpisodeSession, payload: dict[str, Any]) -
     session.validation_evidence["mastering_retry_count"] = int(
         session.validation_evidence.get("mastering_retry_count", 0)
     )
+    version_material = {
+        "script_sha256": session.script_checksum,
+        "voice_profile_id": session.selected_voices.get("host"),
+        "delivery_fingerprint": _delivery_fingerprint(session),
+        "speech_job_id": session.clonecast_episode_identifiers.get("speech_job_id"),
+        "episode_audio_job_id": session.clonecast_episode_identifiers.get("episode_audio_job_id"),
+        "mastering_job_id": mastering_job_id,
+        "final_audio_sha256": mastered.get("sha256"),
+    }
+    session.validation_evidence["audio_version_fingerprint"] = checksum_bytes(
+        json.dumps(version_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    session.validation_evidence["audio_version"] = (
+        "professional-v" if session.selected_delivery_profiles.get("host") else "audio-v"
+    ) + str(int(session.validation_evidence.get("mastering_retry_count", 0)) + 1)
+    session.validation_evidence["final_audio_generated_at"] = _now()
 
 
 def _next_mastering_retry_count(session: EpisodeSession, cli: CloneCastCLI, audio_job_id: str) -> int:
@@ -938,7 +1130,7 @@ def _poll_speech_progress(cli: CloneCastCLI, session: EpisodeSession) -> dict[st
         jobs = jobs_result.json_data if jobs_result.returncode == 0 else None
         if not isinstance(jobs, list) or not jobs:
             return {}
-        idempotency_key = f"{session.session_id}:speech-render"
+        idempotency_key = _speech_idempotency_key(session)
         job = next((j for j in jobs if isinstance(j, dict) and j.get("idempotency_key") == idempotency_key), jobs[0])
         job_id = job.get("job_id") if isinstance(job, dict) else None
         if not job_id:
@@ -1008,7 +1200,7 @@ def _render_speech(
                 "--script-id",
                 script_id,
                 "--idempotency-key",
-                f"{session.session_id}:speech-render",
+                _speech_idempotency_key(session),
             ],
             timeout=timeout,
             heartbeat_interval=heartbeat_interval,
@@ -1173,6 +1365,9 @@ def run_guided_episode_build(
     if voice == session.selected_host:
         raise EpisodeBuildError("host display name cannot be used as a voice profile ID")
     session.selected_voices = {"host": voice}
+    if not session.selected_delivery_profiles.get("host"):
+        if _is_shadow_frequency_show(session.selected_studio_show):
+            session.selected_delivery_profiles["host"] = SHADOW_FREQUENCY_PROFESSIONAL_DELIVERY_PRESET_ID
     if session.guests_or_callers is None:
         session.guests_or_callers = _prompt("Are guests or callers required? Describe them or say no: ", input_func)
     media = session.media_mode or _prompt("Audio-only or video? [audio/video] ", input_func).lower()
@@ -1197,6 +1392,8 @@ def run_guided_episode_build(
     ):
         if command not in commands:
             missing.append(command)
+    if session.selected_delivery_profiles.get("host") and "voice-delivery-preset-show" not in commands:
+        missing.append("voice-delivery-preset-show")
     if missing:
         raise EpisodeBuildError("CloneCast compatibility blocker; missing supported commands: " + ", ".join(missing))
 
@@ -1281,6 +1478,7 @@ def run_guided_episode_build(
         script_id=import_payload["script_id"],
         speaker="Host",
         voice_profile_id=voice,
+        delivery_preset_id=session.selected_delivery_profiles.get("host"),
     )
     output("Voice assigned")
 
@@ -1322,7 +1520,7 @@ def run_guided_episode_build(
             "--speech-job-id",
             speech_job_id,
             "--idempotency-key",
-            f"{session.session_id}:episode-audio-assemble",
+            _audio_assembly_idempotency_key(session),
         ]
     )
     _record_command(session, audio_result)
