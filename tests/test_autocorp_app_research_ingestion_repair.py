@@ -238,6 +238,72 @@ def test_saved_failed_session_resumes_using_original_research_without_duplicatio
     assert len([call for call in fake.calls if call[0] == "research-ingest"]) == 1
 
 
+def test_stale_historical_research_prompt_resumes_using_original_research(isolated_data_dir, tmp_path):
+    repo = make_repo(tmp_path)
+    app = store.AppSession(
+        session_id=store.new_session_id(),
+        clonecast_repo_path=str(repo),
+        status="awaiting_input",
+    )
+    ep = episode.EpisodeSession(session_id="acce_stale_research_prompt", clonecast_repo_path=str(repo.resolve()))
+    ep.selected_studio_show = "studio_c7599bb4733e438d9f1926e0e4ad6111"
+    ep.requested_duration_seconds = 900
+    episode.save_session(ep)
+    app.episode_session_id = ep.session_id
+    app.pending_question = {
+        "field": "research",
+        "text": "Add your research (PDF or TXT) or paste research text. Research is required before generation.",
+        "input_kind": "file_or_text",
+    }
+    recovered = _long_markdown_research()
+    app.add_message(
+        store.ChatMessage(
+            role="assistant", kind="question", text=app.pending_question["text"], input_kind="file_or_text"
+        )
+    )
+    app.add_message(store.ChatMessage(role="user", kind="text", text="(pasted text provided)"))
+    app.add_message(
+        store.ChatMessage(
+            role="assistant",
+            kind="error",
+            text=(
+                "AutoCorp hit an unexpected internal error. Your session was saved. "
+                "Your session was saved. Press Resume after the problem is fixed."
+            ),
+            technical_detail=f"OSError: [Errno 36] File name too long: '{recovered}'",
+        )
+    )
+    app.add_message(store.ChatMessage(role="system", kind="text", text="Resuming from the last completed step."))
+    app.add_message(store.ChatMessage(role="assistant", kind="progress", text="CloneCast target confirmed."))
+    app.add_message(
+        store.ChatMessage(
+            role="assistant", kind="question", text=app.pending_question["text"], input_kind="file_or_text"
+        )
+    )
+    store.save_session(app)
+    fake = FakeCloneCastCLI(repo)
+
+    resumed = controller.resume_session(app.session_id, clonecast_cli_factory=lambda _: fake)
+
+    assert resumed.status == "awaiting_input"
+    assert resumed.pending_question["field"] == "script"
+    saved = episode.load_session(ep.session_id)
+    assert saved.research_source["source_type"] == "pasted_text"
+    assert saved.research_source["text"] == recovered
+    assert _managed_research_body(saved) == recovered
+    assert saved.research_source["sha256"] == episode.checksum_bytes(recovered.encode("utf-8"))
+    assert len([call for call in fake.calls if call[0] == "research-ingest"]) == 1
+    assert resumed.messages[-1].kind == "question"
+    assert resumed.messages[-1].text.startswith("Now add the final approved script")
+
+    resumed_again = controller.resume_session(app.session_id, clonecast_cli_factory=lambda _: fake)
+    saved_again = episode.load_session(ep.session_id)
+
+    assert resumed_again.pending_question["field"] == "script"
+    assert saved_again.completed_stage == "research_accepted"
+    assert len([call for call in fake.calls if call[0] == "research-ingest"]) == 1
+
+
 def test_research_checksum_remains_stable(isolated_data_dir, tmp_path):
     repo = make_repo(tmp_path)
     app = _start_research_session(repo)

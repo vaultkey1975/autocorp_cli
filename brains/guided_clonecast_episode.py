@@ -35,6 +35,33 @@ PUBLISH_COMMANDS = {
     "radio-publication-create",
 }
 
+_STAGE_ORDER = {
+    "created": 0,
+    "target_confirmed": 10,
+    "clonecast_discovered": 20,
+    "studio_selected": 30,
+    "duration_selected": 40,
+    "research_imported": 50,
+    "research_accepted": 60,
+    "approved_script_preserved": 70,
+    "inputs_validated": 80,
+    "saved_before_generation": 90,
+    "episode_created": 100,
+    "approved_script_imported": 110,
+    "voice_assigned": 120,
+    "speech_provider_preflight": 130,
+    "speech_rendering": 140,
+    "speech_rendered": 150,
+    "speech_validated": 160,
+    "episode_assembled": 170,
+    "episode_validated": 180,
+    "episode_mastered": 190,
+    "listening_gate": 200,
+    "review_rejected": 210,
+    "section_regeneration_requested": 220,
+    "owner_approved": 230,
+}
+
 
 class EpisodeBuildError(RuntimeError):
     """Raised for a truthful operator or CloneCast failure."""
@@ -155,6 +182,18 @@ def checksum_bytes(data: bytes) -> str:
 
 def checksum_file(path: Path) -> str:
     return checksum_bytes(path.read_bytes())
+
+
+def _advance_stage(session: EpisodeSession, stage: str) -> None:
+    current = _STAGE_ORDER.get(session.completed_stage, -1)
+    requested = _STAGE_ORDER.get(stage, current)
+    if requested >= current:
+        session.completed_stage = stage
+
+
+def _normalize_completed_stage_from_saved_state(session: EpisodeSession) -> None:
+    if session.clonecast_episode_identifiers.get("research_id") and session.research_import_status == "accepted":
+        _advance_stage(session, "research_accepted")
 
 
 def normalize_studio_show(value: str) -> str:
@@ -928,7 +967,8 @@ def run_guided_episode_build(
     confirmation = _prompt(f"Confirm CloneCast target {session.clonecast_repo_path} by typing YES: ", input_func)
     if confirmation != "YES":
         raise EpisodeBuildError("target project confirmation was not completed")
-    session.completed_stage = "target_confirmed"
+    _normalize_completed_stage_from_saved_state(session)
+    _advance_stage(session, "target_confirmed")
     save_session(session)
 
     config_check = cli.checked(["config-check"])
@@ -936,7 +976,8 @@ def run_guided_episode_build(
     commands = cli.discover_commands()
     session.validation_evidence["clonecast_compatible"] = True
     session.validation_evidence["discovered_commands"] = sorted(commands)
-    session.completed_stage = "clonecast_discovered"
+    _normalize_completed_stage_from_saved_state(session)
+    _advance_stage(session, "clonecast_discovered")
     save_session(session)
 
     if (
@@ -991,12 +1032,14 @@ def run_guided_episode_build(
         session.selected_studio_show = normalize_studio_show(session.selected_studio_show)
     if not session.selected_studio_show:
         raise EpisodeBuildError("studio/show is required")
-    session.completed_stage = "studio_selected"
+    _normalize_completed_stage_from_saved_state(session)
+    _advance_stage(session, "studio_selected")
     save_session(session)
 
     if session.requested_duration_seconds is None:
         session.requested_duration_seconds = parse_duration(_prompt("How long should the podcast be? ", input_func))
-    session.completed_stage = "duration_selected"
+    _normalize_completed_stage_from_saved_state(session)
+    _advance_stage(session, "duration_selected")
     save_session(session)
 
     temp_research = None
