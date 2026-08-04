@@ -264,9 +264,9 @@ def test_quality_indicators_match_scanner_exactly(tmp_path):
     assert analysis.fixme_count == scan.fixme_count
     assert analysis.pass_count == scan.pass_count
     assert analysis.not_implemented_count == scan.not_implemented_count
-    # Sanity: the workspace TODO/pass really were counted (whole-repo scope).
-    assert analysis.todo_count == 2
-    assert analysis.pass_count == 2
+    # Runtime workspace output is excluded from source quality scope.
+    assert analysis.todo_count == 1
+    assert analysis.pass_count == 1
 
 
 # --------------------------------------------------------------------------- #

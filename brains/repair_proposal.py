@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from brains import (
     analyzer,
+    context_budget,
     project_planner,
     providers,
     scanner,
@@ -546,9 +547,33 @@ def build_repair_proposal(
     result.action_title = action.title
 
     prompt = _build_prompt(evidence)
+    context_manifest = {
+        "schema_version": "2a.legacy-repair-proposal-context.v1",
+        "git_commit": "",
+        "working_tree_fingerprint": context_budget.working_tree_fingerprint(repo_path),
+        "context_fingerprint": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "items": [
+            {
+                "path": item.get("path", ""),
+                "content_sha256": item.get("sha256", ""),
+                "kind": "full_file",
+                "selection_reason": "legacy repair proposal evidence",
+                "selected_byte_count": len((item.get("content") or "").encode("utf-8")),
+                "truncated": False,
+            }
+            for item in (evidence.get("source_files", []) + evidence.get("test_files", []))
+        ],
+        "uncertainty_warnings": ["legacy repair proposal context manifest excludes raw content"],
+    }
 
     provider_result = providers.generate_proposal_json(
         prompt, _SYSTEM_PROMPT, provider=provider, model=model,
+        repo_path=repo_path,
+        operation_name="repair-proposal",
+        target_path=action_id,
+        routing_reason=f"provider explicitly selected for repair proposal: {provider}",
+        explicit_user_selection=True,
+        context_manifest=context_manifest,
     )
 
     if provider_result.blocked:

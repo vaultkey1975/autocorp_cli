@@ -12,11 +12,9 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-_IGNORE_DIRS = {
-    ".git", ".venv", "venv", "node_modules", "__pycache__", "workspace",
-    "data", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".tox", ".nox",
-}
+from brains import repo_policy
+
+_IGNORE_DIRS = set(repo_policy.GENERATED_DIRS)
 
 
 @dataclass
@@ -61,10 +59,17 @@ def is_test_file(rel: str) -> bool:
 def all_python_files(repo_path: str) -> list[str]:
     out = []
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS and not d.startswith(".")]
+        dirs[:] = [
+            d for d in dirs
+            if d not in _IGNORE_DIRS
+            and not d.startswith(".")
+            and not repo_policy.is_excluded(repo_path, os.path.join(root, d))
+        ]
         for name in files:
             if name.endswith(".py"):
                 rel = os.path.relpath(os.path.join(root, name), repo_path).replace(os.sep, "/")
+                if repo_policy.is_excluded(repo_path, rel):
+                    continue
                 out.append(rel)
     return sorted(out)
 

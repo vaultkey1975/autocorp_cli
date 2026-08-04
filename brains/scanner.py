@@ -33,6 +33,8 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from brains import repo_policy
+
 # Directories that never hold project source and would otherwise inflate or
 # skew the counts (VCS internals, virtualenvs, caches, build artifacts).
 IGNORE_DIRS = {
@@ -83,6 +85,7 @@ def _git_info(repo_path: str) -> tuple:
         git = None
 
     if git is not None:
+        repo = None
         try:
             repo = git.Repo(repo_path, search_parent_directories=True)
             if repo.head.is_detached:
@@ -93,6 +96,9 @@ def _git_info(repo_path: str) -> tuple:
             return branch, working_tree
         except Exception:
             pass  # fall through to the subprocess path
+        finally:
+            if repo is not None and hasattr(repo, "close"):
+                repo.close()
 
     return _git_info_via_subprocess(repo_path)
 
@@ -132,6 +138,8 @@ def is_test_file(name: str) -> bool:
 
 def _should_skip_dir(dirname: str, ignore_dirs: set) -> bool:
     """Return True if `dirname` should be excluded from the file walk."""
+    if repo_policy.should_skip_dir(dirname):
+        return True
     if dirname in ignore_dirs:
         return True
     for prefix in _IGNORE_DIR_PREFIXES:
@@ -147,11 +155,19 @@ def iter_python_files(repo_path: str, ignore_dirs: set = None):
     analyzer excluding workspace/) can pass a superset here instead of
     re-walking the tree themselves."""
     ignore = IGNORE_DIRS if ignore_dirs is None else ignore_dirs
+    tracked = repo_policy._tracked_files(os.path.abspath(repo_path))
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if not _should_skip_dir(d, ignore)]
+        dirs[:] = [
+            d for d in dirs
+            if not _should_skip_dir(d, ignore)
+            and not repo_policy.classify_path(repo_path, os.path.join(root, d), tracked_files=tracked).excluded
+        ]
         for name in files:
             if name.endswith(".py"):
-                yield os.path.join(root, name), name
+                full = os.path.join(root, name)
+                if repo_policy.classify_path(repo_path, full, tracked_files=tracked).excluded:
+                    continue
+                yield full, name
 
 
 # --------------------------------------------------------------------------- #

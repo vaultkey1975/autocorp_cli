@@ -9,17 +9,16 @@ importing concrete providers. Phase 8Y gave us RepairContentProvider (interface)
 and RepairContentGenerator (delegates to a provider); this phase adds the seam that
 PRODUCES providers.
 
-    RepairContentProviderFactory.create("mock")  -> a RepairContentProvider
-    RepairContentProviderFactory.create("local") -> a RepairContentProvider
+    RepairContentProviderFactory.create("mock")  -> ValueError in production
+    RepairContentProviderFactory.create("local", repo_path=...) -> a provider
     RepairContentProviderFactory.create("???")   -> ValueError
 
 Pinned design (RED until GREEN implements it; in `brains/repair_content_generator.py`):
   * RepairContentProviderFactory.create(provider_name) returns an object that
     satisfies the RepairContentProvider contract (a `generate(path, description)
     -> str` surface), callable on the class.
-  * Known names this phase: "mock" and "local" - BOTH fully OFFLINE stubs (no model,
-    no network). Real DeepSeek / Claude / Ollama-backed providers are a LATER phase
-    and are intentionally NOT wired here.
+  * "mock" is test-only and cannot be selected in production.
+  * "local" requires a repository path and performs a real local engine call.
   * An unknown name raises ValueError (controlled, no silent/None fallback).
   * A factory-produced provider plugs into RepairContentGenerator unchanged (8Y).
 
@@ -78,18 +77,16 @@ PATH = "ui/main_window.py"
 # RED - new factory behavior
 # =========================================================================== #
 
-# 1. Factory returns a mock provider
-def test_factory_returns_mock_provider():
-    provider = _Factory().create("mock")
-    assert isinstance(provider, RepairContentProvider)
-    assert isinstance(provider.generate(PATH, DESC), str)
+# 1. Factory rejects production mock provider
+def test_factory_rejects_mock_provider():
+    with pytest.raises(ValueError):
+        _Factory().create("mock")
 
 
 # 2. Factory returns a local provider
-def test_factory_returns_local_provider():
-    provider = _Factory().create("local")
+def test_factory_returns_local_provider(tmp_path):
+    provider = _Factory().create("local", repo_path=str(tmp_path), engine=FakeProvider())
     assert isinstance(provider, RepairContentProvider)
-    assert isinstance(provider.generate(PATH, DESC), str)
 
 
 # 3. Unknown provider name raises ValueError
@@ -100,16 +97,13 @@ def test_unknown_provider_raises_valueerror():
 
 # 4. Factory output satisfies the RepairContentProvider contract
 def test_factory_output_satisfies_provider_contract():
-    for name in ("mock", "local"):
-        provider = _Factory().create(name)
-        assert isinstance(provider, RepairContentProvider)
-        result = provider.generate(PATH, DESC)
-        assert isinstance(result, str)
+    with pytest.raises(ValueError):
+        _Factory().create("local")
 
 
 # 5. A factory-produced provider can be used by RepairContentGenerator (8Y seam)
 def test_generator_can_use_factory_provider():
-    provider = _Factory().create("mock")
+    provider = FakeProvider(content="x = 1\n")
     generator = RepairContentGenerator(provider)
     result = generator.generate(PATH, DESC)
     assert result == provider.generate(PATH, DESC)     # delegation returns it unchanged
@@ -119,16 +113,15 @@ def test_generator_can_use_factory_provider():
 # 6. Factory CREATION is offline (no model / no network)
 def test_factory_creation_is_offline(monkeypatch):
     _block_model(monkeypatch)
-    _Factory().create("mock")
-    _Factory().create("local")                          # neither touches the model
+    with pytest.raises(ValueError):
+        _Factory().create("mock")
 
 
 # 7. Factory provider GENERATION is offline (no model / no network)
 def test_factory_provider_generation_is_offline(monkeypatch):
     _block_model(monkeypatch)
-    for name in ("mock", "local"):
-        result = _Factory().create(name).generate(PATH, DESC)
-        assert isinstance(result, str)                  # produced without a model
+    with pytest.raises(ValueError):
+        _Factory().create("local")
 
 
 # =========================================================================== #

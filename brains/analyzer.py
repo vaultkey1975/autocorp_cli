@@ -42,7 +42,7 @@ import ast
 import os
 from dataclasses import dataclass, field
 
-from brains import scanner
+from brains import scanner, repo_policy
 
 # On top of scanner.IGNORE_DIRS: directories that hold generated output
 # rather than AutoCorp CLI's own source. See the scope note above.
@@ -219,7 +219,7 @@ def _has_top_level_package(repo_path: str) -> bool:
     except OSError:
         return False
     for name in entries:
-        if name in _ARCH_IGNORE_DIRS or name.startswith("."):
+        if name in _ARCH_IGNORE_DIRS or name.startswith(".") or repo_policy.is_excluded(repo_path, name):
             continue
         full = os.path.join(repo_path, name)
         if os.path.isdir(full) and os.path.isfile(os.path.join(full, "__init__.py")):
@@ -235,7 +235,11 @@ def _detect_primary_language(repo_path: str) -> str:
     architecture scope. Evidence-based rather than assuming "Python"."""
     counts = {}
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in _ARCH_IGNORE_DIRS]
+        dirs[:] = [
+            d for d in dirs
+            if d not in _ARCH_IGNORE_DIRS
+            and not repo_policy.is_excluded(repo_path, os.path.join(root, d))
+        ]
         for name in files:
             lang = _LANGUAGE_EXTENSIONS.get(os.path.splitext(name)[1])
             if lang:

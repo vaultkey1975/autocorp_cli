@@ -20,7 +20,7 @@ import os
 import re
 from dataclasses import dataclass, field
 
-from brains import scanner, analyzer
+from brains import scanner, analyzer, repo_policy
 
 # --------------------------------------------------------------------------- #
 # Result types
@@ -87,7 +87,7 @@ _SPEC_EXTS = {".md"}
 _DOC_DIRS = {"docs", "doc", "documentation"}
 _EXAMPLE_DIRS = {"examples", "example", "demos", "demo", "samples", "sample"}
 _FIXTURE_DIRS = {"fixtures", "fixture"}
-_GENERATED_DIRS = {"build", "dist", "__pycache__", ".pytest_cache"}
+_GENERATED_DIRS = set(repo_policy.GENERATED_DIRS)
 
 _TEXT_EXTS = {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".html", ".htm",
@@ -160,9 +160,13 @@ def _read(path):
 
 
 def _iter_text_files(repo_path):
+    tracked = repo_policy._tracked_files(os.path.abspath(repo_path))
     for root, dirs, files in os.walk(repo_path, followlinks=False):
-        dirs[:] = [d for d in dirs
-                   if not scanner._should_skip_dir(d, scanner.IGNORE_DIRS)]
+        dirs[:] = [
+            d for d in dirs
+            if not scanner._should_skip_dir(d, scanner.IGNORE_DIRS)
+            and not repo_policy.classify_path(repo_path, os.path.join(root, d), tracked_files=tracked).excluded
+        ]
         for fn in files:
             ext = os.path.splitext(fn)[1].lower()
             name_lower = fn.lower()
@@ -171,6 +175,8 @@ def _iter_text_files(repo_path):
             if ext not in _TEXT_EXTS and fn not in ("Dockerfile", "Makefile") and "requirements" not in name_lower:
                 continue
             full = os.path.join(root, fn)
+            if repo_policy.classify_path(repo_path, full, tracked_files=tracked).excluded:
+                continue
             try:
                 if os.path.getsize(full) > _MAX_TEXT_FILE_SIZE:
                     continue
@@ -215,6 +221,24 @@ _PLACEHOLDER_RETURN_RE = re.compile(
 )
 
 
+def _function_is_abstract(tree: ast.AST, func_node: ast.AST) -> bool:
+    if not isinstance(func_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    for dec in func_node.decorator_list:
+        if isinstance(dec, ast.Name) and dec.id == "abstractmethod":
+            return True
+        if isinstance(dec, ast.Attribute) and dec.attr == "abstractmethod":
+            return True
+    for parent in ast.walk(tree):
+        if isinstance(parent, ast.ClassDef) and func_node in parent.body:
+            for base in parent.bases:
+                if isinstance(base, ast.Name) and base.id == "ABC":
+                    return True
+                if isinstance(base, ast.Attribute) and base.attr == "ABC":
+                    return True
+    return False
+
+
 def _py_ast_findings(content: str) -> dict:
     """Analyze Python source via AST. Returns dict with production-only findings."""
     findings = {
@@ -233,17 +257,31 @@ def _py_ast_findings(content: str) -> dict:
     except SyntaxError:
         return findings
 
+    abstract_method_ids = {
+        id(node) for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _function_is_abstract(tree, node)
+    }
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise):
+            exc_name = ""
             if isinstance(node.exc, ast.Name) and node.exc.id == "NotImplementedError":
-                findings["has_not_implemented"] = True
+                exc_name = "NotImplementedError"
             elif isinstance(node.exc, ast.Call):
-                exc_name = ""
                 if isinstance(node.exc.func, ast.Name):
                     exc_name = node.exc.func.id
                 elif isinstance(node.exc.func, ast.Attribute):
                     exc_name = node.exc.func.attr
-                if exc_name == "NotImplementedError":
+            if exc_name == "NotImplementedError":
+                parent = parents.get(id(node))
+                while parent is not None and not isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    parent = parents.get(id(parent))
+                if parent is None or id(parent) not in abstract_method_ids:
                     findings["has_not_implemented"] = True
 
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

@@ -13,6 +13,8 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
+from brains import repo_policy
+
 
 @dataclass
 class ChangeSet:
@@ -83,6 +85,8 @@ def detect_changes(
         rel = line[3:]
         if " -> " in rel:
             rel = rel.split(" -> ", 1)[1]
+        if repo_policy.is_excluded(repo_path, rel):
+            continue
         if index_state == "?" and worktree_state == "?":
             untracked.append(rel)
             continue
@@ -94,7 +98,7 @@ def detect_changes(
     committed_vs_base: list[str] = []
     if base_branch:
         diff = _git(repo_path, ["diff", "--name-only", f"{base_branch}...HEAD"])
-        committed_vs_base = [line for line in diff.splitlines() if line]
+        committed_vs_base = [line for line in diff.splitlines() if line and not repo_policy.is_excluded(repo_path, line)]
 
     return ChangeSet(
         repo_path=repo_path,

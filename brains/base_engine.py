@@ -20,14 +20,17 @@ Engines raise EngineError on failure; the Builder catches it, logs a clean
 message, and continues (it never crashes the build).
 """
 
+from abc import ABC, abstractmethod
+
 
 class EngineError(RuntimeError):
     """Raised by an engine when generation fails (model down, CLI missing, ...)."""
 
 
-class BaseEngine:
+class BaseEngine(ABC):
     name = "base"
 
+    @abstractmethod
     def generate(self, prompt: str, system: str = "") -> str:
         """Return generated text for `prompt`. Subclasses must implement this."""
         raise NotImplementedError

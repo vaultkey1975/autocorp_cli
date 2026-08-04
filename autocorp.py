@@ -35,7 +35,7 @@ from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
 from autocorp_testing import reporting as fast_pytest_reporting
-from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, repair_executor, repair_proposal, scanner, workflow_test, workspace
+from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, repair_executor, repair_proposal, scanner, usage_ledger, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -693,6 +693,21 @@ def cmd_live_readiness(args) -> int:
     return 0
 
 
+def cmd_usage_report(args) -> int:
+    repo_root = os.path.abspath(args.repo)
+    if not os.path.isdir(repo_root):
+        print(f"Usage Report Error: repository path does not exist: {repo_root}", file=sys.stderr)
+        return 2
+    summary = usage_ledger.report(repo_root)
+    if getattr(args, "json", False):
+        import json
+
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        print(usage_ledger.render_human(summary))
+    return 0
+
+
 def cmd_live_test(args) -> int:
     """Controlled live application test: launch the target app, check
     health endpoints and service readiness, then cleanly shut down.
@@ -1299,6 +1314,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", default=None, metavar="PATH",
                     help="absolute path to target repository")
     sp.set_defaults(func=cmd_live_readiness)
+
+    sp = sub.add_parser("usage-report",
+                        help="show local provider usage and token-savings evidence")
+    sp.add_argument("--repo", required=True, metavar="PATH",
+                    help="absolute path to target repository")
+    sp.add_argument("--json", action="store_true",
+                    help="emit versioned JSON report")
+    sp.set_defaults(func=cmd_usage_report)
 
     sp = sub.add_parser("live-test",
                         help="controlled live application test (safe startup, "

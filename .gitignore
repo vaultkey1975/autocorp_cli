@@ -11,6 +11,8 @@ __pycache__/
 
 # --- Generated apps & runtime data ---
 workspace/
+data/
+*.code-workspace
 *.db
 *.sqlite
 *.sqlite3
@@ -22,3 +24,10 @@ build/
 
 # --- Generated reports ---
 phase_*_report.txt
+phase_*_runtime_output.txt
+*_verification_*.txt
+clonecast_*_report.txt
+clonecast_*_audit.txt
+clonecast_*_audit.json
+claude_phase_*_audit.txt
+approved_script_*_report.txt

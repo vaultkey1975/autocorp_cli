@@ -78,6 +78,38 @@ def generate(prompt: str, system: str = "", json_mode: bool = False,
     return resp.json().get("response", "")
 
 
+def unload_model(model: str = MODEL) -> tuple[bool, str]:
+    """Request Ollama to unload a model using keep_alive=0.
+
+    Returns (cleanup_requested_ok, message). Verification is separate because
+    older Ollama versions may not expose /api/ps.
+    """
+    payload = {"model": model, "prompt": "", "stream": False, "keep_alive": 0}
+    try:
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return False, f"Ollama unload request failed: {e}"
+    return True, "Ollama unload requested."
+
+
+def model_loaded(model: str = MODEL) -> tuple[bool | None, str]:
+    """Return whether a model appears loaded via /api/ps.
+
+    The first value is None when the Ollama server/version cannot report loaded
+    models; callers should record that verification was unavailable.
+    """
+    try:
+        resp = requests.get(f"{OLLAMA_URL}/api/ps", timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return None, f"Ollama loaded-model verification unavailable: {e}"
+    names = [m.get("name", "") for m in resp.json().get("models", [])]
+    base = model.split(":")[0]
+    loaded = any(n == model or n.split(":")[0] == base for n in names)
+    return loaded, "Ollama loaded-model state checked."
+
+
 # --------------------------------------------------------------------------- #
 # JSON extraction
 # --------------------------------------------------------------------------- #

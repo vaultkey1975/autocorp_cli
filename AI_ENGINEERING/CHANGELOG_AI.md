@@ -175,6 +175,33 @@ portions back into the working tree from a backup taken before the split.
 Full suite re-run after both the split and the restore: 933 passed, 1
 xfailed, unchanged.
 
+### 2026-08-04 — Uncommitted Phase 2A local-first context budget and usage ledger
+
+Working tree on branch `phase-2a-local-first-credit-guard`, base commit
+`911701d Add speech preview and GPU lifecycle safeguards`.
+
+Phase 2A adds shared generated-path exclusion (`brains/repo_policy.py`),
+bounded repair context manifests (`brains/context_budget.py`), SQLite
+provider usage evidence (`brains/usage_ledger.py`), `autocorp
+usage-report --repo PATH [--json]`, abstract `BaseEngine` and
+`RepairContentProvider` interfaces, AST-aware readiness handling for
+abstract `NotImplementedError`, and a real local-engine-backed
+`LocalRepairContentProvider` with validated replacement-content output and
+Ollama unload evidence.
+
+Verification recorded in `AI_ENGINEERING/CURRENT_PHASE.md`: read-only Fast
+Pytest plan selected 65 fast tests and 72 focused tests; explicit Fast
+Pytest focused verification selected 15 Phase 2A-relevant files, collected
+288 tests, and passed in 37.39s with no uncertainty warnings; `git diff
+--check`, changed-module `py_compile`, CLI help/parser validation, and
+`scripts/verify_compileall.py --repo /home/larry/autocorp_cli` passed.
+Real Ollama integration smoke passed against a disposable temporary
+repository and saved its audit report at
+`/tmp/autocorp_phase2a_ollama_smoke_20260804_183331.txt`. Final strict
+suite `.venv/bin/python -m pytest -W error -q` passed with exit code 0;
+pytest cache recorded 1301 collected tests and progress output showed one
+expected xfail marker.
+
 **Phase 1G's five audit findings re-verified against current `HEAD` rather
 than trusted from the untracked report — four of five were already fixed.**
 `claude_phase_1g_audit.txt` was written against `1339aaf`; commit `ea71d54

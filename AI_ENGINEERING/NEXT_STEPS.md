@@ -7,44 +7,16 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Finish workflow-engine reliability verification and commit.**
+1. **Owner review of Phase 2A.**
 
-   A real run reproduced an AutoCorp-side crash before the fix:
-
-   ```
-   .venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast --disposable
-   .venv/bin/python autocorp.py publish-test --repo /home/larry/clonecast --disposable
-   ```
-
-   Both exited 1 with an `UnboundLocalError` because the dirty-tree safety
-   branch in `brains/workflow_test.py` referenced `disp` before assignment.
-
-   The working-tree correction now returns structured reports for both
-   commands. With CloneCast's current dirty worktree, both commands exit 1
-   normally with no traceback, report `Overall Status: SAFETY_BLOCKED`,
-   preserve CloneCast's production database and git status, and explain
-   the next action. `publish-test` additionally reports
-   `Publishing Readiness: FAIL` because publishing validation could not
-   run before the workflow passed isolation.
-
-   Focused verification has passed:
-   `.venv/bin/python -m pytest -W error -q
-   tests/test_workflow_character_id_propagation.py` -> exit code 0, 23
-   passed.
-
-   Required verification has passed:
-   `git diff --check` -> exit code 0;
-   `.venv/bin/python scripts/verify_compileall.py` -> exit code 0, 171
-   maintained Python files compiled; `.venv/bin/python -m pytest -W error
-   -q` -> exit code 0, 1012 tests collected with the existing xfail
-   visible in progress output.
-
-   Post-verification real CloneCast command checks:
-   `.venv/bin/python autocorp.py workflow-test --repo /home/larry/clonecast
-   --disposable` -> exit code 1, structured `SAFETY_BLOCKED` report, no
-   traceback; `.venv/bin/python autocorp.py publish-test --repo
-   /home/larry/clonecast --disposable` -> exit code 1, structured
-   `SAFETY_BLOCKED` report, `Publishing Readiness: FAIL`, no traceback.
+   Unit, focused, warnings-as-errors, compile, diff, Fast Pytest focused,
+   full strict suite, and real local Ollama smoke verification have passed.
+   The smoke used a disposable temporary repository, invoked the production
+   `LocalRepairContentProvider`, returned valid replacement content,
+   recorded one local ledger row, proved no paid provider path was used,
+   requested and verified model unload, confirmed the model was not loaded
+   afterward, deleted the disposable repository, and saved the audit report
+   at `/tmp/autocorp_phase2a_ollama_smoke_20260804_183331.txt`.
 
 2. **Owner review of the Live Application Inspector.**
 
@@ -73,9 +45,8 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 3. **Do not push without owner instruction.**
    The owner requested commits if verification passes and explicitly said
-   not to push. Do not include unrelated untracked artifacts
-   (`claude_phase_1g_audit.txt`, `clonecast_live_readiness_report.txt`,
-   `data/`, `phase_1q_runtime_output.txt`).
+   not to push. Do not include unrelated untracked artifacts, generated
+   runtime reports, uploaded files, session data, or workspace files.
 
 4. **Reliability Engine integration decision.** Repository evidence now
    includes an end-to-end test for `ReliabilityOrchestrator.run()` against

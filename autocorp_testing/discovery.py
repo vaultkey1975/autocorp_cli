@@ -17,6 +17,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any
 
+from brains import repo_policy
+
 _PROFILE_REL = os.path.join(".autocorp", "test-profile.json")
 
 _GPU_KEYWORDS = (
@@ -32,11 +34,7 @@ _NETWORK_KEYWORDS = (
     "socket.socket", "aiohttp", "websocket",
 )
 
-_IGNORE_DIRS = {
-    ".git", ".venv", "venv", "node_modules", "__pycache__", "workspace",
-    "data", ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build",
-    ".tox", ".nox", "htmlcov", ".coverage",
-}
+_IGNORE_DIRS = set(repo_policy.GENERATED_DIRS) | {"htmlcov", ".coverage"}
 
 
 @dataclass
@@ -103,9 +101,16 @@ _ALLOWED_DOT_DIRS = {".github", ".autocorp"}
 def _walk_files(repo_path: str) -> list[str]:
     out = []
     for root, dirs, files in os.walk(repo_path):
-        dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS and (d in _ALLOWED_DOT_DIRS or not d.startswith("."))]
+        dirs[:] = [
+            d for d in dirs
+            if d not in _IGNORE_DIRS
+            and (d in _ALLOWED_DOT_DIRS or not d.startswith("."))
+            and not repo_policy.is_excluded(repo_path, os.path.join(root, d))
+        ]
         for name in files:
             rel = os.path.relpath(os.path.join(root, name), repo_path).replace(os.sep, "/")
+            if repo_policy.is_excluded(repo_path, rel):
+                continue
             out.append(rel)
     return sorted(out)
 

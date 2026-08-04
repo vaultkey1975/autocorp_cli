@@ -170,12 +170,18 @@ def test_missing_new_content_yields_empty_string():
 
 
 # =========================================================================== #
-# GUARD - existing factory behavior unchanged (mock/local/unknown) - STAY green
+# GUARD - production fake providers are rejected; real local requires repo args
 # =========================================================================== #
-def test_factory_mock_local_unchanged():
-    assert isinstance(RepairContentProviderFactory.create("mock"),
-                      RepairContentProvider)
-    assert isinstance(RepairContentProviderFactory.create("local"),
-                      RepairContentProvider)
+def test_factory_rejects_mock_and_constructs_real_local_without_generation(tmp_path):
+    with pytest.raises(ValueError) as exc:
+        RepairContentProviderFactory.create("mock")
+    message = str(exc.value).lower()
+    assert "mock" in message
+    assert "test-only" in message or "production" in message
+
+    local = RepairContentProviderFactory.create(
+        "local", repo_path=str(tmp_path), engine=object())
+    assert isinstance(local, RepairContentProvider)
+
     with pytest.raises(ValueError):
         RepairContentProviderFactory.create("does-not-exist")

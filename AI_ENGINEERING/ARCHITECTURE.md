@@ -219,6 +219,45 @@ are checked before and after, and the disposable directory is removed
 (with the removal itself verified, as of Phase 1X) when the run ends,
 success or failure.
 
+## Phase 2A Context and Usage Evidence
+
+Phase 2A adds a local-first evidence layer without changing the thin CLI
+architecture.
+
+`brains/repo_policy.py` is the shared path-classification policy for
+source analysis. It distinguishes tracked source, tracked documentation,
+tests, generated runtime data, generated reports, caches, virtualenvs,
+build outputs, temporary reliability worktrees, uploaded files, and
+session files. Scanners and Fast Pytest discovery/mapping/change detection
+reuse this policy so generated `data/`, `workspace/`, caches, and known
+runtime reports do not pollute source analysis.
+
+`brains/context_budget.py` builds bounded provider contexts for repair
+operations. It selects target file, failure output, target diff, direct
+dependencies, and related tests in that order. Each selected item records
+path, line range, reason, content SHA-256, byte count, kind, and
+truncation state. Token usage is estimated with `ceil(bytes / 4)` and is
+never presented as provider-reported usage.
+
+`brains/usage_ledger.py` stores provider-attempt evidence in local runtime
+SQLite at `data/autocorp_usage_ledger.sqlite3`. The ledger schema is
+versioned with `PRAGMA user_version`; unknown schema versions are refused.
+Rows store provider/model/routing metadata, safe context manifests, prompt
+bytes, estimated and actual token fields, validation status, result
+status, cleanup evidence, and transparent estimated paid-token avoidance.
+It stores hashes and manifests, not raw prompts, API keys, or sensitive
+uploaded content.
+
+`autocorp usage-report --repo PATH [--json]` renders that evidence. Empty
+reports state that no evidence exists. Savings percentages are calculated
+only from recorded baseline and paid-token-used values; the 77% target is
+not printed as an achieved result.
+
+Provider rules are local-first and explicit: deterministic local code
+first, local Ollama only for explicit generation work, DeepSeek and Claude
+only when explicitly selected, no paid fallback, no automatic Codex API
+provider, and no silent provider substitution after failure.
+
 Workflow-test and publish-test reports now also carry explicit structured
 failure metadata (`success`, `failure_reason`, `workflow_stage`,
 `repository_unchanged`, `verification_summary`, `recommended_next_action`,

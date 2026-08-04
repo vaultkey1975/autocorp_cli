@@ -201,7 +201,11 @@ def test_claude_engine_is_a_base_engine():
 def test_base_engine_exposes_available_default():
     # RED: BaseEngine has no available() yet. GREEN adds a default returning True
     # so every engine answers the same "are you usable?" question.
-    assert BaseEngine().available() is True
+    class Concrete(BaseEngine):
+        def generate(self, prompt, system=""):
+            return "ok"
+
+    assert Concrete().available() is True
 
 
 def test_local_engine_exposes_available():
