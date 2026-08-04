@@ -21,6 +21,7 @@ KNOWN_EVENTS: dict[str, tuple[str, str]] = {
 }
 
 LISTENING_GATE_MARKER = "EPISODE READY FOR OWNER REVIEW"
+SPEECH_PREVIEW_MARKER = "SPEECH-ONLY PREVIEW READY"
 
 
 def classify_output_line(line: str) -> tuple[str | None, str | None]:

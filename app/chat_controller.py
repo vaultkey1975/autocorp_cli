@@ -764,10 +764,21 @@ def _generation_already_started(app: store.AppSession) -> bool:
         ep = episode.load_session(app.episode_session_id)
     except episode.EpisodeBuildError:
         return False
-    if ep.completed_stage == "saved_before_generation":
-        return False
     if ep.failed_stage in {"speech_render", "episode_audio_assemble", "episode_audio_validate", "episode_audio_master"}:
+        # A recorded failure at or past speech-render is definitive proof
+        # generation was really attempted, even though `completed_stage` is
+        # unconditionally re-set to "speech_text_previewed" on every resume
+        # pass (the preview step re-runs as a harmless read-only recompute
+        # each time run_guided_episode_build restarts) - this check must
+        # come first so that re-computation never masks a later failure.
         return True
+    if ep.completed_stage in {"saved_before_generation", "speech_text_previewed"}:
+        # Both mean "the owner has not yet answered Start Generation" - the
+        # episode/script/preview already exist in CloneCast at this point
+        # (that is what makes the pre-generation review real), but no
+        # speech-render call has been issued, so the question must still be
+        # asked (or re-asked on resume) rather than auto-answered.
+        return False
     if ep.completed_stage in {
         "episode_created",
         "approved_script_imported",
@@ -799,9 +810,16 @@ def _build_question(kind: str, prompt: str, app: store.AppSession, handle: Engin
     if kind == "duration":
         return {
             "field": "duration",
-            "text": "How long should the episode be?",
+            "text": (
+                "How long should the episode be? Up to 90 minutes is supported. "
+                "When writing the approved script, aim for roughly 125-135 spoken "
+                "words per minute of target runtime."
+            ),
             "input_kind": "buttons_or_text",
-            "options": [{"label": v, "value": v} for v in ("15 minutes", "30 minutes", "45 minutes", "60 minutes")],
+            "options": [
+                {"label": v, "value": v}
+                for v in ("15 minutes", "30 minutes", "45 minutes", "60 minutes", "90 minutes")
+            ],
         }
     if kind in {"research_has", "research_provide"}:
         return {
@@ -881,6 +899,11 @@ def _handle_output(app_session_id: str, handle: EngineHandle, line: str) -> None
         store.save_session(app)
         handle.updated_event.set()
         return
+    if line.strip() == progress_events.SPEECH_PREVIEW_MARKER:
+        _append_speech_preview_message(app)
+        store.save_session(app)
+        handle.updated_event.set()
+        return
     event, text = progress_events.classify_output_line(line)
     if event:
         app.add_message(store.ChatMessage(role="assistant", kind="progress", text=text, event=event))
@@ -949,6 +972,71 @@ def _append_listening_gate_message(app: store.AppSession) -> None:
             kind="listening_gate",
             text=text,
             technical_detail=str(final_audio),
+        )
+    )
+
+
+def _append_speech_preview_message(app: store.AppSession) -> None:
+    """Real, CloneCast-sourced pre-generation review: what will and will not
+    be spoken, straight from the canonical speech-text-preview JSON stored on
+    the EpisodeSession by run_guided_episode_build. AutoCorp never computes
+    any of this itself - the payload here is exactly what CloneCast's
+    `speech-text-preview` command returned."""
+    if not app.episode_session_id:
+        return
+    try:
+        ep = episode.load_session(app.episode_session_id)
+    except episode.EpisodeBuildError:
+        return
+    preview = ep.validation_evidence.get("speech_text_preview")
+    if not isinstance(preview, dict):
+        return
+    headings = preview.get("removed_headings") or []
+    titles = preview.get("retained_titles") or []
+    cues = preview.get("production_cues") or []
+    warnings = preview.get("uncertainty_warnings") or []
+    word_count_line = ""
+    spoken_words = len(str(preview.get("speech_text") or "").split())
+    if ep.requested_duration_seconds:
+        minutes = ep.requested_duration_seconds / 60.0
+        low, high = round(minutes * 125), round(minutes * 135)
+        word_count_line = (
+            f"Spoken word count: {spoken_words} (guidance for a {minutes:.0f}-minute episode "
+            f"at 125-135 wpm: {low}-{high} words)\n"
+        )
+    text = (
+        "Speech-only preview ready. Review what will and will not be spoken before generation.\n"
+        f"Structural headings removed: {len(headings)}\n"
+        f"Titles retained: {len(titles)}\n"
+        f"Music/SFX/production cues preserved for later production (not spoken): {len(cues)}\n"
+        f"Lines needing your review (ambiguous, not deleted): {len(warnings)}\n"
+        f"{word_count_line}"
+        f"Transformation version: {preview.get('transformation_version', 'unknown')}\n"
+        f"Approved-script checksum: {preview.get('approved_script_checksum', 'unknown')}\n"
+        f"Rendered speech-text checksum: {preview.get('rendered_text_checksum', 'unknown')}"
+    )
+    approved_script = ""
+    if ep.artifact_paths.get("managed_script"):
+        try:
+            approved_script = Path(str(ep.artifact_paths["managed_script"])).read_text(encoding="utf-8")
+        except OSError:
+            approved_script = ""
+    technical_detail = (
+        "ORIGINAL APPROVED SCRIPT (unchanged, byte-for-byte):\n"
+        f"{approved_script}\n\n"
+        "DERIVED SPEECH-ONLY TEXT (what Chatterbox will actually speak):\n"
+        f"{preview.get('speech_text', '')}\n\n"
+        f"REMOVED STRUCTURAL HEADINGS:\n{headings}\n\n"
+        f"RETAINED TITLES:\n{titles}\n\n"
+        f"PRODUCTION CUES (preserved as metadata, never spoken):\n{cues}\n\n"
+        f"UNCERTAINTY WARNINGS (preserved as spoken text, needs your review):\n{warnings}"
+    )
+    app.add_message(
+        store.ChatMessage(
+            role="assistant",
+            kind="speech_preview",
+            text=text,
+            technical_detail=technical_detail,
         )
     )
 

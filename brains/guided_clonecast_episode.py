@@ -26,6 +26,7 @@ import config
 SESSION_DIRNAME = "guided_clonecast_episode_sessions"
 PUBLISHING_LOCKED_REASON = "Owner review not completed"
 PUBLISHING_ELIGIBLE_REASON = "Owner approved the completed episode"
+SPEECH_PREVIEW_MARKER = "SPEECH-ONLY PREVIEW READY"
 PUBLISH_COMMANDS = {
     "publication-create",
     "publication-publish",
@@ -45,9 +46,10 @@ _STAGE_ORDER = {
     "research_accepted": 60,
     "approved_script_preserved": 70,
     "inputs_validated": 80,
-    "saved_before_generation": 90,
     "episode_created": 100,
     "approved_script_imported": 110,
+    "speech_text_previewed": 115,
+    "saved_before_generation": 118,
     "voice_assigned": 120,
     "speech_provider_preflight": 130,
     "speech_rendering": 140,
@@ -591,7 +593,7 @@ def _ensure_voice_assigned(
                     session,
                     delivery_preset or _require_mapping(assign_result.json_data, "script-voice-assign"),
                 )
-                session.completed_stage = "voice_assigned"
+                _advance_stage(session, "voice_assigned")
                 save_session(session)
                 return
             session.validation_evidence["voice_assignment"] = {
@@ -813,7 +815,12 @@ def reject_after_review(session_id: str, *, reason: str = "") -> EpisodeSession:
     return session
 
 
-def regenerate_section(session_id: str, section_id: str) -> EpisodeSession:
+def regenerate_section(
+    session_id: str,
+    section_id: str,
+    *,
+    clonecast_factory: Callable[[Path], CloneCastCLI] | None = None,
+) -> EpisodeSession:
     session = load_session(session_id)
     approved = set(session.validation_evidence.get("approved_sections", []))
     if section_id in approved:
@@ -822,6 +829,18 @@ def regenerate_section(session_id: str, section_id: str) -> EpisodeSession:
     rejected = set(session.validation_evidence.get("rejected_sections", []))
     if section_id not in failed and section_id not in rejected:
         raise EpisodeBuildError("only failed or rejected sections can be regenerated")
+    speech_job_id = session.clonecast_episode_identifiers.get("speech_job_id")
+    known_segment_ids = set(session.validation_evidence.get("segment_ids", []))
+    if speech_job_id and section_id in known_segment_ids:
+        # Force CloneCast to actually redo this one segment on the next
+        # speech-render call, rather than only recording owner intent here -
+        # render()'s existing idempotent resume loop then regenerates just
+        # this segment and reuses every other still-valid one.
+        cli = (clonecast_factory or (lambda path: CloneCastCLI(path)))(Path(session.clonecast_repo_path))
+        invalidate_result = cli.checked(
+            ["speech-render-invalidate-segment", "--job-id", speech_job_id, "--segment-id", section_id]
+        )
+        _record_command(session, invalidate_result)
     session.validation_evidence.setdefault("regeneration_requests", []).append(
         {"section_id": section_id, "requested_at": _now()}
     )
@@ -987,8 +1006,13 @@ def _ensure_research_accepted(
             "content_hash": record.get("content_hash"),
             "current_path": record.get("current_path"),
         }
-        session.failed_stage = None
-        session.completed_stage = "research_accepted"
+        if session.failed_stage == stage:
+            # Only clear the failure this call actually resolved - a later
+            # failure (e.g. speech_render) recorded after research was
+            # already accepted must survive this idempotent re-confirmation,
+            # so resume-time gating can still see it.
+            session.failed_stage = None
+        _advance_stage(session, "research_accepted")
         save_session(session)
         output("Research accepted")
         return candidate_id
@@ -1352,7 +1376,7 @@ def run_guided_episode_build(
             return reject_after_review(session.session_id, reason="owner rejected at listening gate")
         if action.startswith("regenerate"):
             section = _prompt("Which failed or rejected section ID should be regenerated? ", input_func)
-            return regenerate_section(session.session_id, section)
+            return regenerate_section(session.session_id, section, clonecast_factory=lambda _: cli)
         return session
 
     if "research-show" not in commands or "research-recover" not in commands:
@@ -1473,6 +1497,7 @@ def run_guided_episode_build(
     for command in (
         "episode-create",
         "episode-script-import-approved",
+        "speech-text-preview",
         "script-voice-list",
         "script-voice-assign",
         "speech-provider-check",
@@ -1488,12 +1513,6 @@ def run_guided_episode_build(
         missing.append("voice-delivery-preset-show")
     if missing:
         raise EpisodeBuildError("CloneCast compatibility blocker; missing supported commands: " + ", ".join(missing))
-
-    start = _prompt("Start generation now? [yes/no] ", input_func).lower()
-    if start not in {"yes", "y"}:
-        session.completed_stage = "saved_before_generation"
-        save_session(session)
-        return session
 
     research_id = session.clonecast_episode_identifiers.get("research_id")
     if not research_id:
@@ -1564,6 +1583,22 @@ def run_guided_episode_build(
         save_session(session)
         output("Approved script imported")
 
+    preview_result = cli.checked(["speech-text-preview", "--script-id", import_payload["script_id"]])
+    _record_command(session, preview_result)
+    preview_payload = _require_mapping(
+        _require_json(preview_result, "speech-text-preview"), "speech-text-preview"
+    )
+    session.validation_evidence["speech_text_preview"] = preview_payload
+    _advance_stage(session, "speech_text_previewed")
+    save_session(session)
+    output(SPEECH_PREVIEW_MARKER)
+
+    start = _prompt("Start generation now? [yes/no] ", input_func).lower()
+    if start not in {"yes", "y"}:
+        _advance_stage(session, "saved_before_generation")
+        save_session(session)
+        return session
+
     _ensure_voice_assigned(
         session,
         cli,
@@ -1596,6 +1631,12 @@ def run_guided_episode_build(
     session.clonecast_episode_identifiers["speech_job_id"] = speech_job_id
     session.artifact_paths["sections"] = [
         item.get("output_path") for item in speech_payload.get("segments", []) if item.get("output_path")
+    ]
+    # Real CloneCast segment_ids, not just file paths - this is what makes a
+    # later regenerate_section(section_id) call able to tell CloneCast
+    # exactly which speech_render_segments row to invalidate.
+    session.validation_evidence["segment_ids"] = [
+        item.get("segment_id") for item in speech_payload.get("segments", []) if item.get("segment_id")
     ]
     session.completed_stage = "speech_rendered"
     save_session(session)

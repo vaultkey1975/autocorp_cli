@@ -8,6 +8,7 @@ import pytest
 import autocorp
 import config
 from brains import guided_clonecast_episode as episode
+from tests._fake_clonecast import _fake_speech_text_preview
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -26,6 +27,8 @@ class FakeCloneCast(episode.CloneCastCLI):
         self.duplicate_of = {}
         self.created_episodes = 0
         self.voice_assignments: dict[str, list[dict[str, str]]] = {}
+        self.imported_scripts: dict[str, str] = {}
+        self.invalidated_segments: list[tuple[str, str]] = []
 
     def validate_repo(self):
         episode.CloneCastCLI(self.repo).validate_repo()
@@ -62,6 +65,7 @@ class FakeCloneCast(episode.CloneCastCLI):
         if args and args[0] == "episode-script-import-approved":
             script_file = Path(args[args.index("--script-file") + 1])
             digest = episode.checksum_file(script_file)
+            self.imported_scripts["script_1"] = script_file.read_text(encoding="utf-8")
             data = {
                 "episode_id": "episode_1",
                 "script_id": "script_1",
@@ -71,6 +75,11 @@ class FakeCloneCast(episode.CloneCastCLI):
                 "status": "approved",
                 "voice_ready": True,
             }
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
+        if args and args[0] == "speech-text-preview":
+            script_id = args[args.index("--script-id") + 1]
+            text = self.imported_scripts.get(script_id, "")
+            data = {"script_id": script_id, "episode_id": "episode_1", **_fake_speech_text_preview(text)}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
         if args and args[0] == "script-voice-list":
             return episode.CloneCastResult(
@@ -96,10 +105,16 @@ class FakeCloneCast(episode.CloneCastCLI):
             data = {"available": True, "provider": "chatterbox-turbo", "preflight": {"may_begin": True, "free_vram_mib": 12000}}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
         if args and args[0] == "speech-render":
-            data = {"job": {"job_id": "speech_1"}, "segments": [{"segment_render_id": "seg_1", "output_path": str(self.repo / "segment.wav")}]}
+            data = {"job": {"job_id": "speech_1"}, "segments": [{"segment_render_id": "seg_1", "segment_id": "seg_1", "output_path": str(self.repo / "segment.wav")}]}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
         if args and args[0] == "speech-render-validate":
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"valid": True})
+        if args and args[0] == "speech-render-invalidate-segment":
+            job_id = args[args.index("--job-id") + 1]
+            segment_id = args[args.index("--segment-id") + 1]
+            self.invalidated_segments.append((job_id, segment_id))
+            data = {"job_id": job_id, "segment_id": segment_id, "invalidated": True}
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
         if args and args[0] == "episode-audio-assemble":
             final = self.repo / "episode.mp3"
             final.write_bytes(b"x" * 2048)
@@ -144,11 +159,13 @@ class FakeCloneCast(episode.CloneCastCLI):
             "research-recover",
             "episode-create",
             "episode-script-import-approved",
+            "speech-text-preview",
             "script-voice-list",
             "script-voice-assign",
             "speech-provider-check",
             "speech-render",
             "speech-render-validate",
+            "speech-render-invalidate-segment",
             "episode-audio-assemble",
             "episode-audio-validate",
             "episode-audio-master",

@@ -148,13 +148,17 @@ def test_gpu_failure_blocks_generation_before_any_speech_call_and_preserves_sess
 
     ep = episode.load_session(app.episode_session_id)
     called_commands = [c["command"][0] for c in ep.clonecast_commands]
-    # The GPU guard fires at the last available checkpoint before the
-    # uninterrupted generation sequence (episode-create through
-    # episode-audio-master) - so a GPU failure here means none of that
-    # sequence ran at all, not just that generation itself was skipped.
-    assert "episode-create" not in called_commands
+    # episode-create/approved-script-import/speech-text-preview are cheap,
+    # non-GPU CloneCast calls that now legitimately run before "Start
+    # Generation" is even answered, so the owner's pre-generation review is
+    # backed by real data - the GPU guard only gates the actual Chatterbox
+    # sequence (speech-provider-check through episode-audio-master), which
+    # must never have started.
+    assert "episode-create" in called_commands
+    assert "speech-text-preview" in called_commands
     assert "speech-render" not in called_commands
     assert "speech-provider-check" not in called_commands
+    assert "episode-audio-master" not in called_commands
     assert ep.owner_approval_status == "publishing_locked"
 
     # Session is genuinely resumable: answers already given before the GPU

@@ -9,9 +9,60 @@ studio/voice fixture named in the Phase 1 spec (Shadow Frequency / Elias Voss
 
 from __future__ import annotations
 
+import hashlib
+import re
 from pathlib import Path
 
 from brains import guided_clonecast_episode as episode
+
+_BARE_STRUCTURAL_LABELS = {"OPEN", "COLD OPEN", "INTRO", "OUTRO", "END"}
+_NUMBERED_HEADING_RE = re.compile(r"^(chapter|section|part|segment)\s+\d+\s*:?\s*(?P<title>.*)$", re.IGNORECASE)
+
+
+def _fake_speech_text_preview(text: str) -> dict:
+    """Small, deliberately-not-production-grade stand-in for CloneCast's real
+    canonical transform, used only so this fake CLI double returns a
+    real-shaped `speech-text-preview` payload. The transform's actual
+    correctness is exercised exhaustively against the real implementation in
+    the CloneCast repository's own test suite, not here."""
+    out_lines: list[str] = []
+    removed_headings: list[str] = []
+    retained_titles: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.upper() in _BARE_STRUCTURAL_LABELS:
+            removed_headings.append(stripped)
+            continue
+        match = _NUMBERED_HEADING_RE.match(stripped) if stripped else None
+        if match:
+            title = match.group("title").strip()
+            if title:
+                out_lines.append(title)
+                retained_titles.append(title)
+            else:
+                removed_headings.append(stripped)
+            continue
+        out_lines.append(line)
+    speech_text = "\n".join(out_lines).strip()
+    return {
+        "approved_script_checksum": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "rendered_text_checksum": hashlib.sha256(speech_text.encode("utf-8")).hexdigest(),
+        "transformation_version": "speech-text-transform-v2",
+        "speech_text": speech_text,
+        "removed_headings": removed_headings,
+        "retained_titles": retained_titles,
+        "production_cues": [],
+        "uncertainty_warnings": [],
+        "segment_plan": [
+            {
+                "segment_id": "seg_1",
+                "order_index": 0,
+                "speaker": "Host",
+                "source_text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "rendered_text_sha256": hashlib.sha256(speech_text.encode("utf-8")).hexdigest(),
+            }
+        ],
+    }
 
 STUDIO_ID = "studio_c7599bb4733e438d9f1926e0e4ad6111"
 STUDIO_DISPLAY_NAME = "Shadow Frequency"
@@ -35,6 +86,8 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         self.research_states = {"research_1": "accepted"}
         self.duplicate_of: dict[str, str] = {}
         self.voice_assignments: dict[str, list[dict[str, str]]] = {}
+        self.imported_scripts: dict[str, str] = {}
+        self.invalidated_segments: list[tuple[str, str]] = []
         # STUDIO_ID is "the exact studio/voice fixture named in the Phase 1
         # spec" (see module docstring) and has always had a professional
         # radio-host delivery default in practice; represent that here as a
@@ -56,6 +109,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             "research-recover",
             "episode-create",
             "episode-script-import-approved",
+            "speech-text-preview",
             "script-voice-list",
             "script-voice-assign",
             "script-voice-unassign",
@@ -63,6 +117,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
             "speech-provider-check",
             "speech-render",
             "speech-render-validate",
+            "speech-render-invalidate-segment",
             "episode-audio-assemble",
             "episode-audio-validate",
             "episode-audio-master",
@@ -149,6 +204,7 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         if head == "episode-script-import-approved":
             script_file = Path(args[args.index("--script-file") + 1])
             digest = episode.checksum_file(script_file)
+            self.imported_scripts["script_1"] = script_file.read_text(encoding="utf-8")
             data = {
                 "episode_id": "episode_1",
                 "script_id": "script_1",
@@ -158,6 +214,12 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
                 "status": "approved",
                 "voice_ready": True,
             }
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
+
+        if head == "speech-text-preview":
+            script_id = args[args.index("--script-id") + 1]
+            text = self.imported_scripts.get(script_id, "")
+            data = {"script_id": script_id, "episode_id": "episode_1", **_fake_speech_text_preview(text)}
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if head == "script-voice-list":
@@ -253,12 +315,19 @@ class FakeCloneCastCLI(episode.CloneCastCLI):
         if head == "speech-render":
             data = {
                 "job": {"job_id": "speech_1"},
-                "segments": [{"segment_render_id": "seg_1", "output_path": str(self.repo / "segment.wav")}],
+                "segments": [{"segment_render_id": "seg_1", "segment_id": "seg_1", "output_path": str(self.repo / "segment.wav")}],
             }
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if head == "speech-render-validate":
             return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", {"valid": True})
+
+        if head == "speech-render-invalidate-segment":
+            job_id = args[args.index("--job-id") + 1]
+            segment_id = args[args.index("--segment-id") + 1]
+            self.invalidated_segments.append((job_id, segment_id))
+            data = {"job_id": job_id, "segment_id": segment_id, "invalidated": True}
+            return episode.CloneCastResult(["python", "-m", "clonecast.cli", *args], 0, "{}", "", data)
 
         if head == "episode-audio-assemble":
             final = self.repo / "episode.mp3"
