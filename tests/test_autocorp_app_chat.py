@@ -223,7 +223,7 @@ def test_resume_after_speech_failure_auto_continues_past_start_gate(isolated_dat
     instances = []
 
     class OneSpeechFailureThenSuccess(FakeCloneCastCLI):
-        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat, cancel_check=None):
             self.calls.append(args)
             if args and args[0] == "speech-render" and failures_remaining["count"]:
                 failures_remaining["count"] -= 1

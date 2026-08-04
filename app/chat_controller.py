@@ -58,6 +58,7 @@ class EngineHandle:
     voices: list[cc.VoiceProfile] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
     known_episode_ids_before: frozenset[str] = frozenset()
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 _REGISTRY_LOCK = threading.Lock()
@@ -87,6 +88,63 @@ def has_active_worker(app_session_id: str) -> bool:
     needs this to know a real Resume is required before answering/uploading
     will do anything, instead of silently failing."""
     return _get_handle(app_session_id) is not None
+
+
+def reconcile_stale_sessions() -> list[dict[str, Any]]:
+    """Run once whenever AutoCorp starts (also safe to call any time).
+
+    A session's persisted ``status`` is only ever "running" while a worker
+    is actively driving it. If the process holding that worker died -
+    crashed, was killed, or the machine lost power - the JSON file's last
+    saved status stays "running" forever, because nothing ran the code that
+    would have written a different status. No episode-specific detail is
+    used here: any session claiming "running" with no real in-process
+    worker behind it is, by definition, stale, for every show and every
+    episode.
+
+    Reconciling it: mark it recoverable with a clear explanation (not a
+    silent flip), and proactively release any GPU reservation - which may
+    itself already be self-healing on next use, but should not be left for
+    the owner to discover only when they try to start something else.
+    Existing completed segments and files are untouched; nothing here
+    deletes or regenerates anything - resuming from the correct point is
+    entirely the guided operator's own resumability, unchanged.
+    """
+    reconciled: list[dict[str, Any]] = []
+    for app in store.list_sessions():
+        if app.status != "running" or has_active_worker(app.session_id):
+            continue
+        app.status = "failed"
+        app.pending_question = None
+        app.error = {
+            "type": "interrupted_recoverable",
+            "step": app.messages[-1].event if app.messages and app.messages[-1].event else "unknown",
+            "safe_message": (
+                "AutoCorp was closed or interrupted while this episode was generating. "
+                "Your progress was saved - press Resume to continue from where it left off."
+            ),
+            "technical_message": (
+                "startup reconciliation: session was marked running with no active worker for this process"
+            ),
+            "retry_safe": True,
+        }
+        app.add_message(
+            store.ChatMessage(
+                role="assistant",
+                kind="error",
+                text=app.error["safe_message"],
+                technical_detail=app.error["technical_message"],
+            )
+        )
+        if config.GPU_GUARD_ENABLED:
+            gpu_guard.release_stage(
+                "startup reconciliation",
+                gpu_name_substring=config.CHATTERBOX_GPU_NAME_SUBSTRING,
+                output=lambda event, text: _log_progress(app, event, text),
+            )
+        store.save_session(app)
+        reconciled.append({"session_id": app.session_id, "episode_session_id": app.episode_session_id})
+    return reconciled
 
 
 PROMPT_PREFIXES: list[tuple[str, str]] = [
@@ -300,8 +358,14 @@ def cancel_session(app_session_id: str) -> store.AppSession:
     handle = _get_handle(app_session_id)
     app = store.load_session(app_session_id)
     if handle is not None:
+        # Persisted and visible before anything else happens: the browser
+        # can disable the button and show this immediately, regardless of
+        # how long the worker actually takes to stop.
+        app.add_message(store.ChatMessage(role="system", kind="text", text="Cancellation requested."))
+        store.save_session(app)
+        handle.cancel_event.set()
         handle.answer_queue.put(_CANCELLED)
-        _wait_for_update(handle, app_session_id, timeout=10)
+        _wait_for_update(handle, app_session_id, timeout=15)
         app = store.load_session(app_session_id)
     else:
         app.status = "failed"
@@ -543,8 +607,11 @@ def _worker(
             input_func=input_func,
             output=output_func,
             clonecast_factory=clonecast_cli_factory,
+            cancel_check=handle.cancel_event.is_set,
         )
         _on_worker_success(app_session_id, session)
+    except episode.EpisodeCancelledError as exc:
+        _on_worker_error(app_session_id, "Operation cancelled.", technical=str(exc), retry_safe=True)
     except episode.EpisodeBuildError as exc:
         _on_worker_error(app_session_id, _friendly_episode_error_message(str(exc)), technical=str(exc), retry_safe=True)
     except _CancelledSignal:

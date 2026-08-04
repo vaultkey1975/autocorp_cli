@@ -185,6 +185,13 @@ CLONECAST_SPEECH_TIMEOUT_STARTUP_GRACE_SECONDS = int(
     os.environ.get("AUTOCORP_SPEECH_TIMEOUT_STARTUP_GRACE_SECONDS", "900")
 )
 CLONECAST_SPEECH_HEARTBEAT_SECONDS = int(os.environ.get("AUTOCORP_SPEECH_HEARTBEAT_SECONDS", "60"))
+# A worker heartbeat proves the subprocess is still talking to us, not that
+# it is making real progress: Chatterbox can get stuck emitting heartbeats
+# forever inside one segment (a known TTS decode failure mode) without ever
+# completing it. This is the max time real segment progress may stay flat
+# before AutoCorp treats the render as stalled and stops it itself, rather
+# than waiting on the much larger total-job timeout.
+CLONECAST_SPEECH_STALL_SECONDS = int(os.environ.get("AUTOCORP_SPEECH_STALL_SECONDS", "240"))
 
 
 def app_sessions_dir() -> str:

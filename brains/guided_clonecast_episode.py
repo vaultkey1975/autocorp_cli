@@ -67,6 +67,13 @@ class EpisodeBuildError(RuntimeError):
     """Raised for a truthful operator or CloneCast failure."""
 
 
+class EpisodeCancelledError(EpisodeBuildError):
+    """Raised when an owner-requested cancellation actually stopped a running
+    CloneCast command, as distinct from a stall, a timeout, or a genuine
+    CloneCast failure - callers use this to record a clean "cancelled" state
+    instead of a generic failure."""
+
+
 @dataclass
 class CloneCastResult:
     command: list[str]
@@ -421,6 +428,7 @@ class CloneCastCLI:
         timeout: int,
         heartbeat_interval: int,
         heartbeat: Callable[[int], None],
+        cancel_check: Callable[[], bool] | None = None,
     ) -> CloneCastResult:
         """Run a long CloneCast command with periodic liveness heartbeats.
 
@@ -428,6 +436,12 @@ class CloneCastCLI:
         gives no chance to prove progress while Chatterbox is still rendering.
         A live child process is treated as healthy until the computed deadline
         expires or it exits with a real failure.
+
+        ``cancel_check``, if given, is polled on the same cadence as
+        ``heartbeat`` (never more than one ``heartbeat_interval`` after the
+        owner actually asked to cancel) - when it returns True the worker
+        process is killed and ``EpisodeCancelledError`` is raised, distinct
+        from a timeout or a genuine CloneCast failure.
         """
         if not hasattr(self, "runner"):
             return self.checked(args)
@@ -455,6 +469,12 @@ class CloneCastCLI:
         try:
             while True:
                 now = time.monotonic()
+                if cancel_check is not None and cancel_check() and proc.poll() is None:
+                    proc.kill()
+                    stdout, stderr = proc.communicate()
+                    raise EpisodeCancelledError(
+                        "cancelled: " + " ".join(args) + " was stopped by an owner cancellation request"
+                    )
                 if now >= next_heartbeat and proc.poll() is None:
                     heartbeat(int(now - started))
                     next_heartbeat = now + max(1, heartbeat_interval)
@@ -469,6 +489,12 @@ class CloneCastCLI:
                         + f"stdout:\n{stdout}\nstderr:\n{stderr}"
                     )
                 wait_for = min(max(0.05, remaining), max(1, heartbeat_interval))
+                if cancel_check is not None:
+                    # Poll at least every couple of seconds when a
+                    # cancellation could be pending, independent of the much
+                    # coarser heartbeat cadence - "one click" should not
+                    # mean "wait up to a full heartbeat interval."
+                    wait_for = min(wait_for, 2.0)
                 try:
                     stdout, stderr = proc.communicate(timeout=wait_for)
                     break
@@ -1184,6 +1210,7 @@ def _render_speech(
     *,
     script_id: str,
     output: Callable[[str], None],
+    cancel_check: Callable[[], bool] | None = None,
 ) -> CloneCastResult:
     timeout = calculate_speech_render_timeout(session)
     heartbeat_interval = max(1, int(config.CLONECAST_SPEECH_HEARTBEAT_SECONDS))
@@ -1199,13 +1226,22 @@ def _render_speech(
     save_session(session)
     output("Audio generation started")
 
+    stall_tracker = {"items_completed": None, "unchanged_since": time.monotonic()}
+
     def heartbeat(elapsed_seconds: int) -> None:
         progress = _poll_speech_progress(cli, session)
+        current = progress.get("items_completed")
+        now = time.monotonic()
+        if current != stall_tracker["items_completed"]:
+            stall_tracker["items_completed"] = current
+            stall_tracker["unchanged_since"] = now
+        stalled_for = now - stall_tracker["unchanged_since"]
         session.validation_evidence["speech_render_heartbeat"] = {
             "stage": "speech-render",
             "status": "running",
             "elapsed_seconds": elapsed_seconds,
             "updated_at": _now(),
+            "stalled_for_seconds": round(stalled_for, 1),
             **progress,
         }
         save_session(session)
@@ -1216,6 +1252,18 @@ def _render_speech(
             )
         else:
             output(f"Audio generation still running ({elapsed_seconds}s elapsed)")
+        # A heartbeat proves the subprocess is still talking to us, not that
+        # it is making real progress - Chatterbox can emit heartbeats
+        # forever while stuck decoding one segment. Raising here reaches
+        # checked_monitored's own exception handler, which kills the
+        # process; the segment that was in flight is simply incomplete on
+        # disk, exactly like any other interruption, so the existing
+        # resumability picks it back up on the next attempt.
+        if current is not None and stalled_for >= config.CLONECAST_SPEECH_STALL_SECONDS:
+            raise EpisodeBuildError(
+                f"stalled: segment {current} of {progress.get('item_count', '?')} has not advanced in "
+                f"{int(stalled_for)}s; stopping the render worker so this episode can be resumed"
+            )
 
     try:
         return cli.checked_monitored(
@@ -1229,6 +1277,7 @@ def _render_speech(
             timeout=timeout,
             heartbeat_interval=heartbeat_interval,
             heartbeat=heartbeat,
+            cancel_check=cancel_check,
         )
     except EpisodeBuildError as exc:
         _fail_session(session, "speech_render", str(exc))
@@ -1243,6 +1292,7 @@ def run_guided_episode_build(
     input_func: Callable[[str], Any] = input,
     output: Callable[[str], None] = print,
     clonecast_factory: Callable[[Path], CloneCastCLI] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> EpisodeSession:
     cli = (clonecast_factory or (lambda path: CloneCastCLI(path)))(Path(repo))
     cli.validate_repo()
@@ -1534,7 +1584,9 @@ def run_guided_episode_build(
     session.completed_stage = "speech_provider_preflight"
     save_session(session)
 
-    speech_result = _render_speech(session, cli, script_id=import_payload["script_id"], output=output)
+    speech_result = _render_speech(
+        session, cli, script_id=import_payload["script_id"], output=output, cancel_check=cancel_check
+    )
     _record_command(session, speech_result)
     speech_payload = _require_json(speech_result, "speech-render")
     speech_job = speech_payload.get("job", {})

@@ -516,7 +516,7 @@ def test_real_worker_timeout_kills_process_and_reports_failure(tmp_path):
 
 
 class SpeechFailureCleanupCloneCast(FakeCloneCast):
-    def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+    def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat, cancel_check=None):
         self.calls.append(args)
         heartbeat(heartbeat_interval)
         raise episode.EpisodeBuildError("Chatterbox lifecycle worker response timed out")
@@ -551,7 +551,7 @@ def test_resume_after_speech_timeout_preserves_inputs_and_retries_from_speech(se
     instances = []
 
     class OneTimeoutThenSuccess(FakeCloneCast):
-        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat):
+        def checked_monitored(self, args, *, timeout, heartbeat_interval, heartbeat, cancel_check=None):
             self.calls.append(args)
             if failures_remaining["count"]:
                 failures_remaining["count"] -= 1
