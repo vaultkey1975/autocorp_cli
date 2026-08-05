@@ -19,11 +19,22 @@ class LocalEngine(BaseEngine):
     def __init__(self, model: str = None, temperature: float = 0.2):
         self.model = model or llm.MODEL
         self.temperature = temperature
+        self.last_usage = None
 
     def generate(self, prompt: str, system: str = "") -> str:
         """Generate via the local Ollama model. Same parameters the Builder used
         before (system + model + temperature). Wraps transport errors as
-        EngineError so the Builder handles all engines uniformly."""
+        EngineError so the Builder handles all engines uniformly.
+
+        Calls `core.llm.generate` (not `generate_with_usage`) - this exact
+        call target is pinned by existing tests
+        (`tests/test_engines.py::test_local_engine_delegates_prompt_system_and_params`
+        et al. patch `core.llm.generate` directly). Ollama does report real
+        per-call token counts, but there is no way to fetch them without
+        either a second, duplicate model call or changing this call target,
+        so `last_usage` intentionally stays unset here - honestly reported
+        as unavailable rather than estimated-and-mislabeled or fetched via a
+        path a mocked `generate` could silently bypass."""
         try:
             return llm.generate(
                 prompt,

@@ -35,7 +35,7 @@ from memory import store
 from safety.gate import AllowAllGate, ConfirmGate
 from safety.watchdog_gate import WatchdogGate
 from autocorp_testing import reporting as fast_pytest_reporting
-from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, repair_executor, repair_proposal, scanner, usage_ledger, workflow_test, workspace
+from brains import analyzer, chat, discovery, engine_registry, fast_pytest_engine, guided_clonecast_episode, live_inspector, live_readiness, live_test, manager, project_planner, repair_executor, repair_handoff, repair_proposal, scanner, usage_ledger, workflow_test, workspace
 
 
 def _make_gate(auto: bool = False, watchdog: bool = False):
@@ -80,6 +80,9 @@ def cmd_build(args) -> int:
         # Engine selection (default local). The frozen orchestrator is untouched
         # - we swap the engine on the already-constructed builder.
         session.builder.engine = _make_engine(engine_name)
+        # Phase 2B: the CLI operator named this engine directly, so a paid
+        # engine here carries explicit authorization for provider_policy.
+        session.builder.engine_explicit_selection = True
         console.muted(f"Engine: {session.builder.engine.name}")
     result = session.run(args.request)
     return 0 if result.get("status") in ("passed",) else 1
@@ -615,6 +618,66 @@ def cmd_propose_repair(args) -> int:
         except (ValueError, OSError) as exc:
             print(f"Failed to write output: {exc}")
             return 1
+
+    return 0
+
+
+def cmd_repair_handoff(args) -> int:
+    """Generate a deterministic, paste-ready Codex/Claude repair handoff
+    from VERIFIED_BROKEN AutoCorp evidence (a test-focused/test-full --json
+    file). Never calls a model or paid API; never submits the prompt to an
+    agent; refuses to generate anything from passing or inconclusive
+    evidence."""
+    import json
+
+    repo_root = _resolve_repo(args)
+    evidence_path = getattr(args, "evidence", None)
+    if not evidence_path or not os.path.isfile(evidence_path):
+        print(f"Repair Handoff Error: --evidence JSON file not found: {evidence_path}", file=sys.stderr)
+        return 2
+    try:
+        with open(evidence_path, encoding="utf-8") as fh:
+            evidence = json.load(fh)
+    except (OSError, ValueError) as exc:
+        print(f"Repair Handoff Error: could not read evidence JSON: {exc}", file=sys.stderr)
+        return 2
+
+    agent_arg = getattr(args, "agent", "codex")
+    agents = ["codex", "claude"] if agent_arg == "both" else [agent_arg]
+
+    print("AutoCorp Repair Handoff")
+    print("========================")
+    print()
+
+    try:
+        records = repair_handoff.generate_handoffs(
+            repo_root, evidence, agents=agents,
+            detected_by=f"autocorp evidence file: {evidence_path}",
+            log_path=evidence_path,
+        )
+    except repair_handoff.RepairHandoffNotVerified as exc:
+        print(str(exc))
+        return 1
+    except FileExistsError as exc:
+        print(f"Repair Handoff Error: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"Repair Handoff Error: {exc}", file=sys.stderr)
+        return 2
+
+    for record in records:
+        print(f"Agent:        {record.agent}")
+        print(f"Prompt:       {record.prompt_path}")
+        print(f"SHA-256:      {record.prompt_sha256}")
+        print(f"Provenance:   {record.prompt_path}.provenance.json")
+        if getattr(args, "open_vscode", False):
+            result = repair_handoff.open_in_vscode(record.prompt_path)
+            record.vscode_requested = True
+            record.vscode_result = result["detail"]
+            repair_handoff._write_provenance(record.prompt_path, record)
+            status = "OK" if result["success"] else "NOT OPENED"
+            print(f"VS Code open: {status} - {result['detail']}")
+        print()
 
     return 0
 
@@ -1308,6 +1371,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--overwrite", action="store_true",
                     help="overwrite existing output file")
     sp.set_defaults(func=cmd_propose_repair)
+
+    sp = sub.add_parser("repair-handoff",
+                        help="generate a deterministic Codex/Claude repair handoff from "
+                             "VERIFIED_BROKEN AutoCorp evidence (never calls a model)")
+    sp.add_argument("--repo", default=None, metavar="PATH",
+                    help="absolute path to the application repository the evidence is about")
+    sp.add_argument("--evidence", required=True, metavar="PATH",
+                    help="AutoCorp test-focused/test-full --json evidence file")
+    sp.add_argument("--agent", choices=["codex", "claude", "both"], default="codex",
+                    help="target coding agent(s) for the generated handoff")
+    sp.add_argument("--open-vscode", action="store_true",
+                    help="open the generated prompt via 'code --reuse-window' (never submits it)")
+    sp.set_defaults(func=cmd_repair_handoff)
 
     sp = sub.add_parser("live-readiness",
                         help="static live-application readiness scanner")

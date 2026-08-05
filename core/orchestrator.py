@@ -14,10 +14,11 @@ with a WatchdogGate instead of a ConfirmGate - nothing here changes.
 
 import os
 
+import config
 from config import (MAX_FIX_ATTEMPTS, WORKSPACE_DIR, DEFAULT_ROUTE_RULES,
                     ROUTE_DEFAULT_ENGINE)
 from core import console, llm
-from brains import engine_registry
+from brains import engine_registry, provider_policy
 from brains.planner import PlannerBrain
 from brains.builder import BuilderBrain
 from brains.tester import TesterBrain
@@ -126,6 +127,16 @@ class Session:
             try:
                 decision = self.router.route(context_from(request, plan))
                 self.builder.engine = engine_registry.create(decision.engine)
+                # Phase 2B: a paid provider reached through auto-routing is
+                # only treated as explicitly authorized when a real,
+                # non-fallback rule matched (config.DEFAULT_ROUTE_RULES is
+                # itself only populated by a deliberate operator opt-in via
+                # AUTOCORP_DEEPSEEK_ROUTING - "opt-in twice over", per
+                # config.py). The safe fallback path can never carry paid
+                # authorization.
+                self.builder.engine_explicit_selection = (
+                    not decision.fallback_used and decision.rule != "fallback"
+                )
                 console.muted(
                     f"Router: engine '{decision.engine}' (rule: {decision.rule})"
                     + (" [fallback]" if decision.fallback_used else "")
@@ -300,11 +311,13 @@ class Session:
             content = f.read()
         console.info(f"Explaining [cyan]{path}[/cyan] ...")
         try:
-            text = llm.generate(
+            text = provider_policy.invoke(
+                "explain", "local",
                 f"FILE: {path}\n\n{content}\n\nExplain this file.",
-                system=EXPLAIN_SYSTEM_PROMPT,
+                EXPLAIN_SYSTEM_PROMPT,
+                repo_path=config.BASE_DIR, target_path=path,
             )
-        except llm.OllamaError as e:
+        except provider_policy.EngineError as e:
             console.error(f"Explain failed: {e}")
             return ""
         console.show_panel(f"Explanation — {os.path.basename(path)}", text.strip(), "cyan")

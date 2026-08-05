@@ -21,6 +21,9 @@ and return a plain dict carrying the full v2 structure plus the v1 keys, so all
 existing consumers (orchestrator, builder, tester) keep working.
 """
 
+import time
+
+import config
 from core import console, llm
 from brains.project_plan import (
     ProjectPlan,
@@ -29,6 +32,7 @@ from brains.project_plan import (
     safe_relpath,
 )
 from brains.templates import select_template
+from brains import provider_policy
 from memory import store
 
 # Re-export sanitisers under their historical names for backward compatibility
@@ -75,8 +79,12 @@ def normalize_plan(plan: dict, request: str = "") -> dict:
 
 
 class PlannerBrain:
-    def __init__(self, model=None):
+    def __init__(self, model=None, repo_path=None):
         self.model = model or llm.MODEL
+        # Phase 2B: planning always uses the local model (no provider
+        # selection exists on this path); ledger evidence for it is recorded
+        # against AutoCorp's own installation, matching the Builder/Tester.
+        self.repo_path = repo_path or config.BASE_DIR
 
     def plan(self, request: str, lessons_text: str = "") -> dict:
         """Generate, validate, persist, and return a structured plan (as a dict).
@@ -96,7 +104,37 @@ class PlannerBrain:
             prompt += f"\n{lessons_text}\n"
         prompt += "\nProduce the structured build plan JSON now."
 
-        parsed = llm.generate_json(prompt, system=SYSTEM_PROMPT, model=self.model)
+        # Calls llm.generate_json directly (not through the engine
+        # abstraction) so this path keeps Ollama's json_mode structured-
+        # output constraint and stays compatible with every existing test
+        # that mocks llm.generate_json directly. Phase 2B still records full
+        # usage-ledger evidence for it via provider_policy.record_operation.
+        start = time.monotonic()
+        try:
+            parsed = llm.generate_json(prompt, system=SYSTEM_PROMPT, model=self.model)
+        except llm.OllamaError as e:
+            provider_policy.record_operation(
+                "plan-generation", "local", prompt, "",
+                repo_path=self.repo_path, model=self.model,
+                status="blocked", validation="not_attempted",
+                error_type=e.__class__.__name__, error_summary=str(e),
+                elapsed_time_seconds=time.monotonic() - start,
+            )
+            raise
+        except ValueError as e:
+            provider_policy.record_operation(
+                "plan-generation", "local", prompt, "",
+                repo_path=self.repo_path, model=self.model,
+                status="failed", validation="failed",
+                error_type=e.__class__.__name__, error_summary=str(e),
+                elapsed_time_seconds=time.monotonic() - start,
+            )
+            raise
+        provider_policy.record_operation(
+            "plan-generation", "local", prompt, str(parsed),
+            repo_path=self.repo_path, model=self.model,
+            elapsed_time_seconds=time.monotonic() - start,
+        )
         return self._finalize(ProjectPlan.from_dict(parsed, request), request)
 
     def _finalize(self, project_plan: "ProjectPlan", request: str) -> dict:

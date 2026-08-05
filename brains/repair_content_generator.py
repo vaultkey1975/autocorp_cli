@@ -22,7 +22,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 
-from brains import context_budget, engine_registry, repo_policy, usage_ledger
+from brains import context_budget, engine_registry, provider_policy, repo_policy, usage_ledger
 from brains.base_engine import EngineError
 from core import llm
 
@@ -174,19 +174,9 @@ class LocalRepairContentProvider(RepairContentProvider):
             }
 
 
-def _request_and_verify_unload(model: str, *, attempts: int = 3, delay_seconds: float = 0.5) -> tuple[bool, bool]:
-    ok, _msg = llm.unload_model(model)
-    if not ok:
-        return False, False
-    for idx in range(max(1, attempts)):
-        loaded, _verify_msg = llm.model_loaded(model)
-        if loaded is False:
-            return True, True
-        if loaded is None:
-            return True, False
-        if idx < attempts - 1:
-            time.sleep(delay_seconds)
-    return True, False
+# Phase 2B: cleanup logic now lives once in provider_policy and is shared by
+# every call site instead of being duplicated per module.
+_request_and_verify_unload = provider_policy.request_and_verify_unload
 
 
 class TesterBackedRepairContentProvider(RepairContentProvider):

@@ -12,8 +12,10 @@ import contextlib
 from dataclasses import dataclass, field
 from typing import Any
 
+import config
+
 SCHEMA_VERSION = 1
-JSON_SCHEMA_VERSION = "2a.usage-report.v1"
+JSON_SCHEMA_VERSION = "2b.usage-report.v1"
 
 
 def ledger_path(repo_path: str) -> str:
@@ -195,6 +197,22 @@ def _rows(repo_path: str) -> list[sqlite3.Row]:
         return list(con.execute("SELECT * FROM usage_operations ORDER BY timestamp ASC"))
 
 
+_PAID_PROVIDERS = ("claude", "deepseek")
+
+
+def _usage_class(row: sqlite3.Row) -> str:
+    """Classify one recorded operation's usage as exact / estimated /
+    unavailable. "exact" means a real provider-reported count is present;
+    "unavailable" means no generation was ever attempted (a policy denial or
+    a pre-generation validation failure); everything else that reached a
+    real attempt falls back to the byte-based "estimated" figure."""
+    if row["actual_input_tokens"] is not None or row["actual_output_tokens"] is not None:
+        return "exact"
+    if row["result_status"] == "blocked" and row["validation_status"] == "not_attempted":
+        return "unavailable"
+    return "estimated"
+
+
 def report(repo_path: str) -> dict[str, Any]:
     rows = _rows(repo_path)
     by_provider: dict[str, int] = {}
@@ -208,14 +226,22 @@ def report(repo_path: str) -> dict[str, Any]:
     cache_hits = 0
     uncertainty = 0
     cleanup_failures = 0
-    local_ops = paid_ops = 0
+    local_ops = paid_ops = deterministic_ops = denied_ops = 0
+    usage_exact = usage_estimated = usage_unavailable = 0
     for row in rows:
         provider = row["provider"]
         by_provider[provider] = by_provider.get(provider, 0) + 1
         if provider == "local":
             local_ops += 1
-        else:
+        elif provider in _PAID_PROVIDERS:
             paid_ops += 1
+        elif provider == "deterministic":
+            deterministic_ops += 1
+        else:
+            # Prohibited/unregistered provider names (e.g. "mock") that a
+            # policy denial recorded - never counted as real local or paid
+            # usage.
+            denied_ops += 1
         status = row["result_status"]
         if status in statuses:
             statuses[status] += 1
@@ -233,11 +259,26 @@ def report(repo_path: str) -> dict[str, Any]:
             uncertainty += 1
         if row["local_model_cleanup_requested"] and not row["local_model_cleanup_verified"]:
             cleanup_failures += 1
+        usage_kind = _usage_class(row)
+        if usage_kind == "exact":
+            usage_exact += 1
+        elif usage_kind == "estimated":
+            usage_estimated += 1
+        else:
+            usage_unavailable += 1
     avoided, savings_pct = calculate_savings(baseline, paid_used)
     latest = dict(rows[-1]) if rows else None
     if latest:
         latest.pop("selected_context_manifest_json", None)
         latest.pop("uncertainty_warnings_json", None)
+
+    coverage = None
+    try:
+        from brains import provider_coverage_audit
+        coverage = provider_coverage_audit.run_audit(config.BASE_DIR).to_dict()
+    except Exception as exc:  # noqa: BLE001 - the audit must never break usage-report
+        coverage = {"error": f"coverage audit unavailable: {exc.__class__.__name__}: {exc}"}
+
     return {
         "schema_version": JSON_SCHEMA_VERSION,
         "repo_path": os.path.abspath(repo_path),
@@ -245,6 +286,8 @@ def report(repo_path: str) -> dict[str, Any]:
         "operations_by_provider": by_provider,
         "local_operations": local_ops,
         "paid_operations": paid_ops,
+        "deterministic_operations": deterministic_ops,
+        "denied_operations": denied_ops,
         "statuses": statuses,
         "total_estimated_input_tokens": total_estimated_input,
         "actual_input_tokens_available_count": actual_available,
@@ -254,18 +297,46 @@ def report(repo_path: str) -> dict[str, Any]:
         "cache_hits": cache_hits,
         "operations_with_uncertainty": uncertainty,
         "local_model_cleanup_failures": cleanup_failures,
+        "usage_exact_count": usage_exact,
+        "usage_estimated_count": usage_estimated,
+        "usage_unavailable_count": usage_unavailable,
         "latest_operation": latest,
+        "coverage": coverage,
     }
 
 
+def _render_coverage(coverage: dict[str, Any] | None) -> list[str]:
+    lines = ["", "Provider Coverage Audit (AutoCorp's own source)"]
+    if not coverage:
+        lines.append("Coverage audit unavailable.")
+        return lines
+    if "error" in coverage:
+        lines.append(f"Coverage audit error: {coverage['error']}")
+        return lines
+    pct = coverage.get("coverage_percentage")
+    pct_text = "insufficient data" if pct is None else f"{pct:.2f}%"
+    lines += [
+        f"Known model-capable call sites: {coverage.get('known_call_sites', 0)}",
+        f"Covered (routed through provider_policy): {coverage.get('covered_call_sites', 0)}",
+        f"Explicitly excluded (documented reason): {coverage.get('excluded_call_sites', 0)}",
+        f"Uncovered/unregistered (defects): {len(coverage.get('uncovered_call_sites', []))}",
+        f"Coverage percentage: {pct_text}",
+    ]
+    uncovered = coverage.get("uncovered_call_sites") or []
+    if uncovered:
+        lines.append(f"Uncovered files: {', '.join(uncovered)}")
+    return lines
+
+
 def render_human(summary: dict[str, Any]) -> str:
+    coverage_lines = _render_coverage(summary.get("coverage"))
     if summary["total_operations"] == 0:
-        return (
-            "Usage Ledger\n"
-            f"Repository: {summary['repo_path']}\n"
-            "No provider usage evidence has been recorded yet.\n"
-            "Estimated savings: unavailable (no evidence)."
-        )
+        return "\n".join([
+            "Usage Ledger",
+            f"Repository: {summary['repo_path']}",
+            "No provider usage evidence has been recorded yet.",
+            "Estimated savings: unavailable (no evidence).",
+        ] + coverage_lines)
     savings = summary["measured_savings_percentage"]
     savings_text = "unavailable" if savings is None else f"{savings:.2f}%"
     latest = summary.get("latest_operation") or {}
@@ -276,13 +347,16 @@ def render_human(summary: dict[str, Any]) -> str:
         f"Operations by provider: {summary['operations_by_provider']}",
         f"Local operations: {summary['local_operations']}",
         f"Paid operations: {summary['paid_operations']}",
+        f"Deterministic (no model call) operations: {summary.get('deterministic_operations', 0)}",
+        f"Denied operations (policy-blocked, prohibited/unauthorized provider): {summary.get('denied_operations', 0)}",
         f"Successful/failed/blocked: {summary['statuses']['success']} / {summary['statuses']['failed']} / {summary['statuses']['blocked']}",
         f"Total estimated input tokens: {summary['total_estimated_input_tokens']} (estimated)",
         f"Actual input tokens: {summary['total_actual_input_tokens'] if summary['total_actual_input_tokens'] is not None else 'unavailable'}",
+        f"Usage evidence - exact/estimated/unavailable: {summary.get('usage_exact_count', 0)} / {summary.get('usage_estimated_count', 0)} / {summary.get('usage_unavailable_count', 0)}",
         f"Estimated paid tokens avoided: {summary['estimated_paid_tokens_avoided']} (token estimate, not dollars)",
         f"Measured savings percentage: {savings_text}",
         f"Cache hits: {summary['cache_hits']}",
         f"Operations with uncertainty: {summary['operations_with_uncertainty']}",
         f"Local model cleanup failures: {summary['local_model_cleanup_failures']}",
         f"Latest operation: {latest.get('operation_name', '')} {latest.get('provider', '')}/{latest.get('model', '')} {latest.get('result_status', '')}".strip(),
-    ])
+    ] + coverage_lines)

@@ -47,13 +47,11 @@ def check_ollama(model: str = MODEL):
 # --------------------------------------------------------------------------- #
 # Generation
 # --------------------------------------------------------------------------- #
-def generate(prompt: str, system: str = "", json_mode: bool = False,
-             model: str = MODEL, temperature: float = 0.2) -> str:
-    """Send a prompt to Ollama and return the raw text response.
-
-    Raises OllamaError on any transport/HTTP failure so callers can degrade
-    gracefully instead of crashing.
-    """
+def _generate_raw(prompt: str, system: str, json_mode: bool, model: str,
+                   temperature: float) -> dict:
+    """POST to Ollama and return the full decoded response envelope
+    (not just the text) so callers can also read real usage fields
+    (`prompt_eval_count`, `eval_count`) when Ollama reports them."""
     payload = {
         "model": model,
         "prompt": prompt,
@@ -75,7 +73,41 @@ def generate(prompt: str, system: str = "", json_mode: bool = False,
     except requests.RequestException as e:
         raise OllamaError(f"Ollama request failed: {e}") from e
 
-    return resp.json().get("response", "")
+    return resp.json()
+
+
+def generate(prompt: str, system: str = "", json_mode: bool = False,
+             model: str = MODEL, temperature: float = 0.2) -> str:
+    """Send a prompt to Ollama and return the raw text response.
+
+    Raises OllamaError on any transport/HTTP failure so callers can degrade
+    gracefully instead of crashing.
+    """
+    return _generate_raw(prompt, system, json_mode, model, temperature).get("response", "")
+
+
+def generate_with_usage(prompt: str, system: str = "", model: str = MODEL,
+                         temperature: float = 0.2, json_mode: bool = False) -> tuple[str, dict | None]:
+    """Like `generate`, but also returns Ollama's own reported token counts
+    when present in the response.
+
+    Ollama's `/api/generate` response can carry `prompt_eval_count` and
+    `eval_count` - real counts from Ollama's own tokenizer, not a
+    byte-based estimate. Returns `(text, None)` when the response carries
+    neither field, so callers can honestly record usage as unavailable
+    instead of fabricating a measurement.
+    """
+    data = _generate_raw(prompt, system, json_mode, model, temperature)
+    text = data.get("response", "")
+    prompt_tokens = data.get("prompt_eval_count")
+    completion_tokens = data.get("eval_count")
+    if prompt_tokens is None and completion_tokens is None:
+        return text, None
+    return text, {
+        "input_tokens": prompt_tokens,
+        "output_tokens": completion_tokens,
+        "source": "ollama_reported",
+    }
 
 
 def unload_model(model: str = MODEL) -> tuple[bool, str]:

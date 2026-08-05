@@ -17,7 +17,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from brains import context_budget, engine_registry, usage_ledger
+from brains import context_budget, engine_registry, provider_policy, usage_ledger
 from brains.base_engine import EngineError
 from core import llm
 
@@ -117,6 +117,25 @@ def generate_proposal_json(
             ))
         return result
 
+    # Phase 2B: route the prohibited-name / paid-authorization decision
+    # through the single authoritative policy before any engine is touched.
+    # A denial here short-circuits with the SAME ledger-recording path
+    # (`finish`) every other outcome uses, so a policy denial is recorded
+    # exactly like any other blocked outcome.
+    decision = provider_policy.decide(
+        operation_name, provider, explicit_user_selection=explicit_user_selection,
+    )
+    if not decision.permitted:
+        status = "blocked"
+        error_type = "ProviderPolicyDenied"
+        error_summary = decision.denial_reason
+        return finish(ProviderResult(
+            provider=provider,
+            model=resolved_model,
+            error=decision.denial_reason,
+            blocked=True,
+        ))
+
     try:
         if provider == "claude":
             engine = engine_registry.create(provider)
@@ -206,16 +225,6 @@ def generate_proposal_json(
     ))
 
 
-def _request_and_verify_unload(model: str, *, attempts: int = 3, delay_seconds: float = 0.5) -> tuple[bool, bool]:
-    ok, _msg = llm.unload_model(model)
-    if not ok:
-        return False, False
-    for idx in range(max(1, attempts)):
-        loaded, _verify_msg = llm.model_loaded(model)
-        if loaded is False:
-            return True, True
-        if loaded is None:
-            return True, False
-        if idx < attempts - 1:
-            time.sleep(delay_seconds)
-    return True, False
+# Phase 2B: cleanup logic now lives once in provider_policy and is shared by
+# every call site instead of being duplicated per module.
+_request_and_verify_unload = provider_policy.request_and_verify_unload

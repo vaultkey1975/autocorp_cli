@@ -42,5 +42,17 @@ class BaseEngine(ABC):
         the Claude CLI - override this to report a missing binary up front."""
         return True
 
+    # Phase 2B: real provider-reported usage ({"input_tokens", "output_tokens",
+    # "source"}) from the MOST RECENT generate() call, captured as a side
+    # effect by engines whose transport reports it (LocalEngine, DeepSeekEngine
+    # in API mode - both via a real tokenizer/API-reported count, never a
+    # byte-based estimate). Stays None for engines with no usage channel (e.g.
+    # the Claude CLI) and for any generate() call a test has monkeypatched
+    # away - callers must treat a stale/None value as "usage unavailable",
+    # never guess. Deliberately NOT a method: generate() stays the single
+    # call every existing caller and test mocks, so usage capture can never
+    # silently bypass a mocked generate() and reach a real transport.
+    last_usage: dict | None = None
+
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<{self.__class__.__name__} name={self.name!r}>"

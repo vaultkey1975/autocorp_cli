@@ -35,10 +35,12 @@ Build -> Test -> Fix -> Record flow is untouched.
 
 import os
 
+import config
 from core import console, llm
 from brains.dependency_analyzer import derive_build_order
 from brains.base_engine import EngineError
 from brains.local_engine import LocalEngine
+from brains import provider_policy
 
 SYSTEM_PROMPT = """You are the Builder Brain of a local AI coding assistant.
 You write the COMPLETE contents of ONE file at a time for a small project.
@@ -60,11 +62,23 @@ Keep the edit focused on the target file and the requested change."""
 
 
 class BuilderBrain:
-    def __init__(self, executor, model=None, engine=None):
+    def __init__(self, executor, model=None, engine=None, repo_path=None):
         self.executor = executor
         self.model = model or llm.MODEL
         # Default engine is local (Ollama); identical to the previous behaviour.
         self.engine = engine or LocalEngine(model=self.model)
+        # Phase 2B: where usage-ledger evidence for this build is recorded.
+        # `build` always writes into AutoCorp's own workspace/, not an
+        # external --repo target, so this defaults to AutoCorp's own
+        # installation root.
+        self.repo_path = repo_path or config.BASE_DIR
+        # Phase 2B: whether the CURRENT self.engine was explicitly selected
+        # by the CLI operator (`--engine claude`/`--engine deepseek`) or by
+        # the deliberately opt-in auto-router matching a real rule, as
+        # opposed to the silent, un-authorized default. Paid providers are
+        # refused by provider_policy unless this is True. Set by the CLI /
+        # Session, not guessed here.
+        self.engine_explicit_selection = False
 
     @staticmethod
     def _is_test_file(path: str) -> bool:
@@ -137,9 +151,15 @@ class BuilderBrain:
             f"\nWrite the complete contents of {target['path']} now. "
             "Output only the file contents."
         )
-        # Generate through the engine (local Ollama or Claude CLI), then strip any
-        # code fences the model may have wrapped the file in.
-        raw = self.engine.generate(prompt, system=SYSTEM_PROMPT)
+        # Generate through the engine (local Ollama or Claude CLI), routed
+        # through the authoritative provider policy so the choice, the
+        # authorization, and real usage evidence are all recorded, then
+        # strip any code fences the model may have wrapped the file in.
+        raw = provider_policy.invoke(
+            "build-file-generation", getattr(self.engine, "name", "local"), prompt, SYSTEM_PROMPT,
+            repo_path=self.repo_path, model=self.model, target_path=target["path"],
+            explicit_user_selection=self.engine_explicit_selection, engine=self.engine,
+        )
         return llm.strip_code_fences(raw)
 
     def edit_diff_prompt(self, request: str, target_path: str, current_content: str,
@@ -199,7 +219,11 @@ class BuilderBrain:
         prompt = self.edit_diff_prompt(
             request, target_path, current_content, related_context, error_trace, target_contents
         )
-        return self.engine.generate(prompt, system=EDIT_DIFF_SYSTEM_PROMPT)
+        return provider_policy.invoke(
+            "build-edit-diff", getattr(self.engine, "name", "local"), prompt, EDIT_DIFF_SYSTEM_PROMPT,
+            repo_path=self.repo_path, model=self.model, target_path=target_path,
+            explicit_user_selection=self.engine_explicit_selection, engine=self.engine,
+        )
 
     def build(self, plan: dict, workspace: str, lessons_text: str = "") -> list:
         order = self._resolve_build_order(plan)
@@ -222,6 +246,9 @@ class BuilderBrain:
                     content = self._gen_file(plan, target, written, lessons_text)
                 except EngineError as e:
                     console.error(f"Engine error while generating {path}: {e}")
+                    continue
+                except provider_policy.ProviderPolicyError as e:
+                    console.error(f"Provider routing denied generation of {path}: {e}")
                     continue
 
             if not content.strip():

@@ -58,21 +58,32 @@ class DeepSeekEngine(BaseEngine):
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY") or ""
         self.api_model = api_model or DEEPSEEK_API_MODEL
         self.use_api = bool(self.api_key)
+        self.last_usage = None
 
     def generate(self, prompt: str, system: str = "") -> str:
         """Generate via the DeepSeek API when a key is present, otherwise via the
         local Ollama model. Both transports return plain text and wrap failures
-        as EngineError so the Builder handles all engines uniformly."""
+        as EngineError so the Builder handles all engines uniformly.
+
+        Phase 2B: also captures real provider-reported usage into
+        `self.last_usage` as a side effect (DeepSeek's own OpenAI-compatible
+        `usage` field in API mode, Ollama's own reported counts in local
+        mode), without changing this method's signature or return type -
+        existing callers/tests that monkeypatch `generate` entirely are
+        unaffected (last_usage simply stays unset in that case)."""
         if self.use_api:
             return self._generate_api(prompt, system)
         return self._generate_local(prompt, system)
 
     # ----------------------------------------------------------------------- #
-    # Local transport (UNCHANGED - identical to the prior shadow behaviour)
+    # Local transport (identical shadow behaviour, now also capturing usage)
     # ----------------------------------------------------------------------- #
     def _generate_local(self, prompt: str, system: str = "") -> str:
         """Generate via a local DeepSeek model on Ollama. Same parameters
-        LocalEngine uses (system + model + temperature)."""
+        LocalEngine uses (system + model + temperature). Calls
+        `core.llm.generate` (not `generate_with_usage`) - pinned by
+        existing tests exactly like LocalEngine; see its docstring for why
+        `last_usage` intentionally stays unset on this transport."""
         try:
             return llm.generate(
                 prompt,
@@ -86,10 +97,12 @@ class DeepSeekEngine(BaseEngine):
     # ----------------------------------------------------------------------- #
     # API transport (DeepSeek chat completions, OpenAI-compatible)
     # ----------------------------------------------------------------------- #
-    def _generate_api(self, prompt: str, system: str = "") -> str:
-        """POST to the DeepSeek chat-completions endpoint and return the message
-        content. Every failure mode is wrapped as EngineError WITHOUT including
-        the API key (only the key is secret; the URL/model/status are safe)."""
+    def _generate_api_raw(self, prompt: str, system: str = "") -> dict:
+        """POST to the DeepSeek chat-completions endpoint and return the full
+        decoded response (message content + the real `usage` field), so
+        callers can report exact provider usage instead of an estimate.
+        Every failure mode is wrapped as EngineError WITHOUT including the API
+        key (only the key is secret; the URL/model/status are safe)."""
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -120,11 +133,34 @@ class DeepSeekEngine(BaseEngine):
             ) from e
 
         try:
-            data = resp.json()
-            content = data["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as e:
+            return resp.json()
+        except ValueError as e:
             raise EngineError(
                 f"DeepSeek API returned an unexpected response ({type(e).__name__})."
             ) from e
 
+    @staticmethod
+    def _extract_api_content(data: dict) -> str:
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            raise EngineError(
+                f"DeepSeek API returned an unexpected response ({type(e).__name__})."
+            ) from e
         return (content or "").strip()
+
+    def _generate_api(self, prompt: str, system: str = "") -> str:
+        data = self._generate_api_raw(prompt, system)
+        content = self._extract_api_content(data)
+        usage = data.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        if prompt_tokens is None and completion_tokens is None:
+            self.last_usage = None
+        else:
+            self.last_usage = {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "source": "deepseek_api_reported",
+            }
+        return content

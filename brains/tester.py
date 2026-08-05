@@ -10,9 +10,12 @@ the two primitives: `test()` and `suggest_fix()`.
 
 import os
 import re
+import time
 
+import config
 from core import console, llm
 from brains.base_engine import EngineError
+from brains import provider_policy
 
 FIX_SYSTEM_PROMPT = """You are the Tester Brain of a local AI coding assistant.
 A test run failed. You are given the failing file's current contents and the
@@ -34,13 +37,24 @@ class TesterBrain:
     # named "Test*", which this production class incidentally does.
     __test__ = False
 
-    def __init__(self, executor, model=None, engine=None):
+    def __init__(self, executor, model=None, engine=None, repo_path=None):
         self.executor = executor
         self.model = model or llm.MODEL
         # Optional BaseEngine (DS5). When set, suggest_fix generates the fix
         # through the engine instead of the direct llm.generate_json call; None
         # preserves the legacy local-model path exactly.
         self.engine = engine
+        # Phase 2B: where usage-ledger evidence for self-heal fixes is
+        # recorded. Defaults to AutoCorp's own installation root, matching
+        # the Builder (the self-heal loop operates on AutoCorp's own
+        # workspace/, not an external --repo target).
+        self.repo_path = repo_path or config.BASE_DIR
+        # Phase 2B: whether `self.engine` was explicitly selected by the CLI
+        # operator (tester_engine="deepseek"/"claude" is only reachable via
+        # an explicit flag - there is no auto-routing for the tester engine
+        # today). Paid providers are refused by provider_policy unless this
+        # is True.
+        self.engine_explicit_selection = engine is not None and getattr(engine, "name", "local") != "local"
 
     def test(self, workspace: str, plan: dict):
         """Run the plan's test command in the workspace. Returns a CommandResult."""
@@ -146,15 +160,38 @@ class TesterBrain:
         )
         if self.engine is not None:
             try:
-                raw = self.engine.generate(prompt, system=FIX_SYSTEM_PROMPT)
+                raw = provider_policy.invoke(
+                    "self-heal-fix", getattr(self.engine, "name", "local"), prompt, FIX_SYSTEM_PROMPT,
+                    repo_path=self.repo_path, model=self.model, target_path=filename,
+                    explicit_user_selection=self.engine_explicit_selection, engine=self.engine,
+                )
                 parsed = llm.extract_json(raw)
-            except (EngineError, ValueError) as e:
+            except (EngineError, provider_policy.ProviderPolicyError, ValueError) as e:
                 console.error(f"Could not get a fix from the engine: {e}")
                 return {}
         else:
+            # Calls llm.generate_json directly (not through the engine
+            # abstraction) so this legacy path keeps Ollama's json_mode
+            # constraint and stays compatible with every existing test that
+            # mocks llm.generate_json directly. Still fully ledger-covered
+            # via provider_policy.record_operation.
+            start = time.monotonic()
             try:
                 parsed = llm.generate_json(prompt, system=FIX_SYSTEM_PROMPT, model=self.model)
+                provider_policy.record_operation(
+                    "self-heal-fix", "local", prompt, str(parsed),
+                    repo_path=self.repo_path, model=self.model, target_path=filename,
+                    elapsed_time_seconds=time.monotonic() - start,
+                )
             except (llm.OllamaError, ValueError) as e:
+                provider_policy.record_operation(
+                    "self-heal-fix", "local", prompt, "",
+                    repo_path=self.repo_path, model=self.model, target_path=filename,
+                    status="blocked" if isinstance(e, llm.OllamaError) else "failed",
+                    validation="not_attempted" if isinstance(e, llm.OllamaError) else "failed",
+                    error_type=e.__class__.__name__, error_summary=str(e),
+                    elapsed_time_seconds=time.monotonic() - start,
+                )
                 console.error(f"Could not get a fix from the model: {e}")
                 return {}
 
