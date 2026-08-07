@@ -7,18 +7,22 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Immediate Work
 
-1. **Owner review of Phase 2A.**
+1. **Owner review of Phase 2A and Phase 2B.**
+   Both phases are committed to `main` (`34e7a4a` and `b3fb054`
+   respectively). Unit, focused, warnings-as-errors, compile, diff, and
+   full strict suite verification passed for both. The prior
+   "commit pending" note was stale — both commits predate this audit.
 
-   Unit, focused, warnings-as-errors, compile, diff, Fast Pytest focused,
-   full strict suite, and real local Ollama smoke verification have passed.
-   The smoke used a disposable temporary repository, invoked the production
-   `LocalRepairContentProvider`, returned valid replacement content,
-   recorded one local ledger row, proved no paid provider path was used,
-   requested and verified model unload, confirmed the model was not loaded
-   afterward, deleted the disposable repository, and saved the audit report
-   at `/tmp/autocorp_phase2a_ollama_smoke_20260804_183331.txt`.
+2. **Owner review of AutoCorp Brain Integration plan.**
+   A planning-only audit (2026-08-07, corrected 2026-08-07) on this branch
+   evaluated whether AutoCorp CLI is ready to integrate with AutoCorp Brain
+   through the production v1 HTTP API. AutoCorp CLI communicates over pure
+   HTTP only (standard-library `http.client`); it must not import the
+   `autocorp_brain` package or SDK. See `ARCHITECTURE.md` "AutoCorp Brain
+   Integration Findings" for the full plan, scope, exclusions, and
+   acceptance criteria. Implementation is NOT authorized.
 
-2. **Owner review of the Live Application Inspector.**
+3. **Owner review of the Live Application Inspector.**
 
    Focused verification has passed:
 
@@ -94,6 +98,17 @@ discovers any item - see `DOCUMENTATION_POLICY.md`.
 
 ## Future Improvements
 
+- **AutoCorp Brain Integration — Core Client Boundary** (proposed, NOT authorized). A
+  planning-only audit (2026-08-07, corrected 2026-08-07) evaluated integration
+  readiness. AutoCorp Brain exposes a production v1 HTTP API at
+  `127.0.0.1:8420` (the SDK proves the contract is viable; AutoCorp CLI does
+  not import it). The recommended architecture: pure HTTP integration with a
+  `brains/autocorp_brain_adapter.py` module in this repository (health checks,
+  version negotiation, error mapping, timeout/cancellation handling). Brain
+  must already be running — AutoCorp CLI does NOT start or stop it in this
+  milestone. AutoCorp CLI retains ownership of provider selection, usage
+  ledger, CloneCast orchestration, desktop UI, and operator workflows. Full
+  scope, exclusions, and acceptance criteria are in `ARCHITECTURE.md`.
 - Add a dedicated Reliability Engine CLI entry point only if the owner
   approves production integration after reviewing the E2E and
   production-hardening evidence.

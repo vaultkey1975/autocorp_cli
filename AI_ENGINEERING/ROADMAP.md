@@ -74,18 +74,17 @@ an owner decision, not one this document makes.
 
 ## Current phase
 
-See `CURRENT_PHASE.md` for the live snapshot. Repository evidence now
-includes a committed Reliability Engine end-to-end
-`ReliabilityOrchestrator.run()` test, a committed AutoCorp Chat CLI
-subcommand, the production-hardening commit `99db951`, and committed
-Autonomous Engineering Manager `ff31c1a`, and Universal Repository
-Discovery `cc89467`, and Live Application Inspector `276fcc3`. The
-current working-tree task is a workflow-engine reliability correction for
-`autocorp workflow-test --disposable` and `autocorp publish-test
---disposable`, after real CloneCast runs reproduced an AutoCorp-side
-`UnboundLocalError` in the dirty-tree safety branch.
-Official phase completion remains owner-gated by
-`PHASE_COMPLETION_POLICY.md`.
+See `CURRENT_PHASE.md` for the live snapshot. Both Phase 2A (`34e7a4a`)
+and Phase 2B (`b3fb054`) are committed and merged to `main`. Official
+phase completion remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
+
+A planning-only audit (2026-08-07) evaluated AutoCorp Brain integration
+readiness and proposed the next milestone: "AutoCorp Brain Integration —
+Core Client Boundary." See `ARCHITECTURE.md` for full scope, exclusions,
+and acceptance criteria. Implementation is NOT authorized.
+
+The current working-tree task is this documentation audit — no code
+changes are in progress.
 
 ## Remaining phases (repository evidence only)
 

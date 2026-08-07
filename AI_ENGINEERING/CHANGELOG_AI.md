@@ -175,89 +175,86 @@ portions back into the working tree from a backup taken before the split.
 Full suite re-run after both the split and the restore: 933 passed, 1
 xfailed, unchanged.
 
-### 2026-08-04 — Uncommitted Phase 2A local-first context budget and usage ledger
+### 2026-08-04 — Phase 2A committed to main
 
-Working tree on branch `phase-2a-local-first-credit-guard`, base commit
-`911701d Add speech preview and GPU lifecycle safeguards`.
+Phase 2A was committed as `34e7a4a Implement Phase 2A local-first usage
+guard` and merged to `main`. (The prior "Uncommitted Phase 2A" entry at
+this location was written before the commit existed; corrected 2026-08-07
+during the AutoCorp Brain integration planning audit.)
 
-Phase 2A adds shared generated-path exclusion (`brains/repo_policy.py`),
-bounded repair context manifests (`brains/context_budget.py`), SQLite
-provider usage evidence (`brains/usage_ledger.py`), `autocorp
-usage-report --repo PATH [--json]`, abstract `BaseEngine` and
-`RepairContentProvider` interfaces, AST-aware readiness handling for
-abstract `NotImplementedError`, and a real local-engine-backed
-`LocalRepairContentProvider` with validated replacement-content output and
-Ollama unload evidence.
+Phase 2A delivers: `brains/repo_policy.py`, `brains/context_budget.py`,
+`brains/usage_ledger.py`, `autocorp usage-report` CLI, abstract interfaces
+hardening, and `LocalRepairContentProvider` with cleanup evidence.
+Verification: 1301 tests passed at exit 0; real Ollama smoke passed with
+cleanup verified.
 
-Verification recorded in `AI_ENGINEERING/CURRENT_PHASE.md`: read-only Fast
-Pytest plan selected 65 fast tests and 72 focused tests; explicit Fast
-Pytest focused verification selected 15 Phase 2A-relevant files, collected
-288 tests, and passed in 37.39s with no uncertainty warnings; `git diff
---check`, changed-module `py_compile`, CLI help/parser validation, and
-`scripts/verify_compileall.py --repo /home/larry/autocorp_cli` passed.
-Real Ollama integration smoke passed against a disposable temporary
-repository and saved its audit report at
-`/tmp/autocorp_phase2a_ollama_smoke_20260804_183331.txt`. Final strict
-suite `.venv/bin/python -m pytest -W error -q` passed with exit code 0;
-pytest cache recorded 1301 collected tests and progress output showed one
-expected xfail marker.
+### 2026-08-04 — Phase 2B committed to main
 
-**Phase 1G's five audit findings re-verified against current `HEAD` rather
-than trusted from the untracked report — four of five were already fixed.**
-`claude_phase_1g_audit.txt` was written against `1339aaf`; commit `ea71d54
-"fix: harden proposal secret and provider safety"` (already in this
-repository's history) fixed the `--provider claude` `TypeError`, the
-`--provider deepseek` model-tag conflation, the secret-file-exclusion
-compound-filename gap, and replaced
-`test_provider_contracts.py::test_no_silent_fallback` with four narrower
-regression tests that pass regardless of an ambient `DEEPSEEK_API_KEY`
-(confirmed: this session's environment has a real key set, and the full
-`test_provider_contracts.py` file — 12/12 — passes). This repository's own
-prior `NEXT_STEPS.md`/`PHASES.md`/`CURRENT_PHASE.md` had carried the
-audit's stale claims forward without re-verification — exactly the failure
-mode `AI_ENGINEERING_CONSTITUTION.md` §3 warns against, this time inside
-the documentation system meant to prevent it. Corrected in all three files
-this session.
+Phase 2B was committed as `b3fb054 Implement Phase 2B provider routing
+coverage and repair handoff generator` and merged to `main`.
 
-**Inline secret redaction — the one genuinely remaining gap — fixed.** Two
-of the audit's nine adversarial cases were still unredacted: compound
-`DB_PASSWORD`-style keys (the old pattern's `\b` doesn't cross an
-underscore) and JSON-quoted `{"Authorization": "Bearer ..."}` headers.
-Fixed in `brains/repair_proposal.py`'s `_INLINE_SECRET_RE`/
-`_redact_inline_secrets`: the plain password/secret alternative now treats
-`_` as a boundary (catching `DB_PASSWORD` without matching `secretary_name`
-— verified both ways), and the Authorization/Bearer alternative allows
-optional surrounding quotes. Three new regression tests added to
-`tests/test_repair_proposal.py`. All nine of the audit's original
-adversarial lines now redact correctly (verified directly, not just via the
-new unit tests).
+Phase 2B delivers: `brains/provider_policy.py` (central routing policy),
+`brains/provider_coverage_audit.py` (static coverage audit),
+`brains/repair_handoff.py` (VS Code repair handoff generator), updated
+routing in `brains/builder.py`/`brains/tester.py`/`brains/planner.py`/
+`core/orchestrator.py`, and `autocorp repair-handoff` CLI. Coverage
+audit against real AutoCorp source: 100.00%. Full strict suite: 1365
+tests passed at exit 0.
 
-**README.md updated** with a "Current commands" section (all fifteen
-current subcommands, noting which are committed vs. not) and pointers to
-`AI_ENGINEERING/` for the parts of the system the original four-brains
-description predates.
+### 2026-08-07 — AutoCorp Brain Integration Planning Audit (corrected 2026-08-07)
 
-**Reliability Engine investigated in full (read-only), not integrated.**
-Confirmed: a second, parallel build/repair orchestration pipeline that
-duplicates rather than composes with `core/orchestrator.py::Session`; its
-own true end-to-end entry point is never exercised by its 59 passing unit
-tests; the two stale `reliability/subtask-*` branches are almost certainly
-leftover artifacts from an earlier real run of this same code (its
-`worktree_sandbox.py` produces branches with that exact naming pattern),
-not evidence of a separate origin. Real, unaddressed risks found by reading
-the code (worktree-ID collision destroying preserved diagnostic state for
-blocked subtasks; missing-tool-vs-real-issue conflation in the static gate;
-uncached full-repo rescans per call) are recorded in `ARCHITECTURE.md`
-along with a 7-step staged integration plan. Integration itself remains
-unauthorized.
+Planning-only audit on branch `autocorp-brain-integration-audit` (HEAD
+`b3fb054`, same as `main`). No implementation was performed. This entry
+was corrected on 2026-08-07 to fix errors in the initial audit.
 
-**This session's changes remain uncommitted, pending owner review:**
-`README.md`, `brains/repair_proposal.py`, `tests/test_repair_proposal.py`,
-and the `AI_ENGINEERING/*.md` corrections above. Only the quick-podcast CLI
-wiring was committed, per explicit owner instruction to do so.
-
-Full suite after all of this session's changes: **936 passed, 1 xfailed, 0
-failed**, exit code 0 (933 plus 3 new tests for the inline-redaction fix).
+Findings:
+- Phase 2A and Phase 2B are both committed and on `main`. Stale
+  "commit pending" statements in `CURRENT_PHASE.md`, `NEXT_STEPS.md`,
+  and `CHANGELOG_AI.md` were corrected.
+- Phase 2A and Phase 2B entries were added to `PHASES.md`.
+- AutoCorp Brain (`/home/larry/autocorp_brain`) is through Phase 8
+  and exposes a production v1 HTTP API at `127.0.0.1:8420` (a Python
+  SDK also exists as evidence the HTTP contract is viable, but AutoCorp
+  CLI must not import it). The API supports 69 task types including
+  deterministic tasks (repair analysis, plan, apply, test, verify,
+  rollback) and model-required tasks (model_generate,
+  repair_suggest_*).
+- Selected architecture: pure HTTP integration through the v1 API
+  (standard-library `http.client.HTTPConnection`). AutoCorp CLI will
+  own a `brains/autocorp_brain_adapter.py` module in this repository
+  for health checks, version negotiation, timeout/cancellation, and
+  error mapping. Brain must already be running — AutoCorp CLI does NOT
+  start or stop Brain in this milestone.
+- Client-side cancellation (Ctrl+C / connection close) is NOT proof
+  that the Brain-side operation was canceled. Closing the HTTP
+  connection only stops the AutoCorp CLI client from waiting. Brain
+  retains ownership of bounded execution timeout, model cleanup, model
+  unload, reservation release, and VRAM verification. Brain-side
+  completion after client disconnect is unknown to AutoCorp CLI and
+  must be reported truthfully.
+- Usage accounting: one `brain_delegated` entry per operation in
+  AutoCorp CLI's ledger, recording only values AutoCorp CLI actually
+  observes. Model token counts, model-level timing, and cleanup details
+  are recorded only by Brain's own provenance system, never estimated
+  by AutoCorp CLI.
+- Proposed next milestone: "AutoCorp Brain Integration — Core Client
+  Boundary." See `ARCHITECTURE.md` for corrections, full scope,
+  exclusions, test plan, E2E acceptance plan, and every failure
+  behavior. Implementation is NOT authorized.
+- Corrected issues from initial audit: removed SDK-as-runtime-
+  dependency claims; corrected process lifecycle ownership (Brain must
+  already be running); fixed cancellation semantics (client-side only,
+  server-side unknown); corrected usage accounting to never estimate
+  model token counts; removed `provider_policy.py` from expected
+  affected modules.
+- Documentation-only changes: `CURRENT_PHASE.md`, `NEXT_STEPS.md`,
+  `ARCHITECTURE.md`, `PHASES.md`, `CHANGELOG_AI.md`, and `ROADMAP.md`.
+  No Python, test, script, or requirements files were modified.
+- Working tree: was clean before the audit; is now intentionally dirty
+  with documentation-only changes. Nothing was committed or pushed.
+- Verdict: AUTOCORP BRAIN INTEGRATION PLAN CORRECTED AND READY FOR
+  OWNER REVIEW. Corrected report saved to
+  `/tmp/autocorp_deepseek_correction_report.txt`.
 
 ### 2026-07-29 — README/Phase 1G fixes committed after re-review; Phase 1X/1Y reviewed and committed; two Reliability Engine bugs fixed
 A follow-up instruction asked for one more independent, skeptical review of

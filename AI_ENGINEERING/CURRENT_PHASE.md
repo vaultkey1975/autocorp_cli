@@ -1,8 +1,13 @@
 # Current Phase
 
-**Last verified against the repository:** 2026-08-04 on branch
-`phase-2b-local-first-provider-routing`, base commit
-`34e7a4a Implement Phase 2A local-first usage guard` (merged to `main`).
+**Last verified against the repository:** 2026-08-07 on branch
+`autocorp-brain-integration-audit`, HEAD at
+`b3fb054de2fd94ba2c51bcbdead04d1c5a439d1e` (same as `main`).
+
+Both Phase 2A (`34e7a4a`) and Phase 2B (`b3fb054`) are committed and
+merged to `main`. The prior "commit pending owner review" note at this
+location was stale — the commits were present at the time but not yet
+recorded as committed in this document.
 
 ---
 
@@ -356,9 +361,23 @@ fails loudly if any *other* file under `brains/`, `core/`, or
 
 ### Status
 
-Implemented and locally verified in the working tree; commit pending owner
-review, same as Phase 2A's original status note. Official phase completion
+Committed as `b3fb054` (merged to `main`). Official phase completion
 remains owner-gated by `PHASE_COMPLETION_POLICY.md`.
+
+### AutoCorp Brain Integration Audit (2026-08-07)
+
+A planning-only audit evaluated integration readiness with AutoCorp Brain
+(`/home/larry/autocorp_brain`). Full findings are in
+`AI_ENGINEERING/ARCHITECTURE.md` under "AutoCorp Brain Integration
+Findings." Phase 2B remains the current phase. No implementation is
+authorized.
+
+### Proposed Next Milestone
+
+**AutoCorp Brain Integration — Core Client Boundary** — see
+`ARCHITECTURE.md` and `NEXT_STEPS.md` for full scope, exclusions, and
+acceptance criteria. Implementation is NOT authorized as part of this
+audit.
 
 ---
 

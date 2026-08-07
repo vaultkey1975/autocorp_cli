@@ -612,6 +612,97 @@ docstring header.
 
 ---
 
+## ERA 5 — Local-First Provider Guardrails (committed, untagged)
+
+### Phase 2A — Local-First Context Budget and Usage Ledger
+- **Phase ID:** Phase 2A
+- **Name:** Local-First Context Budget and Usage Ledger
+- **Purpose:** Add local-first provider guardrails, bounded context manifests,
+  generated-path exclusion, and a SQLite usage ledger to AutoCorp CLI.
+- **Goals:** Shared path classification policy, bounded repair contexts,
+  provider-attempt evidence recording, usage-report CLI, provider rules
+  enforcement (deterministic first, paid only with explicit selection,
+  no automatic fallback).
+- **Requirements:** Existing Phase 2A architecture (brains/engine_registry,
+  brains/base_engine, core/llm).
+- **Dependencies:** Era 2 engine abstraction, Phase 1A-1Y repair infrastructure.
+- **Deliverables:** `brains/repo_policy.py`, `brains/context_budget.py`,
+  `brains/usage_ledger.py`, `autocorp usage-report` CLI, abstract interfaces
+  hardening, `LocalRepairContentProvider` local-engine integration with
+  cleanup evidence.
+- **Testing:** Focused verification: 288 tests across 15 files, 0 failures.
+  Full strict suite: 1301 tests, exit 0. Real Ollama smoke: disposable
+  repository, 1 local ledger row, no paid provider, cleanup verified.
+- **Verification:** `git diff --check`, `scripts/verify_compileall.py`,
+  changed-module `py_compile`, CLI help/parser validation all passed.
+- **Exit Criteria:** All acceptance criteria implemented and verified;
+  full strict suite passes.
+- **Completion Evidence:** Committed as `34e7a4a` and merged to `main`.
+  Official phase completion remains owner-gated by
+  `PHASE_COMPLETION_POLICY.md`.
+- **Notes:** Provider rules established: deterministic code first, local
+  Ollama for explicit generation, DeepSeek/Claude explicit-only, no paid
+  fallback. The 77% savings target is never printed as achieved without
+  real measured evidence.
+
+### Phase 2B — Local-First Provider Routing and Usage Coverage
+- **Phase ID:** Phase 2B
+- **Name:** Local-First Provider Routing and Usage Coverage
+- **Purpose:** Close the coverage gap — every model-capable production call
+  site routes through one authoritative, testable policy, and every
+  invocation is recorded.
+- **Goals:** Single central routing policy module, paid-provider authorization
+  gate at every call site, full usage-ledger coverage, static coverage audit,
+  VS Code repair handoff generator.
+- **Requirements:** Phase 2A architecture (usage_ledger, context_budget,
+  repo_policy).
+- **Dependencies:** Phase 2A.
+- **Deliverables:** `brains/provider_policy.py`, `brains/provider_coverage_audit.py`,
+  `brains/repair_handoff.py`, updated `brains/builder.py`/`brains/tester.py`/
+  `brains/planner.py`/`core/orchestrator.py` routing, `autocorp repair-handoff`
+  CLI, updated `brains/providers.py`/`brains/repair_content_generator.py`
+  deduplication.
+- **Testing:** Provider routing: 59 fast/65 focused tests, confidence high;
+  473 focused tests across 29 files, 0 failures. Repair handoff: 35 fast/
+  37 focused tests, 212 focused across 8 files, 0 failures. Full strict suite:
+  1365 tests, exit 0.
+- **Verification:** `git diff --check`, `scripts/verify_compileall.py`,
+  changed-module `py_compile`, CLI help validation all passed. Coverage audit
+  against real AutoCorp source: 18 call sites, 6 covered, 4 excluded
+  (reliability_engine), 0 uncovered, 100.00% coverage. Real repair-handoff
+  E2E smoke: Codex and Claude handoffs generated, secrets redacted,
+  PASSED evidence correctly refused, ledger records deterministic.
+- **Exit Criteria:** All 10 acceptance criteria implemented and verified;
+  full strict suite passes.
+- **Completion Evidence:** Committed as `b3fb054` and merged to `main`.
+  Official phase completion remains owner-gated by
+  `PHASE_COMPLETION_POLICY.md`.
+- **Notes:** `reliability_engine/` explicitly excluded from routing/ledger
+  coverage — its integration remains an undecided owner decision. The
+  `repair_handoff` generator is fully deterministic in its normal path
+  (no model calls, no Codex/Claude API calls).
+
+### Post-Phase 2B: AutoCorp Brain Integration Planning Audit
+- **Phase ID:** Planning-only, no implementation authorized
+- **Name:** AutoCorp Brain Integration Audit
+- **Purpose:** Determine readiness for AutoCorp CLI to integrate with
+  AutoCorp Brain through the production v1 HTTP API. AutoCorp CLI
+  communicates over pure HTTP; it must not import the Brain SDK.
+- **Goals:** Audit both repositories, reconcile Phase 2A/2B actual state,
+  define ownership boundaries, select integration architecture, propose
+  exact milestone scope and exclusions.
+- **Deliverables:** Updated `AI_ENGINEERING/*.md` documents recording findings;
+  comprehensive audit report at `/tmp/autocorp_deepseek_report.txt`.
+- **Completion Evidence:** Branch `autocorp-brain-integration-audit` at
+  `b3fb054` (same as `main`). Documentation-only changes under
+  `AI_ENGINEERING/`. No Python, test, script, or requirements files were
+  modified.
+- **Notes:** Proposed next milestone: "AutoCorp Brain Integration —
+  Core Client Boundary." See `ARCHITECTURE.md` for full scope, exclusions,
+  and acceptance criteria. Implementation is NOT authorized.
+
+---
+
 ## FUTURE PLANNING REQUIRED
 
 No phase beyond Phase 1Y, the Quick Podcast CLI-wiring commit, the

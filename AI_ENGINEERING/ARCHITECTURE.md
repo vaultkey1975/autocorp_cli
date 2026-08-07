@@ -723,3 +723,230 @@ represent syntax errors in maintained AutoCorp source.
   call instead of exercising its intended offline path. Treat any ambient
   API-key environment variable as a real test-isolation risk, not a
   theoretical one, in this repository.
+
+## AutoCorp Brain Integration Findings (Planning Audit, 2026-08-07)
+
+This section records findings from a read-only planning audit on branch
+`autocorp-brain-integration-audit` (HEAD `b3fb054`, same as `main`).
+No integration code was written. Implementation is NOT authorized.
+
+### AutoCorp Brain production API/SDK surface
+
+AutoCorp Brain (`/home/larry/autocorp_brain`) is through Phase 8 and exposes:
+
+- **HTTP API** `127.0.0.1:8420/v1/`: `GET /health`, `GET /schema`,
+  `POST /core/execute`. Loopback-only by default.
+- **Python SDK**: `autocorp_brain.sdk.AutoCorpBrainClient` exists as an
+  `http.client.HTTPConnection` wrapper — evidence that the HTTP transport
+  contract is viable and versioned, but **AutoCorp CLI must not import it**
+  as a runtime dependency. AutoCorp CLI communicates over pure HTTP.
+- **Contract versions**: `autocorp.brain.api.v1` (transport),
+  `autocorp.brain.core.v1` (request/response).
+- **Task catalogue**: 69 registered task types including
+  deterministic (`sha256`, `json_validate`, repository indexing/query,
+  tool invocations, Phase 5 repair analysis/plan/apply/test/verify/
+  rollback) and model-required (`model_generate`,
+  `repair_suggest_analysis`, `repair_suggest_plan`).
+- **It does NOT own**: provider selection policy, usage/cost accounting,
+  CloneCast orchestration, desktop UI, operator workflow, repair-handoff
+  prompt generation, Fast Pytest Engine, test execution against external
+  repositories.
+
+### Architecture recommendation
+
+Selected architecture: **Option D — HTTP-only integration through the
+production v1 API.**
+
+AutoCorp CLI will construct `CoreRequest` objects and call
+`POST /v1/core/execute` via pure HTTP (standard-library
+`http.client.HTTPConnection`) to delegate AI-engine tasks to AutoCorp
+Brain. AutoCorp CLI must not import the `autocorp_brain` package or its
+SDK. The adapter lives in this repository, not in AutoCorp Brain.
+
+**Why not other options:**
+
+| Option | Verdict | Reason |
+|---|---|---|
+| A (talk to running Brain) | Adequate but incomplete | Does not specify process lifecycle management |
+| B (CLI starts/stops Brain) | Adds lifecycle complexity | Worth adding later as an optional convenience, not the core contract |
+| C (direct SDK import) | Rejected | Couples repositories; loses transport independence |
+| D (HTTP-only) | **Selected** | Loosely coupled, version-negotiated; Brain's own SDK proves the HTTP contract is viable but AutoCorp CLI does not import it |
+| E (hybrid) | Rejected | Adds complexity without benefit over pure HTTP |
+| F (wait) | Rejected | Brain API is production-ready through Phase 8; no missing prerequisite |
+
+### Repository ownership boundaries
+
+| Capability | Owned by |
+|---|---|
+| Brain HTTP client adapter | AutoCorp CLI (new module) |
+| API health checks | AutoCorp CLI adapter |
+| Schema/version negotiation | AutoCorp CLI adapter (reads `/v1/schema`) |
+| Connection failures | AutoCorp CLI adapter |
+| Request timeouts | AutoCorp CLI adapter (client-side); Brain (server-side) |
+| Cancellation | AutoCorp CLI adapter (connection close) |
+| Request IDs | AutoCorp CLI generates; Brain preserves |
+| Provenance | Brain writes; AutoCorp CLI reads `provenance_path` |
+| Repair analysis | Brain (`repair_analyze` task) |
+| Repair suggestions | Brain (`repair_suggest_*` tasks) |
+| User approval | AutoCorp CLI |
+| Filesystem edits | AutoCorp CLI |
+| Test execution | AutoCorp CLI (Fast Pytest Engine) |
+| VS Code repair handoffs | AutoCorp CLI (`brains/repair_handoff.py`) |
+| Provider selection | AutoCorp CLI (`brains/provider_policy.py`) |
+| Usage/cost ledger | AutoCorp CLI (`brains/usage_ledger.py`) |
+| Desktop UI | AutoCorp CLI (`app/`) |
+| Brain process startup/shutdown | Operator (Brain must already be running; AutoCorp CLI does not start/stop it in this milestone) |
+| GPU reservation decisions | AutoCorp Brain (Phase 1 lifecycle) |
+| Local-model lifecycle | AutoCorp Brain (load/use/validate/unload/verify) |
+| Error presentation | AutoCorp CLI (maps Brain error categories to CLI output) |
+
+### Model, GPU, and provider safety
+
+The planned integration preserves every existing safety rule:
+
+- Deterministic tasks (analysis, repair plan/propose/apply/test/verify)
+  are routed as `routing_requirement="deterministic"` — Brain never loads
+  a model for these.
+- Model-required tasks require `routing_requirement="model_required"` —
+  explicit opt-in at the call site.
+- AutoCorp Brain enforces its own lifecycle for every model-required
+  operation that reaches a Brain-side termination path (success, failure,
+  Brain-side timeout, validation failure, or internal error): load → use →
+  validate → unload → verify VRAM release. Only one heavy-model operation
+  at a time; safe-start preflight before every load (no CloneCast
+  speech-render or Chatterbox worker active). Brain cleanup and model
+  unload are NOT triggered by client disconnect — see cancellation
+  semantics in the Failure Design table below.
+- No automatic cloud fallback exists anywhere in the AutoCorp Brain
+  execution path.
+- AutoCorp CLI's `provider_policy.py` remains the single gate for
+  paid-provider authorization; Brain tasks always use the local Ollama
+  provider.
+- Usage accounting: AutoCorp CLI records a single Brain-delegated
+  operation in its ledger (not doubled as both a CLI provider call and a
+  Brain call). Brain's own provenance records remain the source of truth
+  for the model-level details (load time, generation time, token counts,
+  cleanup verdict).
+
+### CloneCast boundary preserved
+
+Brain integration must NOT change CloneCast's:
+- Research import without local LLM
+- Approved-script import without local LLM
+- Exact approved-script preservation
+- Deterministic PDF extraction
+- Explicit local-model tasks only
+- Chatterbox strict GPU lifecycle
+- Zero simultaneous heavy GPU models
+
+### Failure design (AutoCorp CLI side)
+
+Every failure maps explicitly to a user-visible error, never to a silent
+fallback:
+
+| Failure | Behavior |
+|---|---|
+| Brain not installed | Report, do not call |
+| Brain server not running | Report, do not start; exit with clear actionable guidance |
+| Startup failure | Report |
+| Health check failure | Report, do not proceed |
+| Incompatible API major version | Report, exit nonzero |
+| Incompatible core contract version | Report, exit nonzero |
+| Malformed response | Report as transport error |
+| Request timeout | Close connection; report timeout |
+| Connection refused | Report, retry-later guidance |
+| Brain crash during request | Detect via connection drop; report |
+| Model-generation failure | Map Brain error category → CLI output |
+| Cleanup failure | Report, do not block next operation |
+| VRAM not released | Report, nvidia-smi evidence |
+| Cancellation (client-side) | Close connection; Brain-side completion is unknown; report truthfully |
+| Unknown Brain completion | Report that the result could not be retrieved |
+| Corrupted provenance | Report as integrity failure |
+| Stale repair evidence | Refuse |
+| Unsupported task type | Map to CLI error |
+
+### Proposed milestone detail
+
+Milestone name: **AutoCorp Brain Integration — Core Client Boundary**
+
+- Solves: AutoCorp CLI delegates AI-engine tasks (repair analysis,
+  model-assisted repair suggestions, model_generate) to an
+  already-running AutoCorp Brain service through a stable, versioned HTTP
+  contract, instead of calling Ollama directly for those tasks.
+- Benefit: Brain's proven load/use/unload/verify lifecycle provides
+  stronger GPU safety; repair analysis and suggestions become available
+  through a stable, versioned contract. Repositories remain independently
+  installed, versioned, testable, and deployable.
+- Excluded: Provider selection, usage ledger, CloneCast workflows,
+  desktop UI, repair handoff generation, Fast Pytest Engine, Reliability
+  Engine, Brain process startup/shutdown, Brain daemon management,
+  server-side cancellation API — all remain unchanged or outside scope.
+- Expected new modules: `brains/autocorp_brain_adapter.py` (HTTP client,
+  health check, version negotiation, error mapping), plus tests.
+- Expected affected modules: `autocorp.py` (`brain-status` and
+  `brain-suggest` subcommands), `config.py` (`AUTOCORP_BRAIN_*` env
+  vars). `brains/usage_ledger.py` may need a new `brain_delegated`
+  operation kind. `brains/provider_policy.py` is NOT expected to change:
+  Brain delegation is a separate path, not paid-provider selection.
+- Brain modules reused unchanged: `api_contracts.py`, `api_server.py`,
+  `sdk.py`, `core.py`, `core_contracts.py`, `error_contracts.py`,
+  `router.py`, `repair_analysis.py`, `repair_suggest.py`, etc.
+
+### Future test plan (not implemented)
+
+1. Brain health success
+2. Brain unavailable (server not running)
+3. Connection refused
+4. Incompatible API major version
+5. Incompatible core contract version
+6. Valid deterministic request (sha256, no model contact)
+7. Explicit model-assisted repair suggestion (repair_suggest_analysis)
+8. Malformed HTTP/JSON response
+9. Client request timeout
+10. Client Ctrl+C / cancellation (client-side connection close; Brain-side
+    completion unknown; no fallback; report truthfully)
+11. Brain process crash mid-request
+12. Brain model-generation failure
+13. Brain cleanup failure returned truthfully
+14. No paid-provider fallback anywhere in Brain delegation path
+15. No alternate local-model fallback
+16. No hidden Ollama call on deterministic Brain tasks
+17. Exactly one AutoCorp CLI delegation ledger record per Brain operation
+18. Brain provenance path preserved in delegation record
+19. Existing provider_policy remains unchanged and enforced
+20. Repair-handoff functionality intact
+21. Brain error categories correctly map to CLI user-visible errors
+22. AutoCorp CLI non-Brain functionality works when Brain is unavailable
+23. Unknown Brain-side completion after client disconnect is reported
+    truthfully (not rounded up to success or failure)
+24. No source path automatically invokes Brain without explicit operator
+    action
+
+Unit tests may use a controlled fake HTTP server. Final production
+acceptance may NOT use a fake Brain server.
+
+### Real E2E acceptance plan
+
+Brain must already be running before this test begins. AutoCorp CLI does
+not start Brain in this milestone.
+
+AutoCorp CLI → real loopback AutoCorp Brain production server →
+health/version negotiation → deterministic request (sha256) → explicit
+model-assisted repair suggestion (repair_suggest_analysis) → strict
+response validation → provenance validation → no paid fallback → no
+hidden model call on deterministic path → Brain model cleanup → Brain
+model unload → VRAM return verification via nvidia-smi → AutoCorp CLI
+delegation ledger contains exactly one entry per delegated operation.
+
+The acceptance test must prove:
+- deterministic Brain task succeeds without Ollama/model contact
+- explicit model-assisted Brain task succeeds with real model contact
+- model result is schema-valid and referenced evidence is valid
+- Brain provenance exists at the returned provenance_path
+- Ollama model is unloaded afterward
+- RTX 4060 Ti VRAM returns to baseline within documented tolerance
+- no Claude/DeepSeek/Codex fallback occurred
+- AutoCorp CLI still works in unrelated modes when Brain is stopped
+
+A fake server is allowed only for future unit tests, never as the final
+integration proof.
